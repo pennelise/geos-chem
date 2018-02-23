@@ -1655,6 +1655,16 @@ CONTAINS
       do j=js2g0,jn2g0
         do i=1,im
            jp = j-va(i,j)
+!##############################################################################
+!### BMY KLUDGE
+!### Do not allow JP to be larger than the 2nd dim of Q.  This prevents 
+!### out-of-bounds errors which may be caused by very high Courant #'s,
+!### which in turn are caused by very high wind speeds.  We saw this in
+!### Raluca Ellis's NA nested grid simulations. (bmy, 9/27/12)
+!### 
+           if ( jp > jlast+ng-1 ) jp = jlast+ng-1
+!#############################################################################
+
            wk1(i) = q(i,j) +0.5*va(i,j)*(q(i,jp)-q(i,jp+1))
         enddo
 
@@ -2182,6 +2192,24 @@ CONTAINS
         do j=js2g0,jn1g1
           do i=1,im
             jt = float(j) - c(i,j)
+!##############################################################################
+!### BMY KLUDGE
+!### Do not allow JT to be larger than the 2nd dim of Q.  This prevents 
+!### out-of-bounds errors which may be caused by very high Courant #'s,
+!### which in turn are caused by very high wind speeds.  We saw this in
+!### Raluca Ellis's NA nested grid simulations. (bmy, 9/27/12)
+            IF ( jt > jlast+ng ) THEN
+!### BMY DEBUG OUTPUT:
+               print*, '### TPCORE_WINDOW: Avoid OOB error in YTP ###'
+               print*, '### i,  j,  jt  : ', i,   j,  jt
+               print*, '### im          : ', im,  jm
+               print*, '### js2g0, jn1g1: ', js2g0, jn1g1
+               print*, '### float(j)    : ', float(j)
+               print*, '### c(i,j)      : ', c(i,j)
+!###
+               jt = jlast+ng
+            ENDIF
+!##############################################################################
             fy(i,j) = q(i,jt)
           enddo
         enddo
