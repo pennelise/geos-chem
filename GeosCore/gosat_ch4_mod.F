@@ -170,7 +170,7 @@
       CALL Expand_Date( nc_file, YYYYMMDD, 9999 ) 
 
       ! Construct complete file path
-      dir = '/n/regal/jacob_lab/msulprizio/ExtData/Obs/ULGOSAT_v7/' //
+      dir = '/n/regal/jacob_lab/maasakkers/ExtData/Obs/ULGOSAT_v7/' //
      &       CYEAR // '/' 
       nc_file = TRIM( dir ) // TRIM( nc_file )
       WRITE( 6, 10 ) TRIM( nc_file )
@@ -487,8 +487,8 @@
 
       ! Hardcode bias values for now (mps, 6/16/17)
       SATELLITE_BIAS(1) = 0.0e+0_fp
-      SATELLITE_BIAS(2) = -0.075272936e+0_fp
-      SATELLITE_BIAS(3) = 0.003712500e+0_fp
+      SATELLITE_BIAS(2) = 0.0e+0_fp
+      SATELLITE_BIAS(3) = 0.0e+0_fp
       MEAN_MODEL_BIAS   = 0.0e+0_fp
 
       ! Open files for diagnostic output
