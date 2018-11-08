@@ -184,7 +184,7 @@
       CALL Expand_Date( nc_file, YYYYMMDD, 9999 ) 
 
       ! Construct complete filename 
-      dir = '/n/regal/jacob_lab/msulprizio/ExtData/Obs/TCCON/' //
+      dir = '/n/regal/jacob_lab/maasakkers/ExtData/Obs/TCCON/' //
      &                CYEAR // '/'
       nc_file = TRIM( dir ) // TRIM( nc_file )
       WRITE( 6, 10 ) TRIM( nc_file )
