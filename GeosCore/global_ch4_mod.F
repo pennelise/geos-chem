@@ -869,7 +869,7 @@
       USE State_Chm_Mod,      ONLY : ChmState
       USE State_Met_Mod,      ONLY : MetState
       USE TIME_MOD,           ONLY : GET_TS_CHEM, ITS_A_NEW_YEAR
-      USE TIME_MOD,           ONLY : GET_MONTH
+      USE TIME_MOD,           ONLY : GET_MONTH, GET_YEAR
 !
 ! !INPUT PARAMETERS: 
 !
@@ -911,12 +911,19 @@
 !
       ! Scalars
       INTEGER           :: I,  J,    L
+      INTEGER           :: YEAR, N
       REAL(fp)          :: DT, GCH4, Spc2GCH4
       REAL(fp)          :: KRATE, C_OH
       REAL(fp)          :: KRATE_Cl, C_Cl
 
       ! Pointers
       REAL(fp), POINTER :: Spc(:,:,:,:)
+
+      ! Local array
+      REAL(fp), PARAMETER  :: OHOPT(7) = (/0.99739926,  0.99759943,  
+     &                                 0.99622991,  1.00713812,  
+     &                                 1.00061884, 0.98476383,  
+     &                                 0.98830506/)
 
       !=================================================================
       ! CH4_DECAY begins here!
@@ -948,7 +955,7 @@
 !$OMP PARALLEL DO
 !$OMP+DEFAULT( SHARED )
 !$OMP+PRIVATE( L, J, I, KRATE, Spc2GCH4, GCH4, C_OH )
-!$OMP+PRIVATE( C_Cl, KRATE_Cl )
+!$OMP+PRIVATE( C_Cl, KRATE_Cl, N, YEAR )
 !$OMP+REDUCTION( +:TROPOCH4 )
       DO L = 1, LLPAR
       DO J = 1, JJPAR
@@ -975,6 +982,11 @@
             ! BOH is imported from HEMCO in units of kg/m3, convert
             !  here to molec/cm3 (ckeller, 9/16/2014)
             C_OH = BOH(I,J,L) * XNUMOL_OH / CM3PERM3
+
+            ! Apply scale factors from inversion (mps, 7/27/17)
+            YEAR = GET_YEAR()
+            N    = YEAR - 2008
+            C_OH = C_OH * OHOPT(N)
 
             ! Cl in [molec/cm3]
             ! BCl is imported from HEMCO in units of ppbv, convert
