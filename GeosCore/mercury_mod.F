@@ -21,10 +21,14 @@
       USE DEPO_MERCURY_MOD,  ONLY : LHGSNOW
       USE OCEAN_MERCURY_MOD, ONLY : LDYNSEASALT
       USE OCEAN_MERCURY_MOD, ONLY : LPOLARBR
+      USE OCEAN_MERCURY_MOD, ONLY : L_ADD_MBL_BR
       USE OCEAN_MERCURY_MOD, ONLY : LGEIA05
       USE OCEAN_MERCURY_MOD, ONLY : LVEGEMIS
       USE OCEAN_MERCURY_MOD, ONLY : LBRCHEM
       USE OCEAN_MERCURY_MOD, ONLY : LRED_JNO2
+      USE OCEAN_MERCURY_MOD, ONLY : LRED_CLOUDONLY
+      USE OCEAN_MERCURY_MOD, ONLY : LHALOGENCHEM
+      USE OCEAN_MERCURY_MOD, ONLY : LHGAQCHEM
       USE OCEAN_MERCURY_MOD, ONLY : LHg2HalfAerosol
       USE OCEAN_MERCURY_MOD, ONLY : STRAT_BR_FACTOR
       USE OCEAN_MERCURY_MOD, ONLY : LAnthroHgOnly
@@ -48,6 +52,9 @@
       PUBLIC  :: INIT_MERCURY
       PUBLIC  :: EMISSMERCURY
       PUBLIC  :: PARTITIONHG2
+#if defined( NC_DIAG )
+      PUBLIC  :: Reset_Hg_Diags
+#endif
 !
 ! !PRIVATE MEMBER FUNCTIONS:
 !
@@ -65,6 +72,14 @@
       PRIVATE :: GET_OH
       PRIVATE :: GET_BR
       PRIVATE :: GET_JNO2
+      PRIVATE :: GET_HGCL_RATE
+      PRIVATE :: GET_HGBRY_RATE
+      PRIVATE :: GET_HGAQ_RATE
+      PRIVATE :: GET_NO2
+      PRIVATE :: GET_HO2
+      PRIVATE :: GET_Cl
+      PRIVATE :: GET_ClO
+      PRIVATE :: GET_HOCl
 !
 ! !REMARKS:
 !  Nomenclature: 
@@ -185,6 +200,7 @@
 !  24 Aug 2017 - M. Sulprizio- Remove support for GCAP, GEOS-4, GEOS-5 and
 !                              MERRA; Also remove functions GET_VCLDF and
 !                              GET_LWC, they're no longer needed
+!  30 Aug 2018 - C. Thackray - Merged halogen chem options
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -278,9 +294,19 @@
       ! These need to be declared REAL(f4), aka REAL*4.
       ! (NOTE: We can set them to NULL here because 
       ! they are globally SAVEd variables (bmy, 4/29/16)
-      REAL(f4), POINTER :: O3  (:,:,:) => NULL()
-      REAL(f4), POINTER :: OH  (:,:,:) => NULL()
-      REAL(f4), POINTER :: JNO2(:,:,:) => NULL()
+      REAL(f4), POINTER :: O3(:,:,:)            => NULL()
+      REAL(f4), POINTER :: OH_trop(:,:,:)       => NULL()
+      REAL(f4), POINTER :: OH_strat(:,:,:)      => NULL()
+      REAL(f4), POINTER :: JNO2(:,:,:)          => NULL()
+      REAL(f4), POINTER :: HEM_NO2(:,:,:)       => NULL()
+      REAL(f4), POINTER :: HEM_NO(:,:,:)        => NULL()
+      REAL(f4), POINTER :: HEM_HOCl(:,:,:)      => NULL()
+      REAL(f4), POINTER :: HEM_HO2_trop(:,:,:)  => NULL()
+      REAL(f4), POINTER :: HEM_HO2_strat(:,:,:) => NULL()
+      REAL(f4), POINTER :: HEM_CLO(:,:,:)       => NULL()
+      REAL(f4), POINTER :: HEM_CL(:,:,:)        => NULL()
+      REAL(f4), POINTER :: HEM_OA(:,:,:)        => NULL()
+      REAL(f4), POINTER :: OCEAN_CONC(:,:,:)    => NULL()
 
       ! Hg species IDs
       INTEGER           :: N_Hg_CATS
@@ -327,29 +353,32 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE CHEMMERCURY( am_I_Root, Input_Opt,
-     &                        State_Met, State_Chm, RC )
+      SUBROUTINE CHEMMERCURY( am_I_Root, Input_Opt,  State_Met,
+     &                        State_Chm, State_Diag, RC         )
 !
 ! !USES:
 !
+!LL      USE CHEMGRID_MOD,       ONLY : GET_TPAUSE_LEVEL
       USE CMN_SIZE_MOD
-      USE CMN_DIAG_MOD
       USE DAO_MOD,            ONLY : IS_ICE
       USE DAO_MOD,            ONLY : IS_LAND
       USE DAO_MOD,            ONLY : IS_WATER
       USE DEPO_MERCURY_MOD,   ONLY : ADD_HG2_DD
       USE DEPO_MERCURY_MOD,   ONLY : ADD_HgP_DD
 #if defined( BPCH_DIAG )
+      USE CMN_DIAG_MOD
       USE DIAG_MOD,           ONLY : AD44
-#endif
       USE DIAG03_MOD,         ONLY : AD03_Hg2_Hg0, AD03_Hg2_O3
       USE DIAG03_MOD,         ONLY : AD03_Hg2_Br,  AD03_Hg2_OH
+      USE DIAG03_MOD,         ONLY : AD03_Hg2_BRY,  AD03_Hg2_CLY
+      USE DIAG03_MOD,         ONLY : AD03_Hg2_Br_Y
       USE DIAG03_MOD,         ONLY : AD03_Hg2_SS,  LD03
       USE DIAG03_MOD,         ONLY : AD03_Hg2_SSR, ND03 
       USE DIAG03_MOD,         ONLY : AD03_Br
+#endif
       USE ErrCode_Mod
-      USE ERROR_MOD,          ONLY : DEBUG_MSG
       USE ERROR_MOD,          ONLY : ERROR_STOP
+      USE ERROR_MOD,          ONLY : DEBUG_MSG
       USE ERROR_MOD,          ONLY : SAFE_DIV
       USE HCO_INTERFACE_MOD,  ONLY : HcoState
       USE HCO_EmisList_Mod,   ONLY : HCO_GetPtr
@@ -359,6 +388,7 @@
       USE PBL_MIX_MOD,        ONLY : GET_FRAC_UNDER_PBLTOP
       USE Species_Mod,        ONLY : Species
       USE State_Chm_Mod,      ONLY : ChmState
+      USE State_Diag_Mod,     ONLY : DgnState
       USE State_Met_Mod,      ONLY : MetState
       USE TIME_MOD,           ONLY : GET_MONTH
       USE TIME_MOD,           ONLY : GET_TS_CHEM
@@ -374,6 +404,7 @@
 ! !INPUT/OUTPUT PARAMETERS:
 !
       TYPE(ChmState), INTENT(INOUT) :: State_Chm   ! Chemistry State object
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag  ! Diagnostics State object
 !
 ! !OUTPUT PARAMETERS:
 !
@@ -487,6 +518,12 @@
 !                              species ID from State_Chm%Map_Advect.
 !  01 Jul 2016 - R. Yantosca - Now rename species DB object ThisSpc to SpcInfo
 !  11 Oct 2016 - R. Yantosca - Pass additional args to SET_OPTIONS_FROM_HEMCO
+!  30 Sep 2017 - C. Thackray - Brought in Horowitz 2017 chemistry
+!  03 Nov 2017 - R. Yantosca - Now accept State_Diag as an argument
+!  30 Nov 2017 - C. Thackray - Option to use offline ocean Hg concentrations
+!  02 Feb 2018 - C. Thackray - Made Hg2(aq) for red. temperature dependent
+!  10 Feb 2018 - C. Thackray - Switches for chem options
+!  30 Aug 2018 - C. Thackray - Merged halogen chem options
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -504,30 +541,41 @@
       INTEGER            :: NA, nAdvect
       INTEGER            :: I, J, L, K, N, NN, MONTH, NSTEPS, Hg_Cat
       REAL(fp)           :: K_DRYD0, K_DRYD2G, K_DRYD2P, K_SALT
-      REAL(fp)           :: C_OH, C_O3, C_BR, C_BRO
+      REAL(fp)           :: C_OH, C_O3, C_BR, C_BRO, C_HOCL
+      REAL(fp)           :: C_NO2, C_OA, C_HO2, C_CLO, C_CL
       REAL(fp)           :: K_OH, K_O3, K_BR, K_BRO
+      REAL(fp)           :: K_CL, K_R1CL, K_R2CL
+      REAL(fp)           :: K_BR2, K_BROH, K_BRHO2, K_BRNO2, K_BRCLO
+      REAL(fp)           :: K_BRBRO, K_BRCL, K_R1, K_R2, K_R2A, K_R3ANO2
+      REAL(fp)           :: K_AQ_OX(3), K_HOCL, K_OH_AQ, K_O3_AQ
       REAL(fp)           :: K_OX, K_RED, K_DEP0, K_DEP2G, K_DEP2P
-      REAL(fp)           :: DEP_Hg0, DEP_HG2G, DEP_HG2P
+      REAL(fp)           :: DEP_Hg0, DEP_HG2G, DEP_HG2P, K_RED2P
       REAL(fp)           :: DEP_HG2G_DRY, DEP_HG2G_SALT, DEP_HG2P_DRY
       REAL(fp)           :: DEP_HG2_DRY
       REAL(fp)           :: GROSS_OX, GROSS_OX_BR
       REAL(fp)           :: GROSS_OX_OH, GROSS_OX_O3
+      REAL(fp)           :: GROSS_OX_BRY, GROSS_OX_CLY
+      REAL(fp)           :: GROSS_OX_BR2, GROSS_OX_BRBRO
+      REAL(fp)           :: GROSS_OX_BRNO2, GROSS_OX_BRCLO
+      REAL(fp)           :: GROSS_OX_BRHO2, GROSS_OX_BROH
       REAL(fp)           :: GROSS_RED, NET_OX
       REAL(fp)           :: F_PBL, FC, Faq, LWC
       REAL(fp)           :: AREA_CM2, DEP_DRY_FLX
       REAL(fp)           :: F_HG0_DEP
       REAL(fp)           :: DTCHEM, DT
       REAL(fp)           :: KMAX
+      REAL(fp)           :: K0, R_DRY, RH3, Kstar, Hg2CR, TPL
       REAL(fp)           :: A(9,9), Xold(9), Xnew(9)
       REAL(fp)           :: s1(9), s2(9), s3(9), s4(9)
-      REAL(fp)           :: K0, R_DRY
+      REAL(fp)           :: K_BRY(11), K_CLY(3)
 
       ! Pointers
       REAL(fp), POINTER  :: Spc(:,:,:,:)
       REAL(fp), POINTER  :: T(:,:,:)
 
       ! Strings
-      CHARACTER(LEN=255) :: LOC = 'CHEMMERCURY (mercury_mod.F)'
+      CHARACTER(LEN=255) :: ThisLoc
+      CHARACTER(LEN=512) :: ErrMsg
 !
 ! !DEFINED PARAMETERS:
 !
@@ -563,25 +611,16 @@
       !%%% NOTE: Someone will have to add tunings for the GEOS-5.7.2
       !%%% nested grids at 0.25 x 0.3125 resolution (bmy, 6/3/13)
       !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-      ! These K_RED_JNO2 parameters have been defined based on GEOS-5
-      ! runs and remain appropriate for GEOS-5 at 4x5 in v11-01c. Based
-      ! on the GEOS-FP 4x5 run, we need to increase K_RED_JNO2 for
-      ! GEOS-FP. In the absences of benchmark runs for GEOS-FP at other
-      ! resolutions, we assume the same decrease in GEOS-FP relative to
-      ! GEOS-5, regardless of resolution. This should be adapated and
+      ! These K_RED_JNO2 parameters have been defined based on GEOS-5,
+      ! GEOS-FP, and MERRA2 runs with the chemistry from Horowitz 2017.
+      ! It is set up to fail on compilation when an untested MET-GRID
+      ! pair is used. (C. Thackray, 2/2018)
+      ! This should be adapated and
       ! tested by other users as appropriate (J. Fisher, 3/2016)
-      ! Although we have not tested other met fields, we assume same
-      ! parameters apply for GEOS-FP, MERRA, and MERRA-2.
-      ! To simplify this code, for now we remove the various resolution
-      ! differences (which haven't been tested) and simply include
-      ! different versions for GEOS-FP vs GEOS-5 and nested vs.
-      ! non-nested. Users are encouraged to test and adapt. (J. Fisher,
-      ! 4/2016)
-#if   defined( NESTED_NA )
-      REAL(fp), PARAMETER     :: K_RED_JNO2 = 9.6e-3_fp * 1.33
-#else
-      REAL(fp), PARAMETER     :: K_RED_JNO2 = 9.6e-3_fp
-#endif   
+      ! To simplify this code, K_RED_JNO2 should be moved to HEMCO_Config.rc
+      ! or input.geos since it will vary with MET/GRID/chemistry (cpt)
+
+      REAL(fp), PARAMETER     :: K_RED_JNO2 = 14.0e-2_fp
 
       ! Set of Hg/Br rate constants to use
       ! Recommended: DonohoueYBBalabanov, GoodsiteY, or DonohoueYB
@@ -597,6 +636,8 @@
 
       ! Assume success
       RC        = GC_SUCCESS
+      ErrMsg    = ''
+      ThisLoc   = ' -> at ChemMercury (in GeosCore/mercury_mod.F)'
 
       ! Copy values from Input_Opt
       LDYNOCEAN = Input_Opt%LDYNOCEAN
@@ -613,7 +654,8 @@
       SpcInfo => State_Chm%SpcData(id_Hg2)%Info
 
       ! Get Henry's Law constant for Hg2 [mol/L/atm] (ewl, 1/5/16)
-      K0 = SpcInfo%Henry_K0
+      K0    = SpcInfo%Henry_K0
+      Hg2CR = SpcInfo%Henry_CR
 
       ! Calculate dry air gas constant in [L atm/K/mol] (ewl, 1/5/16)
       R_DRY = Rd * AIRMW / ATM
@@ -636,29 +678,129 @@
          ! Get the current month
          MONTH = GET_MONTH()
 
-         ! Get a pointer to the monthly mean OH from HEMCO (bmy, 3/11/15)
-         CALL HCO_GetPtr( am_I_Root, HcoState, 'GLOBAL_OH', OH,   RC )
+         ! Get a pointer to the monthly mean fields from HEMCO (bmy, 3/11/15)
+
+         !-----------------------------------------------------------
+         ! Some oxidants always required:
+         CALL HCO_GetPtr( am_I_Root, HcoState, 'GLOBAL_OH_trop',
+     &                    OH_trop,   RC                           )
          IF ( RC /= GC_SUCCESS ) THEN
-            CALL ERROR_STOP ( 'Cannot get pointer to GLOBAL_OH', LOC )
+            ErrMsg = 'Cannot get pointer to GLOBAL_OH_trop!'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
          ENDIF
 
-         ! Get a pointer to the monthly mean O3 from HEMCO (bmy, 3/11/15)
-         CALL HCO_GetPtr( am_I_Root, HcoState, 'GLOBAL_O3', O3,  RC )
+         CALL HCO_GetPtr( am_I_Root, HcoState, 'GLOBAL_OH_strat',
+     &                    OH_strat,  RC                           )
          IF ( RC /= GC_SUCCESS ) THEN
-            CALL ERROR_STOP ( 'Cannot get pointer to GLOBAL_O3', LOC )
+            ErrMsg = 'Cannot get pointer to GLOBAL_OH_strat!'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
          ENDIF
 
+         CALL HCO_GetPtr( am_I_Root, HcoState, 'GLOBAL_O3', 
+     &                    O3,        RC                           )
+         IF ( RC /= GC_SUCCESS ) THEN
+            ErrMsg = 'Cannot get pointer to GLOBAL_O3!'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
+
+         ! Br and BrO not directly from HEMCO
          CALL GET_GLOBAL_BR( am_I_Root, Input_Opt, State_Met, MONTH, RC)
+         IF ( RC /= GC_SUCCESS ) THEN
+            ErrMsg = 'Cannot get pointer to GLOBAL_BR!'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
+
          IF ( LPRT ) CALL DEBUG_MSG( '### CHEMMERC: a GET_GLOBAL_BR' )
 
-         ! Get a pointer to the monthly mean OH from HEMCO (bmy, 3/11/15)
-         IF ( LRED_JNO2 ) THEN
-            CALL HCO_GetPtr( am_I_Root, HcoState, 'JNO2', JNO2,  RC )
+         !-------------------------------------------------------------
+         ! Some oxidants only required by certain mechanisms:
+         !-------------------------------------------------------------
+         IF ( LHALOGENCHEM ) THEN
+            CALL HCO_GetPtr( am_I_Root, HcoState,'GLOBAL_NO2', 
+     &           HEM_NO2, RC )
             IF ( RC /= GC_SUCCESS ) THEN
-               CALL ERROR_STOP ( 'Cannot get pointer to JNO2', LOC )
+               ErrMsg = 'Cannot get pointer to GLOBAL_NO2!'
+               CALL GC_Error( ErrMsg, RC, ThisLoc )
+               RETURN
+            ENDIF
+
+            CALL HCO_GetPtr( am_I_Root, HcoState,'GLOBAL_NO', 
+     &           HEM_NO, RC )
+            IF ( RC /= GC_SUCCESS ) THEN
+               ErrMsg = 'Cannot get pointer to GLOBAL_NO!'
+               CALL GC_Error( ErrMsg, RC, ThisLoc )
+               RETURN
+            ENDIF
+
+            CALL HCO_GetPtr( am_I_Root, HcoState,'GLOBAL_HO2_trop',
+     &           HEM_HO2_trop, RC )
+            IF ( RC /= GC_SUCCESS ) THEN
+               ErrMsg = 'Cannot get pointer to GLOBAL_HO2_trop!'
+               CALL GC_Error( ErrMsg, RC, ThisLoc )
+               RETURN
+            ENDIF
+
+            CALL HCO_GetPtr( am_I_Root, HcoState,'GLOBAL_HO2_strat',
+     &           HEM_HO2_strat, RC )
+            IF ( RC /= GC_SUCCESS ) THEN
+               ErrMsg = 'Cannot get pointer to GLOBAL_HO2_strat!'
+               CALL GC_Error( ErrMsg, RC, ThisLoc )
+               RETURN
+            ENDIF
+
+            CALL HCO_GetPtr( am_I_Root, HcoState,'GLOBAL_ClO',
+     &           HEM_CLO, RC )
+            IF ( RC /= GC_SUCCESS ) THEN
+               ErrMsg = 'Cannot get pointer to GLOBAL_ClO!'
+               CALL GC_Error( ErrMsg, RC, ThisLoc )
+               RETURN
+            ENDIF
+
+            CALL HCO_GetPtr( am_I_Root, HcoState,'GLOBAL_Cl',
+     &           HEM_CL, RC )
+            IF ( RC /= GC_SUCCESS ) THEN
+               ErrMsg = 'Cannot get pointer to GLOBAL_NO2!'
+               CALL GC_Error( ErrMsg, RC, ThisLoc )
+               RETURN
             ENDIF
          ENDIF
 
+         !-------------------------------------------------------------
+
+         IF ( LHGAQCHEM ) THEN
+            CALL HCO_GetPtr( am_I_Root, HcoState,'GLOBAL_HOCl', 
+     &           HEM_HOCL, RC )
+            IF ( RC /= GC_SUCCESS ) THEN
+               ErrMsg = 'Cannot get pointer to GLOBAL_HOCl!'
+               CALL GC_Error( ErrMsg, RC, ThisLoc )
+               RETURN
+            ENDIF
+         ENDIF
+
+         !-------------------------------------------------------------
+
+         IF ( LRED_JNO2 ) THEN
+            CALL HCO_GetPtr( am_I_Root, HcoState, 'JNO2', JNO2,  RC )
+            IF ( RC /= GC_SUCCESS ) THEN
+               ErrMsg = 'Cannot get pointer to JNO2!'
+               CALL GC_Error( ErrMsg, RC, ThisLoc )
+               RETURN
+            ENDIF
+
+            CALL HCO_GetPtr( am_I_Root, HcoState,'GLOBAL_OA',
+     &        HEM_OA, RC )
+            IF ( RC /= GC_SUCCESS ) THEN
+               ErrMsg = 'Cannot get pointer to GLOBAL_OA!'
+               CALL GC_Error( ErrMsg, RC, ThisLoc )
+               RETURN
+            ENDIF
+         ENDIF
+
+         !-------------------------------------------------------------
       ENDIF
       
       !=================================================================
@@ -666,7 +808,7 @@
       !=================================================================
       
       ! Chemistry timestep [s]
-      DTCHEM = GET_TS_CHEM() * 60e+0_fp
+      DTCHEM = GET_TS_CHEM()
 
       ! Compute diurnal scaling for OH
       CALL OHNO3TIME
@@ -681,23 +823,36 @@
       ! Partition Hg(II) between gas and aerosol
       CALL PARTITIONHG2( am_I_Root, Input_Opt, State_Chm, RC )
 
+      IF ( LPRT ) CALL DEBUG_MSG( 'CHEMMERCURY: before do loop' )
+
 !$OMP PARALLEL DO
 !$OMP+DEFAULT( SHARED )
-!$OMP+PRIVATE( I,       J,        L,        K,       N, NN, NSTEPS )
+!$OMP+PRIVATE( I,       J,        L,        K,       N)
+!$OMP+PRIVATE( NN,      NSTEPS )
 !$OMP+PRIVATE( K_DRYD0, K_DRYD2G, K_DRYD2P, K_SALT )
-!$OMP+PRIVATE( C_OH,    C_O3,     C_BR,     C_BRO )
-!$OMP+PRIVATE( K_OH,    K_O3,     K_BR,     K_BRO )
-!$OMP+PRIVATE( K_OX,    K_RED,    K_DEP0,   K_DEP2G, K_DEP2P )
-!$OMP+PRIVATE( F_PBL,   FC,       Faq,      LWC )
+!$OMP+PRIVATE( C_OH,    C_O3,     C_BR,     C_BRO,   C_OA )
+!$OMP+PRIVATE( C_HO2,   C_CLO,    C_CL,     C_NO2,   C_HOCL )
+!$OMP+PRIVATE( K_OH,    K_O3,     K_BR,     K_BRO,   K_AQ_OX )
+!$OMP+PRIVATE( K_CLY,   K_BRY,    K_CL,     K_BROH,  K_BRHO2)
+!$OMP+PRIVATE( K_BRNO2)
+!$OMP+PRIVATE( K_OH_AQ, K_O3_AQ,  K_R1CL,   K_R2CL , K_HOCL)
+!$OMP+PRIVATE( K_BRCLO, K_BRBRO,  K_BRCL,   K_BR2)
+!$OMP+PRIVATE( K_R3ANO2, K_R2A,   K_R2,     K_R1)
+!$OMP+PRIVATE( K_OX,    K_RED,    K_RED2P,  K_DEP0,  K_DEP2G)
+!$OMP+PRIVATE( K_DEP2P )
+!$OMP+PRIVATE( F_PBL,   FC,       Faq,      LWC, RH3 )
 !$OMP+PRIVATE( DT,      KMAX )
 !$OMP+PRIVATE( A,       Xold,     Xnew,     s1, s2, s3, s4 )
-!$OMP+PRIVATE( DEP_Hg0, DEP_HG2G, DEP_HG2P )
+!$OMP+PRIVATE( DEP_Hg0, DEP_Hg2g, DEP_Hg2p )
 !$OMP+PRIVATE( DEP_HG2G_DRY,      DEP_HG2G_SALT,     DEP_HG2P_DRY )
 !$OMP+PRIVATE( DEP_HG2_DRY )
-!$OMP+PRIVATE( GROSS_OX, GROSS_OX_BR, GROSS_OX_OH, GROSS_OX_O3 )
+!$OMP+PRIVATE( GROSS_OX,  GROSS_OX_BR, GROSS_OX_OH, GROSS_OX_O3 )
+!$OMP+PRIVATE( GROSS_OX_BRY, GROSS_OX_CLY )
+!$OMP+PRIVATE( GROSS_OX_BR2, GROSS_OX_BRBRO, GROSS_OX_BRHO2 )
+!$OMP+PRIVATE( GROSS_OX_BRNO2, GROSS_OX_BRCLO, GROSS_OX_BROH )
 !$OMP+PRIVATE( GROSS_RED, NET_OX )
 !$OMP+PRIVATE( AREA_CM2,  DEP_DRY_FLX )
-!$OMP+PRIVATE( F_HG0_DEP, Hg_Cat )
+!$OMP+PRIVATE( F_HG0_DEP, Hg_Cat,      Kstar,       TPL )
 !%%%% NOTE: LOOP IS IN WRONG ORDER, WILL BE MORE EFFICIENT IF REVERSED %%%%
 !%%%% Putting this loop in the correct order causes differences in the %%%%
 !%%%% AD03_HG2_SS diagnostic array when using mp vs sp (mps, 9/3/15)   %%%%
@@ -708,8 +863,9 @@
          !------------------------------------------------------
          ! Dry deposition frequencies, 1/s
          !------------------------------------------------------
-      
+         
          ! Initialize
+         ! These deposition frequencies never become non-zero in this
          K_DRYD0  = 0e+0_fp
          K_DRYD2G = 0e+0_fp
          K_DRYD2P = 0e+0_fp
@@ -782,9 +938,30 @@
          !-------------------------------------------------
 
          ! Concentrations of oxidants, molec/cm3
-         C_O3        = GET_O3( I, J, L,        State_Met )
-         C_OH        = GET_OH( I, J, L,        State_Met )
-         C_BR        = GET_BR( I, J, L, C_BRO, State_Met )
+         C_O3        = GET_O3( I, J, L,        State_Met             )
+         C_OH        = GET_OH( I, J, L,        State_Met             )
+         C_BR        = GET_BR( I, J, L, C_BRO, State_Met, State_Diag )
+
+         IF ( LHALOGENCHEM ) THEN
+            C_NO2       = GET_NO2(  I, J, L, State_Met, HEM_NO(I,J,L),
+     &           HEM_NO2(I,J,L), C_O3 )
+            C_HO2       = GET_HO2(  I, J, L, State_Met )
+            C_CLO       = GET_CLO(  I, J, L, State_Met )
+            C_CL        = GET_CL(   I, J, L, State_Met )
+         ENDIF
+
+         IF ( LHGAQCHEM ) THEN
+            C_HOCL      = GET_HOCl( I, J, L, State_Met )
+         ENDIF
+            
+         IF ( LRED_JNO2 ) THEN
+            C_OA        = HEM_OA(   I, J, L )
+!LL            TPL = GET_TPAUSE_LEVEL( I, J, State_Met )
+            TPL = State_Met%TropLev(I, J)
+            IF ( L >= TPL ) THEN
+               C_OA = 0.0e0_fp
+            ENDIF
+         ENDIF
 
          ! Oxidation rate by O3 and OH, 1/s
          IF (LOHO3CHEM) THEN
@@ -797,8 +974,9 @@
 
          ! Oxidation rate by Br, 1/s (accounts for HgBr intermediate)
          IF (LBRCHEM) THEN
-            K_BR = GET_HGBR_RATE( C_BR, T(I,J,L), 
-     &           State_Met%PMID_DRY(I,J,L), C_OH, METHOD )
+            K_BR = GET_HGBR_RATE( I, J, L, 
+     &                            C_BR, State_Met, 
+     &                            C_OH, METHOD )
          ELSE
             K_BR = 0e+0_fp
          ENDIF
@@ -809,12 +987,80 @@
          ELSE
             K_BRO = 0e+0_fp
          ENDIF
+
+         ! Oxidation rate by Cl-initiated oxidation                            
+         IF (LHALOGENCHEM) THEN
+            K_CLY = GET_HGCL_RATE( I,     J,     L, 
+     &                             C_CL,  C_OH,  C_HO2,
+     &                             C_NO2, C_CLO, C_BRO, 
+     &                             C_BR,  State_Met )
+            K_R1CL = K_CLY(2)
+            K_R2CL = K_CLY(3)
+            K_CL = K_CLY(1)
+
+         ELSE
+            K_CL = 0d0
+            K_R1CL=0d0
+            K_R2CL=0d0
+         ENDIF
+
+         ! Heterogeneous oxidation by OH, O3, and HOCL
+         IF (LHGAQCHEM) THEN
+            K_AQ_OX = GET_HGAQ_RATE( I, J, L, C_BR, C_OH, 
+     &                               C_O3, C_HOCL, 
+     &                               State_Met )
+            K_HOCL  = K_AQ_OX(1)
+            K_OH_AQ = K_AQ_OX(2)
+            K_O3_AQ = K_AQ_OX(3)
+
+         ELSE
+            K_AQ_OX = 0e0_fp
+            K_HOCL  = 0e0_fp
+            K_OH_AQ = 0e0_fp
+            K_O3_AQ = 0e0_fp
+         ENDIF
+
+         ! Oxidation through Hg0 + Br -> HgBr, HgBr + Y -> Hg2
+         IF (LHALOGENCHEM) THEN
+            K_BRY = GET_HGBRY_RATE( I,     J,     L, 
+     &                              C_BR,  C_OH,  C_NO2,
+     &                              C_HO2, C_CLO, C_BRO, 
+     &                              C_CL,  State_Met )
+            K_BR2    = K_BRY(1)
+            K_BROH   = K_BRY(2)
+            K_BRHO2  = K_BRY(3)
+            K_BRNO2  = K_BRY(4)
+            K_BRCLO  = K_BRY(5)
+            K_BRBRO  = K_BRY(6)
+            K_BRCL   = K_BRY(7)
+            ! The following rates for diagnostic purposes:
+            K_R1     = K_BRY(8)
+            K_R2     = K_BRY(9)
+            K_R2A    = K_BRY(10)
+            K_R3ANO2 = K_BRY(11)
+
+         ELSE
+            K_BR2    = 0e+0_fp
+            K_BROH   = 0e+0_fp
+            K_BRHO2  = 0e+0_fp
+            K_BRNO2  = 0e+0_fp
+            K_BRCLO  = 0e+0_fp
+            K_BRBRO  = 0e+0_fp
+            K_BRCL   = 0e+0_fp
+            K_R1     = 0e+0_fp
+            K_R2     = 0e+0_fp
+            K_R2A    = 0e+0_fp
+            K_R3ANO2 = 0e+0_fp
+         ENDIF
          
          ! Total oxidation rate, 1/s
-         K_OX = K_O3 + K_OH + K_BR + K_BRO
+         K_OX =   K_O3    + K_OH    + K_BR    + K_BRO  + K_BR2 
+     &          + K_BRHO2 + K_BRNO2 + K_BRCLO + K_BRCL + K_HOCL
+     &          + K_OH_AQ + K_O3_AQ + K_CL    + K_BRBRO
+     &          + K_BROH 
 
          !---------------------------------------------
-         ! Reduction rate (requires liquid water content)
+         ! Reduction rates (requires liquid water content)
          !---------------------------------------------
 
          ! Get cloud fraction from met fields [unitless]
@@ -831,18 +1077,27 @@
          ! multiplying these quantities by FC AFTER computing the aqueous 
          ! sulfur chemistry within the cloud. (lzh, jaf, bmy, 5/27/11)
          ! Adopted for mercury chemistry (yzh, 11/9/2011)
-         LWC     = SAFE_DIV( LWC, FC, 0e+0_fp )
-
+         IF ( LRED_CLOUDONLY ) THEN
+            LWC     = SAFE_DIV( LWC, FC, 0e+0_fp )
+         ENDIF
 
          ! Define fraction of in-cloud Hg(II) which is in aqueous solution
          ! [dimensionless]
-         Faq  = ( K0 * R_DRY * T(I,J,L) * LWC )
+
+         ! Make partitioning to water temperature-dependent
+         ! (cpt, 1/31/2018) Should just use COMPUTE_L2G
+         Kstar = K0 * EXP( Hg2CR * ( ( 1e0_fp / T(I,J,L) ) 
+     &        - ( 1e0_fp / 298e0_fp ) ) )
+         Faq  = ( Kstar * R_DRY * T(I,J,L) * LWC )
          Faq  = Faq / ( 1e+0_fp + Faq )
 
+
+         RH3 = State_Met%RH(I,J,L)
+         
          ! Cl- in sea-salt aerosol enhances solubility 2000X in MBL
          IF (LRED_JNO2 .AND. (F_PBL >0.1) .AND. 
      &        IS_WATER(I,J, State_Met )) THEN
-            Faq = ( K0 * 2e+3_fp * R_DRY * T(I,J,L) * LWC )
+            Faq = ( Kstar * 2e+3_fp * R_DRY * T(I,J,L) * LWC )
             Faq = Faq / ( 1e+0_fp + Faq )
          ENDIF
          
@@ -853,26 +1108,43 @@
          ! by the cloud fraction after the aqueous chemistry
          ! has been done.  (lzh, jaf, bmy, 5/27/11)
          ! Adopted for mercury chemistry (yzh, 11/9/2011)
-         Faq =  Faq * FC
+         IF ( LRED_CLOUDONLY ) THEN
+            Faq =  Faq * FC
+         ENDIF
 
          ! Define K for the reduction reaction. 
          IF (LRED_JNO2) THEN
-            K_RED = K_RED_JNO2 * Faq * GET_JNO2(I,J,L,State_Met)
+            ! Reduction happens to aqueous fraction of Hg2
+            K_RED = K_RED_JNO2 * Faq 
+     &              * GET_JNO2( I, J, L, State_Met ) 
+     &              * C_OA
+
+            IF (RH3 > 35.0e0_fp) THEN
+               ! Reduction of HgP (35% RH is for presence of water)
+               K_RED2P = K_RED_JNO2 
+     &                   * GET_JNO2( I, J, L, State_Met ) 
+     &                   * C_OA
+            ELSE
+               K_RED2P = 0e0_fp
+            ENDIF
+
          ELSE
             ! Include the fraction of 
             ! Hg(II) in air within the Kreduction & 
             ! scale to OH concentration [/s]
-            K_RED = K_RED_OH * Faq * C_OH
+            K_RED =   K_RED_OH * Faq * C_OH
+            K_RED2P = K_RED
          ENDIF
-         
+
          !---------------------------------------------    
          ! Round off small chemical rates
          !---------------------------------------------    
          
          ! Round very small K_OX, K_RED to prevent numerical errors
          ! (jaf, cdh, 11/17/11)
-         IF ( K_OX  < 1e-10_fp ) K_OX  = 0e+0_fp
-         IF ( K_RED < 1e-10_fp ) K_RED = 0e+0_fp
+         IF ( K_OX  < 1e-10_fp )   K_OX    = 0e+0_fp
+         IF ( K_RED < 1e-10_fp )   K_RED   = 0e+0_fp
+         IF ( K_RED2P < 1e-10_fp ) K_RED2P = 0e+0_fp
 
          !==============================================================
          ! CHEMICAL SOLVER
@@ -893,7 +1165,7 @@
          !==============================================================
          
          ! Largest rate, 1/s
-         KMAX = K_OX + K_RED + K_DEP0 + K_DEP2G + K_DEP2P
+         KMAX = K_OX + K_RED + K_RED2P + K_DEP0 + K_DEP2G + K_DEP2P
 
          ! Number of internal time steps
          ! Choose so there are 5 steps within the shortest timescale
@@ -911,16 +1183,16 @@
          A(:,:) = 0e+0_fp
             
          ! Row 1: d(Hg0)/dt = -(K_OX+K_DEP0) * Hg0 + K_RED * (Hg2g+Hg2p)
-         A(1,1) = -K_DEP0-K_OX
-         A(1,2) = +K_RED
-         A(1,3) = +K_RED
+         A(1,1) = - K_DEP0 - K_OX
+         A(1,2) = + K_RED
+         A(1,3) = + K_RED2P
 
          ! Row 2: d(Hg2g)/dt = K_OX * Hg0  - (K_RED + K_DEP2G) * Hg2g
-         A(2,1) = +K_OX
-         A(2,2) = -K_DEP2G - K_RED
+         A(2,1) = + K_OX
+         A(2,2) = - K_DEP2G - K_RED
 
-         ! Row 3: d(Hg2p)/dt = -(K_DEP2P + K_RED) * Hg2p 
-         A(3,3) = -K_DEP2P - K_RED
+         ! Row 3: d(Hg2p)/dt = -(K_DEP2P + K_RED2P) * Hg2p 
+         A(3,3) = - K_DEP2P - K_RED2P
 
          ! Row 4-6 accumulate dry dep of Hg0, Hg2g, Hg2p, respectively
          A(4,1) = K_DEP0
@@ -932,7 +1204,7 @@
             
          ! Row 8-9 accumulate gross reduction of Hg2g, Hg2p, respectively
          A(8,2) = K_RED
-         A(9,3) = K_RED
+         A(9,3) = K_RED2P
 
          !------------------------------------------------
          ! Run solver for each Hg regional tag
@@ -957,20 +1229,20 @@
                s2 = matmul(A,Xold+DT/2e+0_fp*s1)
                s3 = matmul(A,Xold+DT/2e+0_fp*s2)
                s4 = matmul(A,Xold+DT*s3)
-               Xnew = Xold + DT/6e+0_fp * (s1 +2*s2 + 2*s3 + s4 )
+               Xnew = Xold + DT/6e+0_fp * (s1 + 2*s2 + 2*s3 + s4 )
 
                ! Make sure concentrations are not negative
                IF ( (Xnew(1) < 0e+0_fp) .or. (Xnew(2)<0) .or.
      &              (Xnew(3)<0) ) THEN
                   WRITE(6,101) I,J,L,K,NSTEPS, 
-     &                 Xnew(1),Xnew(2),Xnew(3),
-     &                 Xold(1),Xold(2),Xold(3),
-     &                 K_OX, K_RED, K_DEP0, K_DEP2G, K_DEP2P
+     &                 Xnew(1), Xnew(2), Xnew(3),
+     &                 Xold(1), Xold(2), Xold(3),
+     &                 K_OX, K_RED, K_RED2P, K_DEP0, K_DEP2G, K_DEP2P
  101              FORMAT( 'Negative Hg in Box (I,J,L):', 3I3,
      &                 ', step',I3,' out of ',I3,
-     &                 ', Initial conc: ',3E10.3,
      &                 ', Current conc: ',3E10.3,
-     &                 ', Rate coeffs: ',6E10.3 )
+     &                 ', Initial conc: ',3E10.3, 
+     &                 ', Rate coeffs: ',7E10.3 )
                   CALL ERROR_STOP( 'Negative Hg concentration',
      &                 ' MERCURY_MOD: CHEMMERCURY' )
                ENDIF
@@ -997,16 +1269,35 @@
             GROSS_OX = Xnew(7)
             GROSS_RED= Xnew(8)+Xnew(9)
 
-            ! Apportion gross oxidation between O3 and OH [kg]
+            ! Apportion gross oxidation between oxidants [kg]
             IF ( (K_OX   < SMALLNUM) .OR. 
      &           (GROSS_OX < SMALLNUM) ) THEN
-               GROSS_OX_OH = 0e+0_fp
-               GROSS_OX_BR = 0e+0_fp
-               GROSS_OX_O3 = 0e+0_fp
+               GROSS_OX_OH    = 0e+0_fp
+               GROSS_OX_BR    = 0e+0_fp
+               GROSS_OX_O3    = 0e+0_fp
+               GROSS_OX_CLY   = 0e+0_fp
+               GROSS_OX_BRY   = 0e+0_fp
+               GROSS_OX_BR2   = 0e+0_fp 
+               GROSS_OX_BRBRO = 0e+0_fp 
+               GROSS_OX_BRCLO = 0e+0_fp 
+               GROSS_OX_BROH  = 0e+0_fp 
+               GROSS_OX_BRHO2 = 0e+0_fp 
+               GROSS_OX_BRNO2 = 0e+0_fp 
             ELSE
-               GROSS_OX_OH = GROSS_OX * K_OH / K_OX
-               GROSS_OX_BR = GROSS_OX * K_BR / K_OX
-               GROSS_OX_O3 = GROSS_OX * K_O3 / K_OX
+               GROSS_OX_OH  = GROSS_OX * ( K_OH + K_OH_AQ ) / K_OX
+               GROSS_OX_BR  = GROSS_OX * ( K_BR + K_BRO   ) / K_OX
+               GROSS_OX_O3  = GROSS_OX * ( K_O3 + K_O3_AQ ) / K_OX
+               GROSS_OX_CLY = GROSS_OX * ( K_CL           ) / K_OX
+               GROSS_OX_BRY = GROSS_OX * ( K_BR2 
+     &                       + K_BRBRO + K_BRCLO
+     &                       + K_BROH + K_BRHO2 + K_BRNO2 ) / K_OX
+               ! specific hgbr products
+               GROSS_OX_BR2   = GROSS_OX * ( K_BR2   ) / K_OX
+               GROSS_OX_BRBRO = GROSS_OX * ( K_BRBRO ) / K_OX
+               GROSS_OX_BRCLO = GROSS_OX * ( K_BRCLO ) / K_OX
+               GROSS_OX_BROH  = GROSS_OX * ( K_BROH  ) / K_OX
+               GROSS_OX_BRHO2 = GROSS_OX * ( K_BRHO2 ) / K_OX
+               GROSS_OX_BRNO2 = GROSS_OX * ( K_BRNO2 ) / K_OX
             ENDIF
                
             ! Apportion deposition between dry deposition and sea salt [kg]
@@ -1041,29 +1332,28 @@
             ! can write to the diagnostic arrays. (bmy, 4/20/16)
             !=================================================================
 !$OMP CRITICAL
-            IF ( LDYNOCEAN ) THEN
-
-               ! Archive dry deposited Hg2 for Hg category # N
-               CALL ADD_Hg2_DD( I, J, N, DEP_Hg2G )
-
-               ! Archive dry-deposited HgP for Hg category # N
-               CALL ADD_HgP_DD( I, J, N, DEP_Hg2P )
-
-            ENDIF           
-
+            ! Archive dry-deposited Hg2
+            CALL ADD_Hg2_DD( I, J, N, DEP_Hg2G )
+            ! Archive dry-deposited HgP for Hg category # N
+            CALL ADD_HgP_DD( I, J, N, DEP_Hg2P )
+            
             ! Add deposited Hg(II) to the snowpack
             IF ( LHGSNOW ) THEN
                DEP_HG2_DRY =  DEP_HG2g_DRY + DEP_HG2p_DRY
                CALL ADD_HG2_SNOWPACK( I, J, N, DEP_HG2_DRY, 
-     &                                         State_Met    )
+     &                                State_Met, State_Chm, State_Diag )
             ENDIF           
 !$OMP END CRITICAL
 
 #if defined( BPCH_DIAG )
             !=================================================================
-            ! ND44 diagnostic: drydep flux of Hg(II) [molec/cm2/s]
+            ! %%%%% ND44 (bpch) DIAGNOSTIC %%%%%
+            !
+            ! Dry deposition flux of Hg(II) in molec/cm2/s
             !=================================================================
-            IF ( ( ND44 > 0 .OR. LGTMM ) .AND. (.NOT. LNLPBL) ) THEN
+            IF ( ( ND44 > 0 .OR. LGTMM )  .and. 
+     &           ( .not. LNLPBL        )  .and.
+     &           ( F_PBL > 0.1_fp      ) ) THEN
 
                ! Grid box surface area [cm2]
                AREA_CM2 = GET_AREA_CM2( I, J, L )
@@ -1096,28 +1386,84 @@
      &         AD44(I,J,HgP_Id_List(N),1) + DEP_DRY_FLX
 
             ENDIF
-#endif
 
             !==============================================================
-            ! ND03 diagnostic: Hg(II) production [kg]
+            ! %%%%% ND03 (bpch) DIAGNOSTIC %%%%%
+            !
+            ! Hg(II) production
+            ! Concentration of Br and BrO
+            ! Loss of Hg2 by seasalt
             !==============================================================
             IF ( ND03 > 0 .AND. L <= LD03 ) THEN 
 
                ! Store chemistry diagnostics only for total species
-               IF ( Hg0_Id_List(N) == ID_HG_TOT) THEN
+               !--------------------------------------------------------------
+               ! Prior to 10/24/18:
+               ! According to Colin Thackray, these are Hg2 diagnostics,
+               ! that should only get updated once per timestep, for the
+               ! total Hg2 species (i.e. category N==1).  Therefore, these
+               ! diagnostics will not archive the tagged Hg2 species.
+               !
+               ! Also, the IF ( Hg0_Id_List(N) == ID_Hg_TOT ) is confusing,
+               ! but in essence it is just testing if N ==1.  Therefore we
+               ! have replaced that with IF ( N==1 ) which is much clearer
+               ! to the reader. (bmy, 10/24/18)
+               !IF ( Hg0_Id_List(N) == ID_Hg_TOT) THEN
+               !--------------------------------------------------------------
+               IF ( N == 1 ) THEN
 
                   ! Net oxidation [kg]
                   NET_OX = GROSS_OX - GROSS_RED
 
-                  AD03_Hg2_Hg0(I,J,L,N)= AD03_Hg2_Hg0(I,J,L,N) +
-     &                 NET_OX
-                  AD03_Hg2_Br(I,J,L,N) = AD03_Hg2_Br(I,J,L,N)  + 
-     &                 GROSS_OX_BR 
-                  AD03_Hg2_OH(I,J,L,N) = AD03_Hg2_OH(I,J,L,N)  + 
-     &                 GROSS_OX_OH
-                  AD03_Hg2_O3(I,J,L,N) = AD03_Hg2_O3(I,J,L,N)  + 
-     &                 GROSS_OX_O3
+                  ! Production of Hg2 from Hg0 [kg]
+                  AD03_Hg2_Hg0(I,J,L,N)  = AD03_Hg2_Hg0(I,J,L,N) 
+     &                                     + NET_OX
 
+                  ! Production of Hg2 from Br [kg]
+                  AD03_Hg2_Br(I,J,L,N)   = AD03_Hg2_Br(I,J,L,N)   
+     &                                     + GROSS_OX_BR 
+
+                  ! Production of Hg2 from OH [kg]
+                  AD03_Hg2_OH(I,J,L,N)   = AD03_Hg2_OH(I,J,L,N)   
+     &                                     + GROSS_OX_OH
+
+                  ! Production of Hg2 from O3 [kg]
+                  AD03_Hg2_O3(I,J,L,N)   = AD03_Hg2_O3(I,J,L,N)   
+     &                                     + GROSS_OX_O3
+
+                  ! Production of Hg2 from BrY [kg]
+                  AD03_Hg2_BRY(I,J,L,N)  = AD03_Hg2_BRY(I,J,L,N)  
+     &                                     + GROSS_OX_BRY
+
+                  ! Production of Hg2 from ClY [kg]
+                  AD03_Hg2_CLY(I,J,L,N)  = AD03_Hg2_CLY(I,J,L,N) 
+     &                                     + GROSS_OX_CLY
+
+                  ! Production of Hg2 from Br2 [kg]
+                  AD03_Hg2_Br_Y(I,J,L,1) = AD03_Hg2_Br_Y(I,J,L,1)
+     &                                     + GROSS_OX_BR2
+
+                  ! Production of Hg2 from BrBrO [kg]
+                  AD03_Hg2_Br_Y(I,J,L,2) = AD03_Hg2_Br_Y(I,J,L,2)
+     &                                     + GROSS_OX_BRBRO
+
+                  ! Production of Hg2 from BrHO2 [kg]
+                  AD03_Hg2_Br_Y(I,J,L,3) = AD03_Hg2_Br_Y(I,J,L,3)
+     &                                     + GROSS_OX_BRHO2
+
+                  ! Production of Hg2 from BrNO2 [kg]
+                  AD03_Hg2_Br_Y(I,J,L,4) = AD03_Hg2_Br_Y(I,J,L,4)
+     &                                     + GROSS_OX_BRNO2
+
+                  ! Production of Hg2 from BrClO [kg]
+                  AD03_Hg2_Br_Y(I,J,L,5) = AD03_Hg2_Br_Y(I,J,L,5)
+     &                                     + GROSS_OX_BRCLO
+
+                  ! Production of Hg2 from BrOH [kg]
+                  AD03_Hg2_Br_Y(I,J,L,6) = AD03_Hg2_Br_Y(I,J,L,6)
+     &                                     + GROSS_OX_BROH
+
+                  ! Concentrations of Br and BrO [molec/cm3]
                   AD03_Br(I,J,L,1) = AD03_Br(I,J,L,1) + C_BR
                   AD03_Br(I,J,L,2) = AD03_Br(I,J,L,2) + C_BRO
 
@@ -1131,14 +1477,199 @@
                   AD03_Hg2_SSR(I,J,N) = AD03_Hg2_SSR(I,J,N) + K_SALT
                ENDIF
                
-            ENDIF               
+            ENDIF  
+#endif
 
+#if defined( NC_DIAG ) 
+            !===========================================================
+            ! %%%%% HISTORY (aka netCDF diagnostics) %%%%%
+            !
+            ! Dry deposition flux of Hg(II) in molec/cm2/s
+            !
+            ! NOTE: This is only updated when using the full PBL mixing
+            ! option (aka TURBDAY).  When you use the non-local PBL 
+            ! mixing, option (aka VDIFF), the dry deposition fluxes are 
+            ! applied at the same time the PBL mixing is done.
+            !===========================================================
+            IF ( ( .not. LNLPBL ) .and. ( F_PBL > 0.1_fp ) ) THEN
+
+               ! Grid box surface area [cm2]
+               AREA_CM2 = GET_AREA_CM2( I, J, L )
+
+               ! Archive Hg(0) drydep flux [molec/cm2/s]
+               IF ( State_Diag%Archive_DryDepChm   .or.
+     &              State_Diag%Archive_DryDep    ) THEN
+                  
+                  ! Hg0 species index
+                  NN = Hg0_Id_List(N)
+
+                  ! Amt of Hg(0) lost to drydep [molec/cm2/s]
+                  DEP_DRY_FLX  = DEP_HG0 * AVO / ( 1.e-3_fp *
+     &                 State_Chm%SpcData(NN)%Info%emMW_g ) / 
+     &                 ( AREA_CM2 * DTCHEM )
+
+                  ! Archive to State_Diag (sum over levels)
+                  State_Diag%DryDepChm(I,J,NN) = 
+     &            State_Diag%DryDepChm(I,J,NN) + DEP_DRY_FLX
+               ENDIF
+
+               ! Archive Hg(II) drydep flux [molec/cm2/s]
+               IF ( State_Diag%Archive_DryDepChm   .or. 
+     &              State_Diag%Archive_DryDep    ) THEN
+
+                  ! Hg2 species index
+                  NN = Hg2_Id_List(N)
+
+                  ! Amt of Hg(II)g lost to drydep [molec/cm2/s]
+                  DEP_DRY_FLX  = DEP_HG2G_DRY * AVO / ( 1.e-3_fp *
+     &               State_Chm%SpcData(NN)%Info%emMW_g ) / 
+     &               ( AREA_CM2 * DTCHEM )
+
+                  ! Archive to State_Diag (sum over levels)
+                  State_Diag%DryDepChm(I,J,NN) = 
+     &            State_Diag%DryDepChm(I,J,NN) + DEP_DRY_FLX
+               ENDIF
+
+               ! Archive Hg(0) drydep flux [molec/cm2/s]
+               IF ( State_Diag%Archive_DryDepChm   .or.
+     &              State_Diag%Archive_DryDep    ) THEN
+
+                  ! HgP species index
+                  NN = HgP_Id_List(N)
+
+                  ! Amt of Hg(II)p lost to drydep [molec/cm2/s]
+                  DEP_DRY_FLX  = DEP_HG2P_DRY * AVO / ( 1.e-3_fp *
+     &                State_Chm%SpcData(NN)%Info%emMW_g ) / 
+     &                ( AREA_CM2 * DTCHEM )
+
+                  ! Archive to State_Diag (sum over levels)
+                  State_Diag%DryDepChm(I,J,NN) = 
+     &            State_Diag%DryDepChm(I,J,NN) + DEP_DRY_FLX
+               ENDIF
+            ENDIF
+
+            !===========================================================
+            ! %%%%% HISTORY (aka netCDF diagnostics) %%%%%
+            !
+            ! Hg(II) production
+            ! Concentration of Br and BrO
+            ! Loss of Hg2 by seasalt
+            ! 
+            ! Accorrding to Colin Thackray, these are Hg2 diagnostics,
+            ! that should only get updated once per timestep, for the
+            ! total Hg2 species (i.e. category N==1).  Therefore, these
+            ! diagnostics will not archive the tagged Hg2 species.
+            !===========================================================
+            IF ( N == 1 ) THEN
+
+               ! Net oxidation [kg]
+               NET_OX = GROSS_OX - GROSS_RED
+
+               ! Concentrations of Br [molec/cm3]
+               IF ( State_Diag%Archive_ConcBr ) THEN
+                  State_Diag%ConcBr(I,J,L) = C_Br
+               ENDIF
+
+               ! Concentrations of BrO [molec/cm3]
+               IF ( State_Diag%Archive_ConcBrO) THEN
+                  State_Diag%ConcBrO(I,J,L) = C_BrO
+               ENDIF
+
+               ! Production of Hg2 from Br [kg/s]
+               IF ( State_Diag%Archive_ProdHg2fromHg0 ) THEN
+                  State_Diag%ProdHg2fromBr(I,J,L) = 
+     &               GROSS_OX_BR / DTCHEM
+               ENDIF
+
+               ! Production of Hg2 from BrY [kg/s]
+               IF ( State_Diag%Archive_ProdHg2fromBrY ) THEN
+                  State_Diag%ProdHg2fromBrY(I,J,L) =
+     &               GROSS_OX_BRY / DTCHEM
+               ENDIF
+
+               ! Production of Hg2 from ClY [kg/s]
+               IF ( State_Diag%Archive_ProdHg2fromClY ) THEN
+                  State_Diag%ProdHg2FromClY(I,J,L) =
+     &               GROSS_OX_CLY / DTCHEM
+               ENDIF
+
+               ! Production of Hg2 from Hg0 [kg/s]
+               IF ( State_Diag%Archive_ProdHg2fromHg0 ) THEN
+                  State_Diag%ProdHg2fromHg0(I,J,L) =
+     &               NET_OX / DTCHEM
+               ENDIF
+
+               ! Production of Hg2 from O3 [kg/s]
+               IF ( State_Diag%Archive_ProdHg2fromO3 ) THEN
+                  State_Diag%ProdHg2fromO3(I,J,L) =
+     &               GROSS_OX_O3 / DTCHEM
+               ENDIF
+
+               ! Production of Hg2 from OH [kg/s]
+               IF ( State_Diag%Archive_ProdHg2fromOH ) THEN
+                  State_Diag%ProdHg2fromOH(I,J,L) =
+     &               GROSS_OX_OH / DTCHEM
+               ENDIF
+
+               ! Production of Hg2 from HgBr + Br2 [kg/s]
+               IF ( State_Diag%Archive_ProdHg2fromHgBrPlusBr2 ) THEN
+                  State_Diag%ProdHg2fromHgBrPlusBr2(I,J,L) =
+     &               GROSS_OX_BR2 / DTCHEM
+               ENDIF
+
+               ! Production of Hg2 from HgBr + BrBrO [kg/s]
+               IF ( State_Diag%Archive_ProdHg2fromHgBrPlusBrBrO ) THEN
+                  State_Diag%ProdHg2fromHgBrPlusBrBrO(I,J,L) = 
+     &               GROSS_OX_BRBRO / DTCHEM
+               ENDIF
+
+               ! Production of Hg2 from HgBr + BrClO [kg/s]
+               IF ( State_Diag%Archive_ProdHg2fromHgBrPlusBrClO ) THEN
+                  State_Diag%ProdHg2fromHgBrPlusBrClO(I,J,L) =
+     &               GROSS_OX_BRCLO / DTCHEM
+               ENDIF
+
+               ! Production of Hg2 from HgBr + BrHO2 [kg/s]
+               IF ( State_Diag%Archive_ProdHg2fromHgBrPlusBrHO2 ) THEN
+                  State_Diag%ProdHg2fromHgBrPlusBrHO2(I,J,L) = 
+     &               GROSS_OX_BRHO2 / DTCHEM
+               ENDIF
+
+               ! Production of Hg2 from HgBr + BrNO2 [kg/s]
+               IF ( State_Diag%Archive_ProdHg2fromHgBrPlusBrNO2 ) THEN
+                  State_Diag%ProdHg2fromHgBrPlusBrNO2(I,J,L) = 
+     &               GROSS_OX_BRNO2 / DTCHEM
+               ENDIF
+
+               ! Production of Hg2 from HgBr + BrOH [kg/s]
+               IF ( State_Diag%Archive_ProdHg2fromHgBrPlusBrOH ) THEN
+                  State_Diag%ProdHg2fromHgBrPlusBrOH(I,J,L) = 
+     &               GROSS_OX_BROH / DTCHEM
+               ENDIF
+
+               ! Loss Hg2 by sea salt aerosol
+               ! NOTE: Sum contributions from PBL into the diagnostic
+               IF ( State_Diag%Archive_LossHg2bySeaSalt ) THEN
+                  State_Diag%LossHg2bySeaSalt(I,J,L) = 
+     &               DEP_HG2G_SALT / DTCHEM
+               ENDIF
+
+               ! Sea-salt loss rate diagnostic [/s]
+               IF ( L == 1 ) THEN
+                  IF ( State_Diag%Archive_LossRateHg2bySeaSalt ) THEN
+                     State_Diag%LossRateHg2bySeaSalt(I,J) = K_SALT
+                  ENDIF
+               ENDIF
+
+            ENDIF
+#endif
          ENDDO
 
       ENDDO
       ENDDO
       ENDDO
 !$OMP END PARALLEL DO
+
 
       ! Partition Hg(II) between gas and aerosol
       CALL PARTITIONHG2( am_I_Root, Input_Opt, State_Chm, RC )
@@ -1155,6 +1686,244 @@
 !------------------------------------------------------------------------------
 !                  GEOS-Chem Global Chemical Transport Model                  !
 !------------------------------------------------------------------------------
+!BOP                                                                           
+! !IROUTINE: get_hgaq_rate                                                     
+!                                                                              
+! !DESCRIPTION: Function GET\_HGAQ\_RATE computes the effective 1st order      
+!  conversion rate of Hg(0) to Hg(II) via aqueous-phase oxidation in cloud     
+!  droplets  for three reactions: HOCl, O3, and OH (2-step). hmh 11/19/14      
+!\\                                                                            
+!\\                                                                            
+! !INTERFACE:                                                                  
+      FUNCTION GET_HGAQ_RATE(I, J, L, BR,OH,O3,HOCL,State_Met)
+     &         RESULT( K_AQ_OX )
+!                                                                              
+! !USES:                                                                       
+!                                                                              
+      USE State_Met_Mod,      ONLY : MetState
+      USE CMN_SIZE_MOD  ! Size parameters                                      
+      USE ERROR_MOD,          ONLY : SAFE_DIV
+!                                                                              
+! !INPUT PARAMETERS:                                                           
+!                                                                              
+      ! BR        : Concentration of atomic Br [molec/cm3]                     
+      ! OH        : Concentration of OH  [molec/cm3]                          
+      ! O3        : Concentration of O3  [molec/cm3]                           
+      ! HOCL      : Concentration of HOCL[molec/cm3]                           
+      ! State_Met : Meteorology state object
+      INTEGER,            INTENT(IN)  :: I, J, L 
+      REAL(fp),           INTENT(IN)  :: BR, OH, O3, HOCL
+      TYPE(MetState),     INTENT(IN)  :: State_Met    ! Meteorology State obj
+!                                                                              
+! !RETURN VALUE:                                                     
+                                                                           
+      ! Effective 1st order loss rate of Hg(0) [1/s] for:                      
+      ! reaction with aqueous (1) HOCl, (2) OH, and (3) O3                     
+      REAL(fp)                        :: K_AQ_OX(3)
+!                                                                              
+!  References:                                                                 
+!  ============================================================================
+!  1. Wang and Pehkonen, 2004                                                  
+!  2. Pehkonen and Lin, 1997                                                   
+!  3. Buxton et al., 1988                                                      
+!  4. Munthe, 1992                                                             
+!                                                                              
+!  !REVISION HISTORY:                                                          
+!   19 November 2014 - H. Horowitz (HMH) - initial version finalized           
+!   30 September 2017 - C. Thackray (cpt) - merged into v11
+!EOP                                                                           
+!------------------------------------------------------------------------------
+!BOC                                                                           
+!                                                                              
+! !LOCAL VARIABLES:                                                            
+
+      REAL(fp)               :: KH_Hg0, KH_HOCl, KH_O3, delta_OH
+      REAL(fp)               :: FC,     LWC
+      REAL(fp)               :: F_Hg0,  F_HOCl,  F_O3
+      REAL(fp)               :: R_HOCl, R_OH,    R_O3
+      REAL(fp)               :: Nair, T, P
+!                                                                              
+! !DEFINED PARAMETERS:                                                         
+!                                                                              
+      ! Gas constant                                                           
+      REAL(fp), PARAMETER    :: R_L_atm        = 8.2e-2_fp ! [L atm /K /mol]   
+      REAL(fp), PARAMETER    :: R_m3_Pa        = 8.31e0_fp ! [m3 Pa /K /mol] 
+
+      ! K for aqueous reactions  [L /mol /s]                                   
+      REAL(fp), PARAMETER    :: kHOCl          = 2.0e6_fp  ! Source: Wang and Pehkonen
+      REAL(fp), PARAMETER    :: kOH            = 2.0e9_fp  ! Source: Lin and Pehkonen
+      REAL(fp), PARAMETER    :: kO3            = 4.7e7_fp  ! Source: Munthe, 1992
+
+      !=================================================================      
+      ! GET_HGAQ_RATE begins here!                                             
+      !=================================================================       
+
+      ! T      : Temperature [K]                                               
+      ! P      : Pressure [hPa]                                                
+      T = State_Met%T(I,J,L)
+      P = State_Met%PMID_DRY(I,J,L)
+
+         !==============================================================       
+         ! Calculate cloud parameters for aqueous Hg chemistry                 
+         !==============================================================       
+
+         ! Get cloud fraction from met fields                                  
+         FC      = State_Met%CLDF(I,J,L)
+
+         ! Get liquid water content [m3 H2O/m3 air] within cloud from met flds 
+         ! Units: [kg H2O/kg air] * [kg air/m3 air] * [m3 H2O/1e3 kg H2O]      
+         LWC   = State_Met%QL(I,J,L) * State_Met%AIRDEN(I,J,L) * 1e-3_fp
+
+         ! LWC is a grid-box averaged quantity. To improve the representation  
+         ! of sulfate chemistry, we divide LWC by the cloud fraction and       
+         ! compute sulfate chemistry based on the LWC within the cloud.  We    
+         ! get the appropriate grid-box averaged mass of SO2 and sulfate by    
+         ! multiplying these quantities by FC AFTER computing the aqueous      
+         ! sulfur chemistry within the cloud. (lzh, jaf, bmy, 5/27/11)         
+         LWC     = SAFE_DIV( LWC, FC, 0e0_fp )
+
+! Henry's law constants (M per atm)                                            
+         ! Hg(0):                                                              
+         KH_Hg0 = 1.28e-1_fp * exp(2482e0_fp * ((1/T) - 1/298.15e0_fp))
+         ! Toyota et al. 2014 citing Sanemasa 1975                             
+         ! or KH_Hg0 = 1.1E-1 ! Hynes et al. 2009                              
+
+         ! HOCl:                                                               
+         KH_HOCl = 6.6e2_fp * exp(5900e0_fp * ((1/T)-1/298.15e0_fp))
+         ! NIST webbook, original citation: Huthwelker et al 1995              
+         ! (http://www.mpch-mainz.mpg.de/~sander/res/henry.html)               
+         ! fairly close to average value of other studies:                     
+         ! others: 7.3E2 ; 4.8E2; 9.3E2; 2.6E2*exp(5100.*(1/T-1/298.15))       
+
+         ! O3:                                                                 
+         KH_O3 = 1.1e-2_fp * exp(2400e0_fp * ((1/T) - 1/298.15e0_fp))
+! Jacob, 1986                                                          
+         ! representative of average of values from 10 papers cited in NIST    
+
+         ! OH:                                                                 
+         ! assume a simple parameterization from Jacob et al. (2005) where     
+         ! [OH(aq)] = delta*[OH(g)] where [OH(g)] is the gas-phase concentrati 
+         ! calculated in GEOS-Chem without consideration of aqueous-phase cloud
+         ! chemistry, and delta = 1E-19 M cm3 molecule-1 is chosen to fit the  
+         ! cloud chemistry model results of Jacob (1986).                      
+         delta_OH = 1e-19_fp ! M cm3 molecule-1                                   
+
+         ! Aqueous oxidation reactions for Hg: HOCl and OCl                    
+         ! Both reactions have similar rate constants within 5%.               
+         ! Therefore we will not explicitly model the dissociation of HOCl     
+         ! once dissolved in the cloud droplet, but group ([HOCl]+[OCl-])      
+         ! as equal to the initial dissolution of HOCl(g) based on Henry's     
+         ! Law.                                                                
+
+         ! (1) Hg0(aq) + HOCl(aq) -> Hg(2+) + OH- + Cl- , k1=kHOCl             
+
+         ! rate expression: R_HOCl = kHOCl[Hg0(aq)][HOCl(aq)]                  
+         ! we can rewrite [Hg0(aq)] and [HOCl(aq)] in terms of the partial     
+         ! equilibrium pressure and the Henry's law constants:                 
+         ! kHOCl * pHg0 * KH_Hg0 * pHOCl * KH_HOCl                             
+
+         ! to get the partial pressure applied only over the cloud droplets:   
+            ! Let us define a fraction of gas phase of A species               
+            ! in equilibrium with aqueous phase as                             
+            !                                                                  
+            !        F_A  = 1/(1+f),                                           
+            !                                                                  
+            ! where  f   = hA * R * T * LWC,                                   
+            !        hA  = Henry's constant,                                   
+            !        R   = gas constant (in terms of atm not Pa!),             
+            !        T   = temperature in kelvin,                              
+            !        LWC = liquid water content [m3/m3] of cloud               
+
+         ! Then, and recall that pX = c_x * P                                  
+            ! c_x is the mixing ratio in mol/mol                               
+            ! P is the total pressure                                          
+         ! c_x = n_x / n_a                                                     
+            ! n_x is the number density of x (in molec/cm3), aka [X(g)]        
+            ! n_a is the number density of air in the same units.              
+         ! n_a = P*1E2*Av/(RT)*1E-6                                            
+            ! P is the pressure in hPa                                         
+            ! Av is avogadro's number to convert from moles to molecules       
+            ! R is the gas constant (8.314)                                    
+            ! factors to convert hPa to Pa (1E2) and m-3 to cm-3 (1E-6).       
+
+         ! now our rate expression is as follows (converting P from hPa to atm)
+         ! R_HOCl = k * pHg0              * KH_Hg0 * pHOCl       * KH_HOCl     
+         ! R_HOCl = k * (P/1013) * c_Hg0 * F_Hg0 * KH_Hg0 * (P/1013) * c_HOCl *
+         !F_HOCl* KH_HOCl 
+             ! for Hg0, similar to HOCl:                                      
+         ! c_Hg0 = nHg0/na = [Hg0(g)]/(P*1E2*Av/(RT)*1E-6)                     
+         ! F_Hg0 = 1/(1+KH_Hg0*R*T*LWC)                                        
+
+         ! This rate expression R_HOCl gives us the rate of Hg0 oxidation in   
+         ! units of M / s, or moles per L of cloudwater / s.                   
+         ! To convert back to units of molecules/cm3 of air/s, we need to use
+         ! LWC of cloudwater and the cloud fraction:     
+         ! R_HOCl(mol/L cloud H2O/s)* LWC (m3 cloud H2O/m3 air in cloud)* FC 
+         !(vol cloud/vol air)                                                  
+         !       * Av * 1000 L H2O/m3 H2O * (1E-6 m3 air/cm3 air) = rate in 
+         !molec/cm3/s                                                        
+
+
+         ! calculate fractions                                                 
+         F_Hg0 = 1e0_fp/(1e0_fp+KH_Hg0*R_L_atm*T*LWC) ! unitless              
+         F_HOCl = 1e0_fp/(1e0_fp+KH_HOCl*R_L_atm*T*LWC) ! unitless           
+         ! or: F_Hg0 = 1+KH_Hg0*R_L_atm*T*LWC -> F_Hg0 = 1/(1+F_Hg0)           
+
+         ! calculate number density of air in molecules per cm3:               
+         Nair = P * 1e2_fp / (R_m3_Pa * T ) * 6.02e23_fp / 1e6_fp
+
+         ! calculate rate of reaction (without Hg0 multiplied) in cloudwater   
+         R_HOCl = kHOCl * P/1013e0_fp * 1e0_fp/Nair * F_Hg0 * KH_Hg0 *
+     &           P/1013e0_fp * HOCl / Nair * F_HOCl * KH_HOCl
+
+         ! calculate first-order effective rate constant w.r.t. Hg0 for volume
+         !of air:                                                              
+         K_AQ_OX(1) = R_HOCl * LWC * FC * 6.02e23_fp / 1e3_fp
+
+         !------------------------!                                            
+         ! OH aqueous             !                                            
+         !------------------------!                                            
+         !(1) Hg(0)(aq) + OH(aq) -> Hg+ + OH-     , k1=kOH                     
+         !(2) Hg+       + OH(aq) -> Hg(2+) + OH-  , k2                         
+
+         ! assume Hg+ is in steady state, then the rate of Hg(2+) production   
+         ! aqueous oxidation with OH is:                                       
+         ! R_OH = k1[Hg(0)(aq)][OH(aq)]                                        
+
+         ! we calculate the rate similarly, except that [OH(aq)] is not depende
+         ! on Henry's law but on the delta factor (explained above)            
+
+         ! calculate rate of reaction (without Hg0 multiplied) in cloudwater   
+         R_OH = kOH * P/1013e0_fp * 1e0_fp/Nair * F_Hg0 * KH_Hg0
+     &                 * delta_OH * OH
+
+         ! calculate first-order effective rate constant w.r.t. Hg0 for volume 
+         ! of air
+         K_AQ_OX(2) = R_OH * LWC * FC * 6.02e23_fp / 1e3_fp
+!------------------------!                                             
+         ! O3 aqueous             !                                            
+         !------------------------!                                            
+         !(1) Hg(0)(aq) + O3(aq) -> Hg(2+) , k1=kO3                            
+
+         ! calculate the rate similarly to HOCl reaction but with O3:          
+         ! calculate fraction                                                  
+         F_O3 = 1e0_fp/(1e0_fp+KH_O3*R_L_atm*T*LWC) ! unitless                       
+
+         ! calculate rate of reaction (without Hg0 multiplied) in cloudwater   
+         R_O3 = kO3 *P/1013e0_fp *1e0_fp/Nair *F_Hg0 *KH_Hg0*P/1013e0_fp
+     &            * O3 / Nair * F_O3 * KH_O3
+
+         ! calculate first-order effective rate constant w.r.t. Hg0 for volume
+         !of air:                                                             
+         K_AQ_OX(3) = R_O3 * LWC * FC * 6.02e23_fp / 1e3_fp
+        
+      ! Return to calling program                                              
+      END FUNCTION GET_HGAQ_RATE
+!EOC                                                         
+
+!------------------------------------------------------------------------------
+!                  GEOS-Chem Global Chemical Transport Model                  !
+!------------------------------------------------------------------------------
 !BOP
 !
 ! !IROUTINE: get_hgbr_rate
@@ -1166,17 +1935,23 @@
 !\\
 ! !INTERFACE:
 !
-      FUNCTION GET_HGBR_RATE( BR, T, P, OH, METHOD ) RESULT( K_HGBR ) 
+      FUNCTION GET_HGBR_RATE( I, J, L, BR, State_Met, OH, METHOD ) 
+     &                                RESULT(K_HGBR) 
+!
+! USES:
+!
+      USE State_Met_Mod,      ONLY : MetState     
 !
 ! !INPUT PARAMETERS: 
 !
-      ! BR     : Concentration of atomic Br [molec/cm3] 
-      ! T      : Temperature [K]
-      ! P      : Pressure [hPa]
-      ! OH     : Concentration of OH [molec/cm3]
-      ! METHOD : Set of rate constants to use in calculation
-      REAL(fp),         INTENT(IN)  :: BR, OH, T, P
-      CHARACTER(LEN=*), INTENT(IN)  :: METHOD 
+      ! BR        : Concentration of atomic Br [molec/cm3] 
+      ! State_Met : Meteorology state object
+      ! OH        : Concentration of OH [molec/cm3]
+      ! METHOD    : Set of rate constants to use in calculation
+      INTEGER,            INTENT(IN)  :: I, J, L
+      REAL(fp),           INTENT(IN)  :: BR, OH
+      CHARACTER(LEN=*),   INTENT(IN)  :: METHOD 
+      TYPE(MetState),     INTENT(IN)  :: State_Met    ! Meteorology State obj
 !
 ! !RETURN VALUE:
 !
@@ -1234,7 +2009,7 @@
 
       REAL(fp)            :: k1,   k2, k2a, k3br, k3oh
       REAL(fp)            :: k1G,  k2G
-      REAL(fp)            :: Nair, N0
+      REAL(fp)            :: Nair, N0, T, P
 !
 ! !DEFINED PARAMETERS:
 !
@@ -1242,6 +2017,11 @@
       !=================================================================
       ! GET_HGBR_RATE begins here!
       !=================================================================
+
+      ! T      : Temperature [K]
+      ! P      : Pressure [hPa]
+      T = State_Met%T(I,J,L)
+      P = State_Met%PMID_DRY(I,J,L)
 
       !number density of air [molec/cm3]
       Nair = P * 1e+2_fp / (AIRMW * Rd * T ) * AVO / 1e+3_fp
@@ -1416,6 +2196,383 @@
 !------------------------------------------------------------------------------
 !                  GEOS-Chem Global Chemical Transport Model                  !
 !------------------------------------------------------------------------------
+!BOP                                                                           
+! !IROUTINE: get_hgcl_rate                                                     
+!                                                                              
+! !DESCRIPTION: Function GET\_HGCL\_RATE computes the effective 1st order      
+!  conversion rate of Hg(0) to Hg(II) initiated by Cl and 2nd step with Cl,    
+!  OH, NO2, HO2, ClO, and BrO. hmh 11/21/14 copied from get\_hgbry\_rate.
+!\\                                                                            
+!\\                                                                            
+! !INTERFACE:                                                                  
+      FUNCTION GET_HGCL_RATE(I, J, L, CL, OH, HO2, NO2, CLO, BRO, BR, 
+     &                       State_Met)
+     &                                 RESULT(K_CL)
+!
+! USES:
+!
+      USE State_Met_Mod,      ONLY : MetState
+!                                                                              
+! !INPUT PARAMETERS:                                                           
+!                                                                              
+      ! CL        : Concentration of atomic Cl [molec/cm3]                     
+      ! HO2       : Concentration of HO2 [molec/cm3]                          
+      ! OH        : Concentration of OH  [molec/cm3]                           
+      ! NO2       : Concentration of NO2 [molec/cm3]                           
+      ! CLO       : Concentration of ClO [molec/cm3]                           
+      ! BRO       : Concentration of BrO [molec/cm3]                           
+      ! BR        : Concentration of Br  [molec/cm3]                           
+      ! State_Met : Meteorology state object
+      INTEGER,        INTENT(IN)  :: I, J, L
+      REAL(fp),       INTENT(IN)  :: CL, OH, HO2, NO2, CLO, BRO, BR
+      TYPE(MetState), INTENT(IN)  :: State_Met    ! Meteorology State obj
+!                                                                              
+! !RETURN VALUE:                
+      ! K_Cl : Effective 1st order loss rate of Hg(0) [1/s]                    
+! sum of all pathways                                                          
+      ! HMH 3/8/16 ADDING PROD/LOSS HGCL                                       
+      REAL(fp)                     :: K_CL(3)
+!                                                                              
+! !REMARKS:                                                                    
+!  ============================================================================
+!  This subroutine calculates the net rate of Hg(0) oxidation to Hg(II) through
+!     the following reactions. All are gas phase.                              
+!                                                                             .
+!     (1  )  Hg(0) + Cl -> HgCl                                                
+!     (2  )  HgCl + M -> Hg(0) + Cl                                            
+!     (2a )  HgCl + Cl-> Hg(0) + Cl2                                           
+!     (3BR)   HgCl + Cl  -> HgCl2                                              
+!     (3OH)   HgCl + OH  -> HgClOH                                             
+!     (3HO2)  HgCl + HO2 -> HgClHO2                                            
+!     (3NO2)  HgCl + NO2 -> HgClNO2                                            
+!     (3CLO)  HgCl + ClO -> HgClClO                                            
+!     (3BRO)  HgCl + BrO -> HgClBrO                                            
+!     (3BR)   HgCl + Br  -> HgClBr                                             
+!                                                                             .
+!  References:                                                                 
+!  ============================================================================
+!  1. Donohoue et al., 2005                                                    
+!  2. Holmes et al., 2009                                                      
+!  3. Hynes et al., 2009                                                       
+!  4. Wilcox, 2009                                                             
+!  5. Balabanov et al., 2005                                                   
+!                                           
+!  !REVISION HISTORY:                                                          
+!   21 Nov 2014 - H. Horowitz (HMH) - first version, copied from get_hgbry_rat 
+!EOP                                                                           
+!    10 Aug 2015 - H. Horowitz (HMH) - adding Br as 'Y', was missing.         
+!    10 Dec 2016 - H. Horowitz (HMH) - changing to Ted Dibble revised rates    
+!    30 Sep 2017 - C. Thackray (cpt) - merged into v11
+!    30 Aug 2018 - C. Thackray - smoothed T-dep of kNO2, kHO2
+!------------------------------------------------------------------------------
+!BOC                                                                           
+!                                                                              
+! !LOCAL VARIABLES:                                                            
+
+      REAL(fp)               :: k1cl,   k2cl, k2acl
+      REAL(fp)               :: k3cl, k3no2, k3ho2
+      REAL(fp)               :: k0NO2, k0HO2, kinfNO2, kinfHO2
+      REAL(fp)               :: Nair, T, P                 
+!                                                                              
+! !DEFINED PARAMETERS:                                                         
+!                                                                              
+      !molar gas constant                                                      
+      REAL(fp), PARAMETER    ::  R = 287e0_fp
+
+      !=================================================================       
+      ! GET_HGCL_RATE begins here!                                             
+      !=================================================================       
+      
+      ! T      : Temperature [K]                                               
+      ! P      : Pressure [hPa]                                                
+      T = State_Met%T(I,J,L)
+      P = State_Met%PMID_DRY(I,J,L)
+
+      !number density of air [molec/cm3]                                       
+      Nair = P * 1e2_fp / (0.029e0_fp * R * T ) * 6.02e23_fp / 1e6_fp
+
+      !k1 from Donohoue et al. 2005                                            
+      k1cl=2.2e-32_fp*exp(6.80e2_fp*(1.0e0_fp/T-1.0e0_fp/298e0_fp))*Nair
+
+!     k2 assumed 0 from Holmes et al., 2009; Hynes et al., 2009               
+      k2cl  = 0e0_fp
+
+      !k2a from Wilcox, 2009                                                   
+      k2acl  = 1.2e-11_fp * exp(-5.939e3_fp/T)
+       ! OK SO:                                                                
+       ! cm3/(mol*s) = 7.23E12 * exp(-11.8/(RT))                               
+       ! 11.8 is activation energy in kcal/mol.                                
+         !     R in kcal mol-1 K-1 = 1.987d-3                                  
+       !     exponent becomes = - 5939 (K-1) /T (K)                            
+        ! 7.23E12 cm3/(mol*s) * 1 mol/6.022E23 molec --> 1.2d-11 cm3 / molec *s
+
+
+
+      !k3                                                                      
+      !HMH changed rate to Balabanov et al. 2005 rate                          
+      ! which is appropriate at all pressures, not just high-P                 
+      ! and uses a more accurate level of theory than Goodsite 2004            
+      ! assume HgBr+Y same as HgCl+Y based on Dibble et al 2012                
+      k3cl = 3.0e-11_fp
+
+      k0NO2 = 6.91e-29_fp*(300/T)**4.5e0_fp
+      k0HO2 = 2.21e-29_fp*(300/T)**4.37e0_fp
+      kinfNO2 = 2.21e-11_fp*EXP(4.97e2_fp/T)
+      kinfHO2 = 8.42e-12_fp*EXP(6.25e2_fp/T)
+     
+
+         k3no2 = k0NO2*Nair/(1+k0NO2*Nair/kinfNO2) * 0.6e0_fp **
+     &      ((1+ (log10(k0NO2*Nair/kinfNO2)) ** (2e0_fp) ) ** (-1e0_fp))
+
+
+         ! this is for ho2, clo, cl, oh, bro                                  
+         k3ho2 = k0HO2*Nair/(1+k0HO2*Nair/kinfHO2) * 0.6e0_fp **
+     &      ((1+ (log10(k0HO2*Nair/kinfHO2)) ** (2e0_fp) ) ** (-1e0_fp))
+
+   !!! reverse reaction HgBr + NO2 - > Hg0 + BrNO2. pressure independent       
+c$$$         k3ano2 = 3.4d-12 * exp(391d0/T)                                   
+
+
+      IF ( CL > SMALLNUM ) THEN
+
+         ! effective 1st order loss of Hg(0) [ 1/s ]                           
+         ! calculate steady state concentration of HgCl                        
+         ! then calculate the total production of Hg(2) from all               
+         ! of the seven 'Y' pathways as k3[HgCl][Y]!                           
+
+         ! HMH adding Br here! 8/10/15                                         
+         ! hmh 12/11/16 (began 12/10/16) revising based on dibble              
+         ! HgCl + (Cl, OH, HO2, NO2, ClO, BrO, and BR):                        
+        K_CL(1) = k1cl * CL * (k3cl* BR + k3no2 * NO2 + k3ho2 * (CL + OH
+     &        + HO2 + CLO + BRO ))/ ( k2cl + k2acl * CL + k3cl * Br +
+     &    k3no2 * NO2 + k3ho2 * ( HO2 + CLO + BRO + CL + OH) )
+
+       ! MAKE PROD LOSS HGCL REACTION RATES 3/8/16                             
+               ! this is for Hg0 + Cl -> HgCl                                  
+         ! = [Hg0]*k1*CL                                                       
+         K_CL(2) = k1cl * CL
+       ! this is for HgCl + Cl -> Hg(0) + Cl2                                 
+         ! = [HgCl]*Cl*k2a                                                     
+         K_CL(3) = k1cl * CL * k2acl * CL /
+     &   ( k2cl + k2acl * CL + k3cl * Br +
+     &    k3no2 * NO2 + k3ho2 * ( HO2 + CLO + BRO + CL + OH) )
+
+      ELSE
+
+         ! Avoid divide by zero in rate                                        
+         K_CL(1) = 0e0_fp
+         K_CL(2) = 0e0_fp
+         K_CL(3) = 0e0_fp
+
+      ENDIF
+
+      ! Return to calling program                                              
+      END FUNCTION GET_HGCL_RATE
+!EOC                                                  
+!------------------------------------------------------------------------------
+!                  GEOS-Chem Global Chemical Transport Model                  !
+!------------------------------------------------------------------------------
+!BOP                                                                           
+! !IROUTINE: get_hgbry_rate                                                    
+!                                                                              
+! !DESCRIPTION: Function GET\_HGBRY\_RATE computes the effective 1st order     
+!  conversion rate of Hg(0) to Hg(II) via two-step recombination with Br       
+!  OH, NO2, HO2, ClO, and BrO.  hmh 6/4/14 based on eds 5/2/13, modified
+! for consistency with GET\_HGBR\_RATE.
+!\\                                                                            
+!\\                                                                            
+! !INTERFACE:        
+      FUNCTION GET_HGBRY_RATE(I, J, L, BR, OH, NO2, HO2, CLO, BRO, CL,
+     &                        State_Met)
+     &                                   RESULT(K_HGBRY)
+!
+! !USES:
+!
+      USE State_Met_Mod,      ONLY : MetState
+!                                                                              
+! !INPUT PARAMETERS:                                                           
+!                                                                              
+      ! BR        : Concentration of atomic Br [molec/cm3]                    
+      ! HO2       : Concentration of HO2 [molec/cm3]                           
+      ! OH        : Concentration of OH  [molec/cm3]                           
+      ! NO2       : Concentration of NO2 [molec/cm3]                           
+      ! CLO       : Concentration of ClO [molec/cm3]                           
+      ! BRO       : Concentration of BrO [molec/cm3]                           
+      ! CL        : Concentration of Cl  [molec/cm3]        
+      ! State_Met : Meteorology state object
+      INTEGER,            INTENT(IN) :: I, J, L
+      REAL(fp),           INTENT(IN) :: BR, OH, NO2, HO2
+      REAL(fp),           INTENT(IN) :: CLO, BRO, CL!
+      TYPE(MetState),     INTENT(IN) :: State_Met    ! Meteorology State obj
+!
+!  !RETURN VALUE:                                                              
+!                                                                              
+      ! K_HgBrY : Effective 1st order loss rate of Hg(0) [1/s]                 
+      ! each pathway - Br, OH, HO2, NO2, ClO, BrO, Cl in that order.           
+      ! #s 8 - 10 are for R1, R2, and R2a!         
+      REAL(fp)                       :: K_HGBRY(11)
+!                                                                              
+! !REMARKS:                                                                    
+!  ============================================================================
+!  This subroutine calculates the net rate of Hg(0) oxidation to Hg(II) through
+!     the following reactions. All are gas phase.                              
+!                                                                             .
+!     (1  )  Hg(0) + Br -> HgBr                                                
+!     (2  )  HgBr + M -> Hg(0) + Br                                            
+!     (2a )  HgBr + Br-> Hg(0) + Br2   ! HMH there was a typo in this rxn!     
+!     (3BR)   HgBr + Br  -> HgBr2                                              
+!     (3OH)   HgBr + OH  -> HgBrOH                                             
+!     (3HO2)  HgBr + HO2 -> HgBrHO2                                            
+!     (3NO2)  HgBr + NO2 -> HgBrNO2                                            
+!     (3CLO)  HgBr + ClO -> HgBrClO                                            
+!     (3BRO)  HgBr + BrO -> HgBrBrO                                            
+!     (3CL)   HgBr + Cl  -> HgBrCl                                             
+!                                                                             .
+!  References:                                                                 
+!  ============================================================================
+!  1. Dibble et al. 2012                                                       
+!  2. Horowitz et al. in prep                                                  
+!                                                                              
+!  !REVISION HISTORY:                                                          
+!   03 May 2013 - E. Corbitt - initial version                                 
+!   05 June 2014 - H. Horowitz (HMH) - revising format to be consistent        
+!   20 Nov 2014 - H. Horowitz (HMH) - saving out separate rate constants for   
+!      each pathway for comparison purposes! And fixing the reactions listed.  
+!   10 Aug 2015 - H. Horowitz (HMH) - adding Cl as 'Y', was missing before.    
+!     01 Mar 2016 - H. Horowitz (HMH) - saving out other reaction rates!       
+!    10 Dec 2016 - H. Horowitz (HMH) - changing to Ted Dibble revised rates    
+!    30 Sep 2017 - C. Thackray (cpt) - merged into v11
+!    30 Aug 2018 - C. Thackray - smoothed T-dep of kNO2, kHO2
+!EOP                                                                           
+!------------------------------------------------------------------------------
+!BOC                                                                           
+!                                                                              
+! !LOCAL VARIABLES:                                                            
+
+      REAL(fp)             :: k1, k2, k2a, k3ano2
+      REAL(fp)             :: k3br, k3no2, k3ho2
+      REAL(fp)             :: Nair, N0
+      REAL(fp)             :: k0NO2, k0HO2, kinfNO2, kinfHO2
+      REAL(fp)             :: C_HgBr, T, P
+
+      REAL(fp), PARAMETER  :: R = 287e+0_fp
+
+      ! T      : Temperature [K]                                               
+      ! P      : Pressure [hPa]                                                
+      T = State_Met%T(I,J,L)
+      P = State_Met%PMID_DRY(I,J,L)
+
+      !number density of air [molec/cm3]                                     
+      Nair = P * 1e+2_fp / (0.029e+0_fp * R * T ) * 6.02e+23_fp/1e+6_fp
+
+      !standard air density at STP: 1 atm, 273K [molec/cm3]                  
+      N0 = 1013e+2_fp/(0.029e+0_fp*R*273e+0_fp)*6.02e+23_fp/1e+6_fp
+
+      !k1 from Donohoue et al. 2006                                          
+      k1  = 1.46e-32_fp * ( T / 298e+0_fp )**(-1.86e+0_fp) * Nair
+      ! the uncertainty here is 1.46+/-0.34 and in the temperature part is -(1.86+/-1.49)(HMH, from Dibble et al., 2012)                                 
+
+      !k2 from Dibble et al. 2012                                            
+      k2  = 1.6e-9_fp * (T/298e+0_fp ) ** (-1.86e+0_fp)
+     &        * exp(-7801e+0_fp/T) * Nair
+      ! uncertainty: (1.60+/-0.37)d-9 * (T/298)^(-(1.86+/-1.49))*exp((-7801+\/-201)/T) (HMH, Dibble et al 2012)                                           
+
+      !k2a from Balabanov et al. 2005                                        
+      k2a  = 3.9e-11_fp
+
+      !k3                                                                    
+      !HMH changed rate to Balabanov et al. 2005 rate                        
+      ! which is appropriate at all pressures, not just high-P               
+      ! and uses a more accurate level of theory than Goodsite 2004          
+      k3br = 3.0e-11_fp
+
+      k0NO2 = 6.91e-29_fp*(300/T)**4.5e0_fp
+      k0HO2 = 2.21e-29_fp*(300/T)**4.37e0_fp
+      kinfNO2 = 2.21e-11_fp*EXP(4.97e2_fp/T)
+      kinfHO2 = 8.42e-12_fp*EXP(6.25e2_fp/T)
+
+      k3no2 = k0NO2*Nair/(1+k0NO2*Nair/kinfNO2) * 0.6e+0_fp **
+     &        ((1+ (log10(k0NO2*Nair/kinfNO2))**(2e+0_fp))**(-1e+0_fp))
+
+          ! this is for ho2, clo, cl, oh, bro                                 
+      k3ho2 = k0HO2*Nair/(1+k0HO2*Nair/kinfHO2) *0.6e+0_fp**
+     &        ((1+ (log10(k0HO2*Nair/kinfHO2))**(2e+0_fp))**(-1e+0_fp))
+
+
+         !!! reverse reaction HgBr + NO2 - > Hg0 + BrNO2. pressure independen
+      k3ano2 = 3.4e-12_fp * exp(391e+0_fp/T)
+
+
+      IF ( BR > SMALLNUM ) THEN
+
+         ! effective 1st order loss of Hg(0) [ 1/s ]                         
+         ! calculate steady state concentration of HgBr                      
+         ! then calculate the production of Hg(2) from each                  
+         ! of the seven 'Y' pathways as k3[HgBr][Y]!                         
+
+         C_HgBr = k1 * BR   /
+     &          ( k2 + (k2a +k3br) * BR + (k3NO2+k3ano2) * NO2
+     &          + k3HO2 * (HO2 + CLO + BRO + BR + OH + CL) )
+
+         ! HgBr + Br                                                           
+         K_HGBRY(1) = C_HgBr * k3br * BR
+
+         ! HgBr + OH                                                           
+         K_HGBRY(2) = C_HgBR *  k3HO2 * OH
+
+         ! HgBr + HO2                                                          
+         K_HGBRY(3) = C_HgBR *  k3HO2 * HO2 
+
+         ! HgBr + NO2                                                          
+         K_HGBRY(4) = C_HgBR *  k3NO2 * NO2 
+
+         ! HgBr + ClO                                                          
+         K_HGBRY(5) = C_HgBR *  k3HO2 * CLO 
+
+         ! HgBr + BrO                                                          
+         K_HGBRY(6) = C_HgBR *  k3HO2 * BRO 
+
+         ! HgBr + Cl                                                           
+         K_HGBRY(7) = C_HgBR *  k3HO2 * CL 
+
+         ! this is for Hg0 + Br -> HgBr                                        
+         ! = [Hg0]*k1*BR                                                       
+         K_HGBRY(8) = k1 * BR
+
+         ! this is for HgBr + M -> Hg(0) + Br                                  
+         ! = [HgBr]*k2                                                         
+         K_HGBRY(9) = C_HgBr * k2 
+
+         ! = [HgBr]*Br*k2a                                                     
+         K_HGBRY(10) = C_HgBR * k2a * BR 
+
+         ! HgBr + NO2 -> Hg(0) + BrNO2
+
+         K_HGBRY(11) = C_HgBR * k3ano2 * NO2 
+
+      ELSE
+
+         ! Avoid divide by zero in rate                                        
+         K_HGBRY(1) = 0
+         K_HGBRY(2) = 0
+         K_HGBRY(3) = 0
+         K_HGBRY(4) = 0
+         K_HGBRY(5) = 0
+         K_HGBRY(6) = 0
+         K_HGBRY(7) = 0
+         K_HGBRY(8) = 0
+         K_HGBRY(9) = 0
+         K_HGBRY(10) = 0
+         K_HGBRY(11) = 0
+
+      ENDIF
+
+      ! Return to calling program                                              
+      END FUNCTION GET_HGBRY_RATE
+!EOC
+!------------------------------------------------------------------------------
+!                  GEOS-Chem Global Chemical Transport Model                  !
+!------------------------------------------------------------------------------
 !BOP
 !
 ! !IROUTINE: emissmercury
@@ -1439,8 +2596,8 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE EMISSMERCURY( am_I_Root, Input_Opt,
-     &                         State_Met, State_Chm, RC )
+      SUBROUTINE EMISSMERCURY( am_I_Root, Input_Opt,  State_Met, 
+     &                         State_Chm, State_Diag, RC         )
 !
 ! !USES:
 !
@@ -1455,6 +2612,7 @@
       USE LAND_MERCURY_MOD,   ONLY : SNOWPACK_MERCURY_FLUX
       USE OCEAN_MERCURY_MOD,  ONLY : OCEAN_MERCURY_FLUX
       USE State_Chm_Mod,      ONLY : ChmState
+      USE State_Diag_Mod,     ONLY : DgnState
       USE State_Met_Mod,      ONLY : MetState
       USE TIME_MOD,           ONLY : GET_MONTH, ITS_A_NEW_MONTH
       USE UnitConv_Mod,       ONLY : Convert_Spc_Units
@@ -1472,6 +2630,7 @@
 ! !INPUT/OUTPUT PARAMETERS:
 !
       TYPE(ChmState), INTENT(INOUT) :: State_Chm   ! Chemistry State object
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag  ! Diagnostics State object
 !
 ! !OUTPUT PARAMETERS:
 !
@@ -1514,13 +2673,20 @@
       LOGICAL           :: LPREINDHG
       LOGICAL           :: LEMIS
 
+      ! Strings
+      CHARACTER(LEN=255)   :: ErrMsg
+      CHARACTER(LEN=255)   :: ThisLoc
+
       !=================================================================
       ! EMISSMERCURY begins here!
       !=================================================================
 
       ! Assume success
-      RC        = GC_SUCCESS
-      
+      RC      = GC_SUCCESS
+      ErrMsg  = ''
+      ThisLoc = 
+     & ' -> at EMISSMERCURY (in module GeosCore/mercury_mod.f)'
+
       ! Copy fields from Input_Opt
       LDYNOCEAN = Input_Opt%LDYNOCEAN
       LGTMM     = Input_Opt%LGTMM
@@ -1533,11 +2699,13 @@
       ! NOTE: This is temporary until mercury code is in [kg/kg dry air]
       CALL Convert_Spc_Units( am_I_Root, Input_Opt, State_Met, 
      &                        State_Chm, 'kg', RC, OrigUnit=OrigUnit )
+
+      ! Trap potential errors
       IF ( RC /= GC_SUCCESS ) THEN
-         CALL GC_Error('Unit conversion error', RC, 
-     &                 'Routine EMISSIONS_RUN in emissions_mod.F')
+         ErrMsg = 'Error encountered in "Convert_Spc_Units" #1!'
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
          RETURN
-      ENDIF                         
+      ENDIF 
 
       ! First-time initialization
       IF ( FIRST ) THEN
@@ -1545,13 +2713,21 @@
          ! Check that emissions are turned on. Print error message 
          ! and stop GEOS-Chem if emissions are turned off (ewl, 9/1/15)
          IF ( .not. LEMIS ) THEN
-            PRINT *, 'ERROR: Hg emissions are need for simulation ' //
+            ErrMsg = 'ERROR: Hg emissions are need for simulation ' //
      &               'but emissions are turned off in input.geos'
-            CALL GEOS_CHEM_STOP
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
          ENDIF
 
          ! Read anthro, ocean, land emissions of Hg from disk
          CALL MERCURY_READYR( am_I_Root, Input_Opt, RC )
+
+         ! Trap potential errors
+         IF ( RC /= GC_SUCCESS ) THEN
+            ErrMsg = 'Error encountered call to "MERCURY_READYR"!'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF 
 
          ! Reset first-time flag
          FIRST = .FALSE.
@@ -1568,10 +2744,22 @@
          ! (cdh, 4/30/09)
          EHg0_oc = 0e+0_fp
 
-         CALL OCEAN_MERCURY_FLUX( am_I_Root, Input_Opt, State_Met, 
-     &                            State_Chm, EHg0_oc,   RC         )
-     &                            
+         CALL OCEAN_MERCURY_FLUX( am_I_Root, Input_Opt,  State_Met, 
+     &                            State_Chm, State_Diag, EHg0_oc,   RC )
+     &                     
+         ! Trap potential errors
+         IF ( RC /= GC_SUCCESS ) THEN
+            ErrMsg = 'Error encountered call to "OCEAN_MERCURY_FLUX"!'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF 
+       
          IF ( LPRT ) CALL DEBUG_MSG( '### EMISSMERCURY: a OCEAN_FLUX' )
+
+      ELSE
+         EHg0_oc = 0e+0_fp
+         CALL OFFLINEOCEAN_READMO( EHg0_oc,   RC,        am_I_Root,
+     &                             State_met, State_Chm, State_Diag )
 
       ENDIF
 
@@ -1607,7 +2795,8 @@
 
       ENDIF
 
-      CALL SNOWPACK_MERCURY_FLUX ( EHg0_snow, LHGSNOW, State_Met )
+      CALL SNOWPACK_MERCURY_FLUX ( EHg0_snow, LHGSNOW, State_Met,
+     &                             State_Chm )
       IF ( LPRT ) CALL DEBUG_MSG( '### EMISSMERCURY: a SNOW_FLUX' )
       
       CALL BIOMASSHG( am_I_Root, Input_Opt, EHg0_bb, RC )
@@ -1652,11 +2841,11 @@
       IF ( LNLPBL ) HG_EMIS = 0.0e+0_fp
 
       ! Add Hg(0) source into State_Chm%Species [kg]
-      CALL SRCHg0( am_I_Root, Input_Opt, State_Chm, RC )
+      CALL SRCHg0( am_I_Root, Input_Opt, State_Chm, State_Diag, RC )
       IF ( LPRT ) CALL DEBUG_MSG( '### EMISSMERCURY: a SRCHg0' )
 
       ! Add Hg(II) source into State_Chm%Species [kg]
-      CALL SRCHg2( am_I_Root, Input_Opt, State_Chm, RC )
+      CALL SRCHg2( am_I_Root, Input_Opt, State_Chm, State_Diag, RC )
       IF ( LPRT ) CALL DEBUG_MSG( '### EMISSMERCURY: a SRCHg2' )
 
       ! Add HgP source into State_Chm%Species [kg]
@@ -1745,7 +2934,7 @@
          AM2             = GET_AREA_M2(I,J,1)
 
          ! Emission timestep
-         TS              = GET_TS_EMIS() * 60.0e+0_fp
+         TS              = GET_TS_EMIS()
 
          ! Save emissions as [kg/m2/s].  These will be added
          ! to the chemical species array in routine DO_TEND
@@ -1787,17 +2976,20 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE SRCHg0( am_I_Root, Input_Opt, State_Chm, RC )
+      SUBROUTINE SRCHg0( am_I_Root, Input_Opt,
+     &                   State_Chm, State_Diag, RC )
 !
 ! !USES:
 !
       USE CMN_SIZE_MOD
+#if defined( BPCH_DIAG )
       USE DIAG03_MOD,         ONLY : AD03, ND03, AD03_nat
+#endif
       USE ErrCode_Mod
-      USE ERROR_MOD,          ONLY : ERROR_STOP
       USE Input_Opt_Mod,      ONLY : OptInput
       USE PBL_MIX_MOD,        ONLY : GET_FRAC_OF_PBL, GET_PBL_MAX_L
       USE State_Chm_Mod,      ONLY : ChmState
+      USE State_Diag_Mod,     ONLY : DgnState
       USE TIME_MOD,           ONLY : GET_TS_EMIS
 !
 ! !INPUT PARAMETERS:
@@ -1808,6 +3000,7 @@
 ! !INPUT/OUTPUT PARAMETERS:
 !
       TYPE(ChmState), INTENT(INOUT) :: State_Chm   ! Chemistry State object
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag  ! Diagnostics State object
 !
 ! !OUTPUT PARAMETERS:
 !
@@ -1849,7 +3042,7 @@
       LGTMM     = Input_Opt%LGTMM
 
       ! Emission timestep [s]
-      DTSRCE    = GET_TS_EMIS() * 60e+0_fp
+      DTSRCE    = GET_TS_EMIS()
 
       ! Maximum extent of the PBL [model levels]
       PBL_MAX   = GET_PBL_MAX_L() 
@@ -2471,8 +3664,11 @@
             ENDIF
          ENDDO
         
+#if defined( BPCH_DIAG )
          !==============================================================
-         ! ND03 diagnostic: Total Hg(0) emissions [kg]
+         ! %%%%% ND03 (bpch) DIAGNOSTIC %%%%%
+         !
+         ! Total Hg(0) emissions [kg]
          ! 1=anthro; 3=from ocean; 4=land re-emission; 5=natural src
          !==============================================================
 
@@ -2538,6 +3734,78 @@
             ENDIF
             
          ENDIF
+#endif
+
+#if defined( NC_DIAG )
+         !==============================================================
+         ! %%%%% HISTORY (aka netCDF diagnostics) %%%%%
+         !
+         ! Save the various Hg0 emissions to fields of State_Diag
+         ! in units of [kg/s].
+         ! 
+         ! NOTES (bmy, 10/24/18):
+         ! (1) Normally these would go to the HEMCO_diagnostics*.nc
+         !     file, but several of these diagnostics were defined as
+         !     HEMCO manual diagnostics.  Therefore to preserve 
+         !     backwards compatibility with the existing Hg simulation, 
+         !     we save the emission fields into State_Diag.
+         !
+         ! (2) For now, save emissions only for total species
+         !     and not the tagged species.  Colin Thackray says that
+         !     the tagged Hg simulation is in some disrepair and is
+         !     not widely used.
+         !
+         ! (3) The total Hg0 emissions diagnostic is not defined; 
+         !     users can sum up the individual categories in 
+         !     post-processing.
+         !
+         ! (4) In the current Hg simulation, HgP anthro emissions are
+         !     added into the Hg2 species.  Therefore we only have
+         !     a single emissions field of State_Diag for the
+         !     combined Hg2 + HgP anthro emissions.
+         !==============================================================
+
+         ! Anthropogenic Hg0 emissions [kg/s]
+         IF ( State_Diag%Archive_EmisHg0anthro ) THEN
+            State_Diag%EmisHg0anthro(I,J) = EHg0_an(I,J)
+         ENDIF
+
+         ! Biomass Hg0 emissions [kg/s]
+         IF ( State_Diag%Archive_EmisHg0biomass ) THEN
+            State_Diag%EmisHg0biomass(I,J) = EHg0_bb(I,J)
+         ENDIF
+
+         ! Geogenic Hg0 emissions [kg/s]
+         IF ( State_Diag%Archive_EmisHg0geogenic ) THEN
+            State_Diag%EmisHg0geogenic(I,J) = EHg0_geo(I,J)
+         ENDIF
+
+         ! Land Hg0 emissions [kg/s]
+         IF ( State_Diag%Archive_EmisHg0ocean ) THEN
+            State_Diag%EmisHg0land(I,J) = EHg0_ln(I,J,1)
+         ENDIF
+
+         ! Oceanic Hg0 emissions [kg/s]
+         IF ( State_Diag%Archive_EmisHg0ocean ) THEN
+            State_Diag%EmisHg0ocean(I,J) = EHg0_oc(I,J,1)
+         ENDIF
+
+         ! Snow Hg0 emissions [kg/s]
+         IF ( State_Diag%Archive_EmisHg0snow ) THEN
+            State_Diag%EmisHg0snow(I,J) = EHg0_snow(I,J,1)
+         ENDIF
+
+         ! Soil Hg0 emissions [kg/s]
+         IF ( State_Diag%Archive_EmisHg0soil ) THEN
+            State_Diag%EmisHg0soil(I,J) = EHg0_so(I,J)
+         ENDIF
+
+         ! Vegetation Hg0 emissions [kg/s]
+         IF ( State_Diag%Archive_EmisHg0vegetation ) THEN
+            State_Diag%EmisHg0vegetation(I,J) = EHg0_vg(I,J)
+         ENDIF
+#endif
+
       ENDDO
       ENDDO
 !$OMP END PARALLEL DO
@@ -2558,17 +3826,20 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE SRCHg2( am_I_Root, Input_Opt, State_Chm, RC )
+      SUBROUTINE SRCHg2( am_I_Root, Input_Opt, 
+     &                   State_Chm, State_Diag, RC )
 !
 ! !USES:
 !
       USE CMN_SIZE_MOD
+#if defined( BPCH_DIAG )
       USE DIAG03_MOD,         ONLY : AD03, ND03
+#endif
       USE ErrCode_Mod
-      USE ERROR_MOD,          ONLY : ERROR_STOP
       USE Input_Opt_Mod,      ONLY : OptInput
       USE PBL_MIX_MOD,        ONLY : GET_FRAC_OF_PBL, GET_PBL_MAX_L
       USE State_Chm_Mod,      ONLY : ChmState
+      USE State_Diag_Mod,     ONLY : DgnState
       USE State_Met_Mod,      ONLY : MetState
       USE TIME_MOD,           ONLY : GET_TS_EMIS 
 !
@@ -2580,6 +3851,7 @@
 ! !INPUT/OUTPUT PARAMETERS:
 !
       TYPE(ChmState), INTENT(INOUT) :: State_Chm   ! Chemistry State object
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag  ! Diagnostics State object
 !
 ! !OUTPUT PARAMETERS:
 !
@@ -2618,7 +3890,7 @@
       LPREINDHG = Input_Opt%LPREINDHG
 
       ! Emission timestep [s]
-      DTSRCE    = GET_TS_EMIS() * 60e+0_fp
+      DTSRCE    = GET_TS_EMIS()
 
       ! Maximum extent of the PBL [model levels]
       PBL_MAX   = GET_PBL_MAX_L()
@@ -2740,12 +4012,37 @@
                ENDIF
             ENDDO
             
-            !-------------------------------
-            ! ND03 diag: Anthro Hg(II) [kg]
-            !-------------------------------
+#if defined( BPCH_DIAG )
+            !==============================================================
+            ! %%%%% ND03 (bpch) DIAGNOSTICS %%%%%
+            !
+            ! Anthro Hg(II) [kg]
+            ! NOTE: HgP is emitted into Hg2 
+            !==============================================================
             IF ( ND03 > 0 ) THEN
                AD03(I,J,6,1) = AD03(I,J,6,1) + ( EHg2_an(I,J) * DTSRCE )
             ENDIF
+#endif
+
+#if defined( NC_DIAG )
+            !==============================================================
+            ! %%%%% HISTORY (aka netCDF diagnostics) %%%%%
+            !
+            ! Save the combined Hg2 + HgP emissions to State_Diag
+            ! in units of [kg/s].
+            ! 
+            ! NOTES (bmy, 10/24/18):
+            !
+            ! (1) In the current Hg simulation, HgP anthro emissions
+            !     are added into the Hg2 species.  Therefore we only
+            !     have defined a single emissions field of State_Diag
+            !     for the combined Hg2 + HgP anthro emissions.
+            !==============================================================
+            IF ( State_Diag%Archive_EmisHg2HgPanthro ) THEN
+               State_Diag%EmisHg2HgPanthro(I,J) = EHg2_an(I,J)
+            ENDIF
+#endif
+
          ENDDO
          ENDDO
 !$OMP END PARALLEL DO
@@ -2773,9 +4070,10 @@
 ! !USES:
 !
       USE CMN_SIZE_MOD
+#if defined( BPCH_DIAG )
       USE DIAG03_MOD,         ONLY : AD03, ND03
+#endif
       USE ErrCode_Mod
-      USE ERROR_MOD,          ONLY : ERROR_STOP
       USE Input_Opt_Mod,      ONLY : OptInput
       USE PBL_MIX_MOD,        ONLY : GET_FRAC_OF_PBL, GET_PBL_MAX_L
       USE State_Chm_Mod,      ONLY : ChmState
@@ -2827,7 +4125,7 @@
       LPREINDHG = Input_Opt%LPREINDHG
 
       ! Chemistry timestep [s]
-      DTSRCE    = GET_TS_EMIS() * 60e+0_fp
+      DTSRCE    = GET_TS_EMIS()
       
       ! Maximum extent of the PBL [model levels]
       PBL_MAX   = GET_PBL_MAX_L()
@@ -2948,13 +4246,19 @@
                ENDIF
             ENDDO
 
-            !----------------------------
-            ! ND03 diag: Anthro HgP [kg]
-            !----------------------------
+#if defined( BPCH_DIAG )
+            !-----------------------------------------------------------
+            ! %%%%% ND03 (bpch) diagnostics
+            !
+            ! Anthro HgP [kg]
+            ! NOTE: This is zero, because in the current Hg simulation
+            ! HgP is emitted into the Hg2 species (bmy, 10/26/18)
+            !-----------------------------------------------------------
             IF ( ND03 > 0 ) THEN
                AD03(I,J,9,1) = AD03(I,J,9,1) + (EHgP_an(I,J) * DTSRCE)
             ENDIF
-         
+#endif
+
          ENDDO 
          ENDDO
 !$OMP END PARALLEL DO
@@ -2982,7 +4286,6 @@
 ! !USES:
 !
       USE ErrCode_Mod
-      USE ERROR_MOD,          ONLY : ERROR_STOP
       USE HCO_ERROR_MOD
       USE HCO_INTERFACE_MOD,  ONLY : HcoState
       USE HCO_EMISLIST_MOD,   ONLY : HCO_GetPtr
@@ -3028,6 +4331,7 @@
 !                              and debugging.  Worry about this later.
 !  24 Sep 2014 - C. Keller   - HEMCO update
 !  29 Apr 2016 - R. Yantosca - Don't initialize pointers in declaration stmts
+!  27 Feb 2018 - C. Thackray - Removed unused ANTHRO_Hg_YEAR and Hg_SCENARIO
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -3042,33 +4346,31 @@
       LOGICAL                  :: LDYNOCEAN
       LOGICAL                  :: LPREINDHG
       LOGICAL                  :: LSPLIT
-      INTEGER                  :: ANTHRO_Hg_YEAR
-      CHARACTER(LEN=10)        :: SCENARIO
 
       ! HEMCO update
       CHARACTER(LEN=63)        :: DgnName
       REAL(f4),        POINTER :: Ptr2D(:,:)
 
       ! Strings
-      CHARACTER(LEN=255)       :: MSG
-      CHARACTER(LEN=255)       :: LOC = 'MERCURY_READYR (mercury_mod.F)'
+      CHARACTER(LEN=255)       :: ThisLoc
+      CHARACTER(LEN=512)       :: ErrMsg
 
       !=================================================================
       ! MERCURY_READYR begins here! 
       !=================================================================
 
       ! Assume success
-      RC             = GC_SUCCESS
+      RC        = GC_SUCCESS
+      ErrMsg    = ''
+      ThisLoc   = '-> at MERCURY_READYR (in GeosCore/mercury_mod.F)'
 
       ! Initialize pointers
-      Ptr2D          => NULL()  
+      Ptr2D     => NULL()  
 
       ! Copy values from Input_Opt
-      LDYNOCEAN      = Input_Opt%LDYNOCEAN 
-      LPREINDHG      = Input_Opt%LPREINDHG
-      LSPLIT         = Input_Opt%LSPLIT
-      ANTHRO_HG_YEAR = Input_Opt%ANTHRO_Hg_YEAR
-      SCENARIO       = TRIM( Input_Opt%Hg_SCENARIO )
+      LDYNOCEAN = Input_Opt%LDYNOCEAN 
+      LPREINDHG = Input_Opt%LPREINDHG
+      LSPLIT    = Input_Opt%LSPLIT
 
       !=================================================================
       ! Anthropogenic Emissions
@@ -3096,8 +4398,10 @@
 
       ! Get HEMCO state object
       IF ( .NOT. ASSOCIATED(HcoState) ) THEN
-         CALL ERROR_STOP ( 'HcoState not associated!', LOC )
-      ENDIF 
+         ErrMsg = 'HcoState not associated!'
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
 
       ! No anthropogenic emissions in preindustrial simulation
       IF ( LPREINDHG ) THEN
@@ -3115,14 +4419,22 @@
          ! Anthropogenic emissions
          DgnName = 'HG0_ANTHRO'
          CALL GetHcoDiagn( am_I_Root, DgnName, .TRUE., RC, Ptr2D=Ptr2D )
-         IF ( RC /= HCO_SUCCESS ) CALL ERROR_STOP ( DgnName, LOC )
+         IF ( RC /= HCO_SUCCESS ) THEN
+            ErrMsg = 'Could not get HEMCO field ' // TRIM( DgnName )
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
          EHg0_an =  Ptr2D(:,:) * HcoState%Grid%AREA_M2%Val(:,:)
          Ptr2D   => NULL()
 
          ! Artisanal emissions
          DgnName = 'HG0_ARTISANAL'
          CALL GetHcoDiagn( am_I_Root, DgnName, .TRUE., RC, Ptr2D=Ptr2D )
-         IF ( RC /= HCO_SUCCESS ) CALL ERROR_STOP ( DgnName, LOC )
+         IF ( RC /= HCO_SUCCESS ) THEN
+            ErrMsg = 'Could not get HEMCO field ' // TRIM( DgnName )
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
          EHg0_am =  Ptr2D(:,:) * HcoState%Grid%AREA_M2%Val(:,:)
          Ptr2D   => NULL()
 
@@ -3134,7 +4446,11 @@
          ! Anthropogenic emissions
          DgnName = 'HG2_ANTHRO'
          CALL GetHcoDiagn( am_I_Root, DgnName, .TRUE., RC, Ptr2D=Ptr2D )
-         IF ( RC /= HCO_SUCCESS ) CALL ERROR_STOP ( DgnName, LOC )
+         IF ( RC /= HCO_SUCCESS ) THEN
+            ErrMsg = 'Could not get HEMCO field ' // TRIM( DgnName )
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
          EHg2_an =  Ptr2D(:,:) * HcoState%Grid%AREA_M2%Val(:,:)
          Ptr2D   => NULL()
       ENDIF
@@ -3142,14 +4458,20 @@
       ! Natural emissions
       DgnName = 'HG0_NATURAL'
       CALL GetHcoDiagn( am_I_Root, DgnName, .TRUE., RC, Ptr2D=Ptr2D )
-      IF ( RC /= HCO_SUCCESS ) CALL ERROR_STOP ( DgnName, LOC )
+      IF ( RC /= HCO_SUCCESS ) THEN
+         ErrMsg = 'Could not get HEMCO field ' // TRIM( DgnName )
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
       EHg0_geo =  Ptr2D(:,:) * HcoState%Grid%AREA_M2%Val(:,:)
       Ptr2D    => NULL()
 
       ! Soil distribution 
       CALL HCO_GetPtr( am_I_Root, HcoState, 'HG0_SOILDIST', Ptr2D, RC )
       IF ( RC /= HCO_SUCCESS ) THEN
-         CALL ERROR_STOP ( 'Cannot get pointer to HG0_SOILDIST', LOC )
+         ErrMsg = 'Could not get pointer to HEMCO field HG0_SOILDIST!'
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
       ENDIF
       EHg0_dist =  Ptr2D(:,:) 
       Ptr2D     => NULL()
@@ -3267,6 +4589,7 @@
       USE CMN_SIZE_MOD
       USE State_Met_Mod,      ONLY : MetState
       USE TIME_MOD,           ONLY : GET_TS_CHEM
+!LL      USE CHEMGRID_MOD,       ONLY : GET_TPAUSE_LEVEL
 !
 ! !INPUT PARAMETERS: 
 !
@@ -3277,6 +4600,8 @@
 !
 ! !RETURN VALUE:
 !
+      REAL(fp)                    :: TPL
+      REAL(fp)                    :: HEM_OH 
       REAL(fp)                    :: OH_MOLEC_CM3   ! OH conc [molec/cm3]
 !
 ! !REVISION HISTORY: 
@@ -3284,6 +4609,8 @@
 !  28 Nov 2012 - R. Yantosca - Replace SUNCOS with State_Met%SUNCOS
 !  28 Nov 2012 - R. Yantosca - Now pass State_Met via the argument list
 !  11 Mar 2015 - R. Yantosca - Remove reference to GLOBAL_OH_MOD
+!  06 Feb 2018 - E. Lundgren - Update time unit conversion factor for timestep
+!                              unit change from min to sec
 
 !EOP
 !------------------------------------------------------------------------------
@@ -3295,14 +4622,26 @@
       ! GET_OH begins here!
       !=================================================================
 
+!LL      TPL = GET_TPAUSE_LEVEL( I, J, State_Met )
+      TPL = State_Met%TropLev(I, J)
+
+
+      IF ( L > TPL ) THEN
+         HEM_OH = OH_strat(I,J,L)
+      ELSE
+         HEM_OH = OH_trop(I,J,L)
+      ENDIF
+
+
       ! Test for sunlight...
       IF ( State_Met%SUNCOS(I,J) > 0e+0_fp .and. 
      &     TCOSZ(I,J) > 0e+0_fp ) THEN
 
          ! Impose a diurnal variation on OH during the day
-         OH_MOLEC_CM3 = OH(I,J,L)                                 *    
+         ! OH is in kg/m3
+         OH_MOLEC_CM3 = HEM_OH * 1e-6_fp * ( AVO / 0.017) *    
      &                  ( State_Met%SUNCOS(I,J) / TCOSZ(I,J)    ) *
-     &                  ( 1440e+0_fp            / GET_TS_CHEM() )
+     &                  ( 86400e+0_fp            / GET_TS_CHEM() )
 
          ! Make sure OH is not negative
          OH_MOLEC_CM3 = MAX( OH_MOLEC_CM3, 0e+0_fp )
@@ -3320,6 +4659,501 @@
 !------------------------------------------------------------------------------
 !                  GEOS-Chem Global Chemical Transport Model                  !
 !------------------------------------------------------------------------------
+!BOP                                                                           
+!                                                                              
+! !IROUTINE: get_ho2                                                           
+!                                                                              
+! !DESCRIPTION: Function GET\_HO2 returns monthly mean HO2 and imposes a       
+!  diurnal variation. HMH 9/24/14 adding for dibble chemistry                  
+!\\                                                                            
+!\\                                                                            
+! !INTERFACE:                                                                  
+!                                                                              
+      FUNCTION GET_HO2( I, J, L, State_Met ) RESULT( HO2_MOLEC_CM3 )
+!                                                                              
+! !USES:                                                                       
+!                                                                              
+      USE CMN_SIZE_MOD
+      USE State_Met_Mod, ONLY : MetState
+      USE TIME_MOD,           ONLY : GET_TS_CHEM
+!LL      USE CHEMGRID_MOD,       ONLY : GET_TPAUSE_LEVEL
+!                                                                              
+! !INPUT PARAMETERS:                                                           
+!                                                                              
+      INTEGER,        INTENT(IN)  :: I              ! Longitude index          
+      INTEGER,        INTENT(IN)  :: J              ! Latitude index           
+      INTEGER,        INTENT(IN)  :: L              ! Level index              
+      TYPE(MetState), INTENT(IN)  :: State_Met      ! Meteorology State object 
+!                                                                              
+! !RETURN VALUE:              
+      REAL(fp)                    :: HO2_VV
+      REAL(fp)                    :: HO2_MOLEC_CM3 ! HO2 conc [molec/cm3]     
+      REAL(fp)                    :: HEM_HO2
+      REAL(fp)                    :: TPL
+!                                                                              
+! !REVISION HISTORY:                                                           
+!  07 Dec 2004 - N. (Eckley) Selin - Initial version                           
+!  28 Nov 2012 - R. Yantosca - Replace SUNCOS with State_Met%SUNCOS            
+!  28 Nov 2012 - R. Yantosca - Now pass State_Met via the argument list        
+!  ca. 2014    - H. Horowitz - 
+!  30 Sep 2017 - C. Thackray (cpt) - Merged into v11
+!EOP                                                                           
+!------------------------------------------------------------------------------
+!BOC                                                                           
+!                                                                              
+! !LOCAL VARIABLES:                                                            
+!                                                                              
+
+      !=================================================================       
+      ! GET_HO2 begins here!                                                   
+      !=================================================================       
+
+!LL      TPL = GET_TPAUSE_LEVEL( I, J, State_Met )
+      TPL = State_Met%TropLev(I, J)
+
+
+      IF ( L > TPL ) THEN
+         HEM_HO2 = HEM_HO2_strat(I,J,L)
+      ELSE
+         HEM_HO2 = HEM_HO2_trop(I,J,L)
+      ENDIF
+
+
+      ! Test for sunlight...                                                   
+      IF ( State_Met%SUNCOS(I,J) > 0e0_fp
+     &     .and. TCOSZ(I,J) > 0e0_fp ) THEN
+
+         ! Impose a diurnal variation on HO2 during the day                    
+         HO2_VV = HEM_HO2                               *          
+     &                  ( State_Met%SUNCOS(I,J) / TCOSZ(I,J)    ) *
+     &                  ( 86400e0_fp             / GET_TS_CHEM() )
+
+       ! Make sure HO2 is not negative                                        
+         HO2_VV = MAX( HO2_VV, 0e0_fp )
+         HO2_MOLEC_CM3 = HO2_VV
+     &   * State_Met%AIRNUMDEN(I,J,L)
+
+      ELSE
+
+         ! At night, HO2 goes to zero                                          
+         HO2_MOLEC_CM3 = 0e0_fp
+
+      ENDIF
+
+      ! Return to calling program                                              
+      END FUNCTION GET_HO2
+
+!------------------------------------------------------------------------------
+!                  GEOS-Chem Global Chemical Transport Model                  !
+!------------------------------------------------------------------------------
+!BOP                                                                           
+!                                                                              
+! !IROUTINE: get_clo                                                           
+!                                                                              
+! !DESCRIPTION: Function GET\_CLO imposes a diurnal scaling for ClO, hmh 10/6/
+!               adding for dibble chemistry. Now including scaling of Cl and   
+!               HOCl for aqueous and gas-phase oxidation 11/19/14.             
+!\\                                                                            
+!\\                                                                            
+! !INTERFACE:                                                                  
+!                                                                              
+      FUNCTION GET_ClO( I, J, L, State_Met ) RESULT( ClO_MOLEC_CM3 )
+!                                                                              
+! !USES:                                                                       
+!                                                                              
+      USE CMN_SIZE_MOD
+      USE State_Met_Mod, ONLY : MetState
+      USE ERROR_MOD,          ONLY : SAFE_DIV
+      USE TIME_MOD,           ONLY : GET_TS_CHEM, GET_LOCALTIME
+!                                                                              
+! !INPUT PARAMETERS:                                                           
+!                                                                              
+      INTEGER,        INTENT(IN)  :: I              ! Longitude index          
+      INTEGER,        INTENT(IN)  :: J              ! Latitude index           
+      INTEGER,        INTENT(IN)  :: L              ! Level index              
+      TYPE(MetState), INTENT(IN)  :: State_Met      ! Meteorology State object 
+
+!                                                                              
+! !RETURN VALUE:                                                               
+!                                                                              
+      REAL(fp)                      :: ClO_PPBV
+      REAL(fp)                      :: ClO_MOLEC_CM3  ! ClO  conc [molec/cm3]    
+
+!  INTENT(OUT)                                                             
+!                                                                              
+! !REVISION HISTORY:                                                           
+! 06 Oct 2014 - H. Horowitz - initial version copied from get_br.              
+! 30 Sep 2017 - C. Thackray (cpt) - merged into v11
+!EOP                                                                           
+!------------------------------------------------------------------------------
+!BOC                                                                           
+!                                                                              
+! !LOCAL VARIABLES:                                                            
+!                                                                              
+      REAL*8              :: ClO_FAC, LOCALTIME, HOUR
+
+      !=================================================================       
+      ! GET_ClO begins here! copying from get_br!                              
+      !=================================================================       
+
+      !----------------------------------------------------------------        
+      ! Impose a diurnal cycle                                                 
+      !                                                                        
+      ! This formula comes from the Holmes et al (2009) MBL box model          
+      ! which fit RGM observations for Okinawa and a Pacific cruise            
+      !----------------------------------------------------------------        
+
+      ! Test for sunlight...                                                   
+      IF ( (State_Met%SUNCOS(I,J) > 0e0_fp) 
+     &     .and. (TTDAY(I,J) > 0e0_fp) ) THEN
+         ! Use a constant function if daylight is < 2 hours or > 22hours       
+         IF ( ( TTDAY(I,J) < 120e0_fp  ) .OR.
+     &        ( TTDAY(I,J) > 1320e0_fp ) ) THEN
+
+            ClO_FAC = SAFE_DIV( 1440e0_fp, TTDAY(I,J), 0E0_FP )
+
+         ELSE
+
+            ! Local time: 0-23.999                                             
+            LOCALTIME = GET_LOCALTIME( I, J, L )
+
+            ! Interpolate the real hour to lie within an equinoctal day        
+            ! i.e. between 6-18                                                
+            HOUR = 12E0_FP + ( LOCALTIME - 12E0_FP ) *
+     &           720E0_FP / ( TTDAY(I,J) )
+
+            ! Multiplicative factor for the diurnal cycle                      
+            ClO_FAC = ( 1e6_fp - 1e2_fp * ( HOUR - 6E0_FP ) ** 4E0_FP +
+     &           ( 18E0_FP - HOUR ) * 1e6_fp / 12E0_FP ) / 2e6_fp
+
+            ! Normalize the multiplicative factor to have a 24-h mean of 1     
+            ClO_FAC = SAFE_DIV( ClO_FAC, (4e-4_fp * TTDAY(I,J) ),0E0_FP)
+
+         ENDIF
+         ! Make sure that diurnal scaling factor is non-negative               
+         ClO_FAC = MAX( ClO_FAC, 0E0_FP )
+
+         ! The instantaneous concentration is the 24-h mean times              
+         ! the time-varying factor from the diurnal cycle                      
+         ClO_PPBV  = HEM_CLO(I,J,L) * ClO_FAC
+         ClO_MOLEC_CM3 = ClO_PPBV * 1.0e-9_fp
+     &   * State_Met%AIRNUMDEN(I,J,L)
+
+      ELSE
+
+         ! At night, ClO, HOCl, Cl goes to zero                                
+         ClO_MOLEC_CM3  = 0E0_FP
+      ENDIF
+
+      ! Return to calling program                                              
+      END FUNCTION GET_ClO
+!EOC                                               
+!------------------------------------------------------------------------------
+!                  GEOS-Chem Global Chemical Transport Model                  !
+!------------------------------------------------------------------------------
+!BOP                                                                           
+!                                                                              
+! !IROUTINE: get_cl                                                            
+!                                                                              
+! !DESCRIPTION: Function GET\_CL imposes a diurnal scaling for Cl, hmh 11/19/14
+!               adding for Cl-initiated oxidation.                             
+!\\                                                                            
+!\\                                                                            
+! !INTERFACE:                                                                  
+!                                                                              
+      FUNCTION GET_Cl( I, J, L, State_Met ) RESULT( Cl_MOLEC_CM3 )
+!                                                                              
+! !USES:                                                                       
+!                                                                              
+      USE CMN_SIZE_MOD
+      USE State_Met_Mod, ONLY : MetState
+      USE ERROR_MOD,          ONLY : SAFE_DIV
+      USE TIME_MOD,           ONLY : GET_TS_CHEM, GET_LOCALTIME
+!                                                                              
+! !INPUT PARAMETERS:                                                           
+      INTEGER,        INTENT(IN)  :: I              ! Longitude index
+      INTEGER,        INTENT(IN)  :: J              ! Latitude index           
+      INTEGER,        INTENT(IN)  :: L              ! Level index              
+      TYPE(MetState), INTENT(IN)  :: State_Met      ! Meteorology State object 
+
+!                                                                              
+! !RETURN VALUE:                                                               
+!             
+      REAL(fp)                      :: Cl_PPBV
+      REAL(fp)                      :: Cl_MOLEC_CM3   ! Cl   conc [molec/cm3]    
+
+!  INTENT(OUT)                                                                 
+
+!                                                                              
+! !REVISION HISTORY:                                                           
+! 19 Nov 2014 - H. Horowitz - initial version copied from get_clO.             
+! 30 Sep 2017 - C. Thackray (cpt) - merged into v11
+!EOP                                                                           
+!------------------------------------------------------------------------------
+!BOC                                                                           
+!                                                                              
+! !LOCAL VARIABLES:                                                            
+!                                                                              
+      REAL*8              :: Cl_FAC, LOCALTIME, HOUR
+
+      !=================================================================       
+      ! GET_Cl begins here! copying from get_ClO!                              
+      !=================================================================       
+
+      !----------------------------------------------------------------        
+      ! Impose a diurnal cycle                                                 
+      !                                                                        
+      ! This formula comes from the Holmes et al (2009) MBL box model          
+      ! which fit RGM observations for Okinawa and a Pacific cruise            
+      !----------------------------------------------------------------        
+
+      ! Test for sunlight...                                                   
+      IF ( (State_Met%SUNCOS(I,J) > 0e0_fp) 
+     &     .and. (TTDAY(I,J) > 0e0_fp) ) THEN
+
+         ! Use a constant function if daylight is < 2 hours or > 22hours       
+         IF ( ( TTDAY(I,J) < 120e0_fp  ) .OR.
+     &        ( TTDAY(I,J) > 1320e0_fp ) ) THEN
+
+            Cl_FAC = SAFE_DIV( 1440e0_fp, TTDAY(I,J), 0E0_FP )
+
+         ELSE
+
+            ! Local time: 0-23.999                                             
+            LOCALTIME = GET_LOCALTIME( I, J, L )
+
+            ! Interpolate the real hour to lie within an equinoctal day        
+            ! i.e. between 6-18                                                
+            HOUR = 12E0_FP + ( LOCALTIME - 12E0_FP ) *
+     &           720E0_FP / ( TTDAY(I,J) )
+
+            ! Multiplicative factor for the diurnal cycle                      
+            Cl_FAC = ( 1e6_fp - 1e2_fp * ( HOUR - 6E0_FP ) ** 4E0_FP +
+     &           ( 18E0_FP - HOUR ) * 1e6_fp / 12E0_FP ) / 2e6_fp
+
+            ! Normalize the multiplicative factor to have a 24-h mean of 1     
+            Cl_FAC = SAFE_DIV( Cl_FAC, (4e-4_fp * TTDAY(I,J) ), 0E0_FP )
+
+         ENDIF
+
+
+         ! Make sure that diurnal scaling factor is non-negative               
+         Cl_FAC = MAX( Cl_FAC, 0E0_FP )
+
+         ! The instantaneous concentration is the 24-h mean times              
+         ! the time-varying factor from the diurnal cycle                      
+         Cl_PPBV   = HEM_CL(I,J,L) * Cl_FAC
+         Cl_MOLEC_CM3 = Cl_PPBV * 1.0e-9_fp
+     &   * State_Met%AIRNUMDEN(I,J,L)
+
+      ELSE
+
+         ! At night, ClO, HOCl, Cl goes to zero                                
+         Cl_MOLEC_CM3   = 0E0_FP
+
+      ENDIF
+
+      ! Return to calling program                                              
+      END FUNCTION GET_Cl
+!EOC                              
+!------------------------------------------------------------------------------
+!                  GEOS-Chem Global Chemical Transport Model                  !
+!------------------------------------------------------------------------------
+!BOP
+!
+! !IROUTINE: get_HOCl
+!
+! !DESCRIPTION: Function GET\_HOCl returns instantaneous HOCl concentration 
+!  calculated from the monthly mean and an imposed diurnal variation.
+!\\
+!\\
+! !INTERFACE:
+
+      FUNCTION GET_HOCl(I,J,L,State_Met)
+     &     RESULT( HOCL_INST )
+!
+! !USES:
+!
+      USE ERROR_MOD,     ONLY : SAFE_DIV
+      USE TIME_MOD,      ONLY : GET_LOCALTIME
+      USE State_Met_Mod, ONLY : MetState
+      USE CMN_SIZE_MOD
+!
+! !INPUT PARAMETERS:
+!
+      INTEGER, INTENT(IN) :: I,J,L
+      TYPE(MetState), INTENT(IN) :: State_Met
+!
+! !REVISION HISTORY:
+!  ca. 2014 - H. Horowitz - Initial version
+!  30 Sep 2017 - C. Thackray (cpt) - Merged into v11
+!EOP
+!------------------------------------------------------------------------------
+!BOC
+!
+! !LOCAL VARIABLES:
+!      
+      REAL(fp)            :: HOCL_INST
+      REAL(fp)            :: HOCl_FAC, LOCALTIME, HOUR
+
+      !=================================================================       
+      ! GET_HOCl begins here! copying from get_ClO!                            
+      !=================================================================       
+
+      !----------------------------------------------------------------        
+      ! Impose a diurnal cycle                                                 
+      !                                                                        
+      ! This formula comes from the Holmes et al (2009) MBL box model          
+      ! which fit RGM observations for Okinawa and a Pacific cruise            
+      !----------------------------------------------------------------        
+
+      ! Test for sunlight...                                                   
+      IF ( (State_Met%SUNCOS(I,J) > 0e0_fp) 
+     &     .and. (TTDAY(I,J) > 0e0_fp) ) THEN
+         ! Use a constant function if daylight is < 2 hours or > 22hours       
+         IF ( ( TTDAY(I,J) < 120e0_fp  ) .OR.
+     &        ( TTDAY(I,J) > 1320e0_fp ) ) THEN
+
+            HOCl_FAC = SAFE_DIV( 1440e0_fp, TTDAY(I,J), 0E0_FP )
+
+         ELSE
+
+            ! Local time: 0-23.999                                             
+            LOCALTIME = GET_LOCALTIME( I, J, L )
+
+            ! Interpolate the real hour to lie within an equinoctal day        
+            ! i.e. between 6-18                                                
+            HOUR = 12E0_FP + ( LOCALTIME - 12E0_FP ) *
+     &           720E0_FP / ( TTDAY(I,J) )
+
+            ! Multiplicative factor for the diurnal cycle                      
+            HOCl_FAC = ( 1e6_fp - 1e2_fp * ( HOUR - 6E0_FP ) ** 4E0_FP +
+     &           ( 18E0_FP - HOUR ) * 1e6_fp / 12E0_FP ) / 2e6_fp
+
+            ! Normalize the multiplicative factor to have a 24-h mean of 1     
+            HOCl_FAC = SAFE_DIV( HOCl_FAC, (4e-4_fp *TTDAY(I,J)),0E0_FP)
+
+         ENDIF
+
+         ! Make sure that diurnal scaling factor is non-negative               
+         HOCl_FAC = MAX( HOCl_FAC, 0E0_FP )
+
+         HOCl_INST = HEM_HOCL(I,J,L) * HOCl_FAC ! ppbv
+         HOCl_INST = HOCl_INST * 1.0e-9_fp * State_Met%AIRNUMDEN(I,J,L)
+
+      ELSE
+
+         ! Concentration 0 in the dark
+         HOCl_INST = 0e0_fp
+
+      ENDIF
+  
+      END FUNCTION GET_HOCl
+!EOC
+!------------------------------------------------------------------------------
+!                  GEOS-Chem Global Chemical Transport Model                  !
+!------------------------------------------------------------------------------
+!BOP
+!
+! !IROUTINE: get_NO2
+!
+! !DESCRIPTION: Function GET\_NO2 returns instantaneous NO2 concentration 
+!  calculated from the monthly mean and an imposed diurnal variation.
+!\\
+!\\
+! !INTERFACE:
+
+      FUNCTION GET_NO2( I, J, L, State_Met, NO_MO, NO2_MO, O3_MO )
+     &     RESULT( NO2_INST )
+!
+! !USES:
+!
+      USE ERROR_MOD,     ONLY : SAFE_DIV
+      USE State_Met_Mod, ONLY : MetState
+      USE CMN_SIZE_MOD
+!
+! !INPUT PARAMETERS:
+!
+      INTEGER,        INTENT(IN) :: I,J,L
+      TYPE(MetState), INTENT(IN) :: State_Met
+      REAL(4),        INTENT(IN) :: NO_MO
+      REAL(4),        INTENT(IN) :: NO2_MO
+      REAL(fp),       INTENT(IN) :: O3_MO
+!
+! !REVISION HISTORY:
+!  ca. 2014    - H. Horowitz - Initial version
+!  30 Sep 2017 - C. Thackray (cpt) - Merged into v11
+!EOP
+!------------------------------------------------------------------------------
+!BOC
+! 
+! !LOCAL VARIABLES:
+!     
+      REAL(fp) :: J_NO2
+      REAL(fp) :: k3
+      REAL(fp) :: F_NO2
+      REAL(fp) :: A
+      REAL(fp) :: EdivR
+      REAL(fp) :: NOx_MO
+      REAL(fp) :: NO2_INST
+      REAL(fp) :: k3_O3_MO_prod, J_NO2_k3_O3_MO_sum
+!  =======================================================================     
+!  NOTES:                                                                      
+!                                                                              
+!  (R1) NO2 + hv -> NO + O,  j                                                 
+!  (R2) O +O2 -> O3,         k2                                                
+!  (R3) O3 + NO -> NO2 + O2, k3                                                
+!                                                                              
+!  [NOx] = [NO] + [NO2]                                                        
+!                                                                              
+!  NOx steady state:                                                           
+!  j[NO2] = k3[O3][NO]                                                         
+!  j[NO2] = k3[O3]([NOx]-[NO2])                                                
+!  [NO2](j+k3[O3] = k3[O3][NOx]                                                
+!  [NO2]/[NOx] = k3[O3]/(j+k3[O3])                                             
+!                                                                              
+!   k3 = A exp(-E / RT) Arrhenius Equation                                     
+!   A = 3.0e-12 Seinfeld & Pandis                                              
+!   E/R = 1500                                                                 
+!   k3 = 1.0e-11 @ 298k                                                        
+!                                                                              
+!***************************************************************************   
+!                                                                              
+! !DEFINED PARAMETERS:                                                         
+!                                        
+      A = 3.0e-12_fp
+      EdivR = 1.5e+3_fp
+
+      !=================================================================       
+      ! GET_NO2 begins here!                                                   
+      !=================================================================      
+
+      k3 = A*exp(-EdivR/State_Met%T(I,J,L))
+      
+      !Get total monthly NOx
+      NOx_MO = NO_MO + NO2_MO
+
+      J_NO2 = GET_JNO2(I,J,L,State_Met)
+      k3_O3_MO_prod = k3*O3_MO
+      J_NO2_k3_O3_MO_sum = J_NO2 + k3_O3_MO_prod
+      F_NO2 = SAFE_DIV( k3_O3_MO_prod, J_NO2_k3_O3_MO_sum, 0E0_FP )
+
+      IF (O3_MO .LT. SMALLNUM) THEN
+         F_NO2 = SMALLNUM
+      ENDIF
+
+      IF (J_NO2 .LT. SMALLNUM) THEN
+         F_NO2 = 1e+0_fp
+      ENDIF
+
+      NO2_INST = F_NO2 * NOx_MO ! ppbv
+      NO2_INST = NO2_INST * 1.0e-9_fp * State_Met%AIRNUMDEN(I,J,L)
+      
+      END FUNCTION GET_NO2
+!EOC
+!------------------------------------------------------------------------------
+!                  GEOS-Chem Global Chemical Transport Model                  !
+!------------------------------------------------------------------------------
 !BOP
 !
 ! !IROUTINE: get_Br 
@@ -3330,38 +5164,47 @@
 !\\
 ! !INTERFACE:
 !
-      FUNCTION GET_BR( I, J, L, BRO_MOLEC_CM3, State_Met )
+      FUNCTION GET_BR( I, J, L, BRO_MOLEC_CM3, State_Met, State_Diag )
      &   RESULT( BR_MOLEC_CM3 )
 !
 ! !USES:
 !
-      USE CHEMGRID_MOD,       ONLY : ITS_IN_THE_STRAT
       USE CMN_SIZE_MOD
       USE DAO_MOD,            ONLY : GET_OBK
       USE DAO_MOD,            ONLY : IS_WATER
+#if defined( BPCH_DIAG )
       USE DIAG03_MOD,         ONLY : AD03_Br,   LD03,     ND03
+#endif
       USE ERROR_MOD,          ONLY : SAFE_DIV
       USE GLOBAL_BR_MOD,      ONLY : BR_MERGE,  BR_TROP
       USE GLOBAL_BR_MOD,      ONLY : BR_STRAT,  J_BRO
       USE GLOBAL_BR_MOD,      ONLY : BRO_MERGE, BRO_TROP, BRO_STRAT
       USE GC_GRID_MOD,        ONLY : GET_YMID
       USE PBL_MIX_MOD,        ONLY : GET_FRAC_UNDER_PBLTOP
+      USE State_Diag_Mod,     ONLY : DgnState
       USE State_Met_Mod,      ONLY : MetState
-      USE TIME_MOD,           ONLY : GET_TS_CHEM, GET_LOCALTIME 
+      USE TIME_MOD,           ONLY : GET_LOCALTIME 
       USE TIME_MOD,           ONLY : ITS_A_NEW_DAY
       USE TIME_MOD,           ONLY : GET_MONTH
 !
 ! !INPUT PARAMETERS: 
 !
-      INTEGER,        INTENT(IN)  :: I              ! Longitude index
-      INTEGER,        INTENT(IN)  :: J              ! Latitude index
-      INTEGER,        INTENT(IN)  :: L              ! Level index
-      REAL(fp),       INTENT(OUT) :: BrO_MOLEC_CM3  ! BrO conc [molec/cm3]
-      TYPE(MetState), INTENT(IN)  :: State_Met      ! Meteorology State object
+      INTEGER,        INTENT(IN)    :: I            ! Longitude index
+      INTEGER,        INTENT(IN)    :: J            ! Latitude index
+      INTEGER,        INTENT(IN)    :: L              ! Level index
+      TYPE(MetState), INTENT(IN)    :: State_Met    ! Meteorology State object
+!
+! !INPUT/OUTPUT PARAMETERS:
+!
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag
+!
+! OUTPUT PARAMETERS:
+!
+      REAL(fp),       INTENT(OUT)   :: BrO_MOLEC_CM3  ! BrO conc [molec/cm3]
 !
 ! !RETURN VALUE:
 !
-      REAL(fp)                    :: BR_MOLEC_CM3   ! Br conc [molec/cm3]
+      REAL(fp)                      :: BR_MOLEC_CM3   ! Br conc [molec/cm3]
 ! 
 ! !REVISION HISTORY: 
 !  06 Jul 2006 - C. Holmes   - Initial version
@@ -3441,7 +5284,7 @@
       BRO_PPTV = BRO_MERGE(I,J,L)
 
       ! Multiple stratospheric concentrations by Factor, if necessary
-      IF ( (ITS_IN_THE_STRAT( I, J, L, State_Met )) .AND.
+      IF ( State_Met%InStratosphere(I,J,L) .and.
      &     (ABS(STRAT_BR_FACTOR - 1e+0_fp) > 1e-2_fp) )    THEN
 
          BR_PPTV  = BR_PPTV  * STRAT_BR_FACTOR
@@ -3452,23 +5295,24 @@
       !----------------------------------------------------------------
       ! Add Br in the MBL
       !----------------------------------------------------------------
+      
+      IF ( L_ADD_MBL_BR ) THEN
+         ! Fraction of grid box mass which is within the mixed layer
+         FPBL = GET_FRAC_UNDER_PBLTOP(I,J,L)
 
-      ! Fraction of grid box mass which is within the mixed layer
-      FPBL = GET_FRAC_UNDER_PBLTOP(I,J,L)
+         IF ( IS_WATER( I, J, State_Met ) .AND. (FPBL > 0e+0_fp) ) THEN
 
-      IF ( IS_WATER( I, J, State_Met ) .AND. (FPBL > 0e+0_fp) ) THEN
+            ! Convert BrO concentration to corresponding Br based on
+            ! photochemical steady state, pptv
+            ! Platt & Janssen, Faraday Discussions (1995)
+            BR_MBL = BRO_MBL *( J_BRO(I,J,L) + K_BRO_NO * C_NO ) / 
+     &                      ( K_BR_O3      * GET_O3(I,J,L,State_Met) ) *
+     &                        FPBL
 
-         ! Convert BrO concentration to corresponding Br based on
-         ! photochemical steady state, pptv
-         ! Platt & Janssen, Faraday Discussions (1995)
-         BR_MBL = BRO_MBL *( J_BRO(I,J,L) + K_BRO_NO * C_NO ) / 
-     &                     ( K_BR_O3      * GET_O3(I,J,L,State_Met) ) *
-     &                       FPBL
-
-         ! MBL concentration is the greater of the TOMCAT Br or 1pptv BrO
-         BR_PPTV  = MAX( BR_PPTV,  BR_MBL )
-         BrO_PPTV = MAX( BRO_PPTV, BRO_MBL*FPBL )
-
+            ! MBL concentration is the greater of the TOMCAT Br or 1pptv BrO
+            BR_PPTV  = MAX( BR_PPTV,  BR_MBL )
+            BrO_PPTV = MAX( BRO_PPTV, BRO_MBL*FPBL )
+         ENDIF
 
       ENDIF            
 
@@ -3618,17 +5462,37 @@
             BR_PPTV  = BR_PPTV  + Br_POLAR
             BrO_PPTV = BrO_PPTV + BrO_POLAR
 
+#if defined( BPCH_DIAG )
             !==============================================================
-            ! ND03 diagnostic: Polar Bromine [pptv]
+            ! %%%%% ND03 (bpch) DIAGNOSTIC %%%%%
+            !
+            ! Polar Br [pptv]; Polar Br [pptv]; Polar O3 [ppbv]
             !==============================================================
             IF ( ND03 > 0 .AND. L <= LD03 ) THEN 
-
-                  AD03_Br(I,J,L,3) = AD03_Br(I,J,L,3) + BR_POLAR
-                  AD03_Br(I,J,L,4) = AD03_Br(I,J,L,4) + BRO_POLAR
-                  AD03_Br(I,J,L,5) = AD03_Br(I,J,L,5) + O3_POLAR_PPB
-
+               AD03_Br(I,J,L,3) = AD03_Br(I,J,L,3) + BR_POLAR
+               AD03_Br(I,J,L,4) = AD03_Br(I,J,L,4) + BRO_POLAR
+               AD03_Br(I,J,L,5) = AD03_Br(I,J,L,5) + O3_POLAR_PPB
             ENDIF ! ND03
+#endif
 
+#if defined( NC_DIAG )
+            !==============================================================
+            ! %%%%% HISTORY (aka netCDF diagnostics) %%%%%
+            ! 
+            ! Polar Br [pptv]; Polar Br [pptv]; Polar O3 [ppbv]
+            !==============================================================
+            IF ( State_Diag%Archive_PolarConcBr ) THEN
+               State_Diag%PolarConcBr(I,J,L) = Br_Polar
+            ENDIF
+
+            IF ( State_Diag%Archive_PolarConcBrO ) THEN
+               State_Diag%PolarConcBr(I,J,L) = BrO_Polar
+            ENDIF
+
+            IF ( State_Diag%Archive_PolarConcO3 ) THEN
+               State_Diag%PolarConcO3(I,J,L) = O3_Polar_PPB
+            ENDIF
+#endif
          ENDIF ! Month
 
       ENDIF ! Polar BrO criteria
@@ -3684,6 +5548,8 @@
 !  01 Mar 2012 - R. Yantosca - Now use GET_YMID_R(I,J,L) from grid_mod.F90
 !  16 May 2016 - M. Sulprizio- Remove IJLOOP and change SUNTMP array dimensions
 !                              from (MAXIJ) to (IIPAR,JJPAR)
+!  06 Feb 2018 - E. Lundgren - Update unit conversion factor for timestep
+!                              unit change from min to sec
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -3727,7 +5593,7 @@
          COSZM(:,:) = 0e+0_fp
 
          ! NDYSTEP is # of chemistry time steps in this day
-         NDYSTEP = ( 24 - INT( GET_GMT() ) ) * 60 / GET_TS_CHEM()     
+         NDYSTEP = ( 24 - INT( GET_GMT() ) ) * 3600 / GET_TS_CHEM()     
 
          ! NT is the elapsed time [s] since the beginning of the run
          NT = GET_ELAPSED_SEC()
@@ -3788,14 +5654,15 @@
 
                ! TTDAY is the total daylight time at location (I,J)
                IF ( SUNTMP(I,J) > 0e+0_fp ) THEN
-                  TTDAY(I,J) = TTDAY(I,J) + DBLE( GET_TS_CHEM() )
+                  TTDAY(I,J) = TTDAY(I,J) + DBLE( GET_TS_CHEM() ) 
+     &                         / 60e+0_fp
                ENDIF
             ENDDO
             ENDDO
 !$OMP END PARALLEL DO
 
             ! Increment elapsed time [sec]
-            NT = NT + ( GET_TS_CHEM() * 60 )             
+            NT = NT + GET_TS_CHEM() 
          ENDDO
 
          ! Reset first-time flag
@@ -3938,7 +5805,7 @@
       USE GC_GRID_MOD,        ONLY : GET_YMID_R
       USE PhysConstants
       USE State_Met_Mod,      ONLY : MetState
-      USE TIME_MOD,           ONLY : GET_TS_CHEM, GET_DAY_OF_YEAR 
+      USE TIME_MOD,           ONLY : GET_DAY_OF_YEAR 
 !
 ! !INPUT PARAMETERS: 
 !
@@ -3975,7 +5842,9 @@
       !=================================================================
       
       ! Test for sunlight...
-      IF ( State_Met%SUNCOS(I,J) > TINY(1e+0_fp) ) THEN
+      !IF ( State_Met%SUNCOS(I,J) > TINY(1e+0_fp) ) THEN
+      IF ( State_Met%SUNCOS(I,J) > 0e0_fp .and. 
+     &     TCOSZ(I,J) > 0e0_fp ) THEN
 
          ! Day of year
          JDAY = GET_DAY_OF_YEAR()
@@ -4218,7 +6087,6 @@
 !
       USE CMN_SIZE_MOD
       USE ErrCode_Mod
-      USE ERROR_MOD,          ONLY : ERROR_STOP
       USE GC_GRID_MOD,        ONLY : GET_AREA_M2
       USE HCO_INTERFACE_MOD,  ONLY : HcoState
       USE HCO_EmisList_Mod,   ONLY : HCO_GetPtr
@@ -4254,7 +6122,8 @@
       REAL(fp)            :: E_plant
 
       ! Strings
-      CHARACTER(LEN=255)  :: LOC = 'DO_RED_INPLUME (mercury_mod.F)'
+      CHARACTER(LEN=255)  :: ThisLoc
+      CHARACTER(LEN=512)  :: ErrMsg
 
       ! Pointers
       REAL(f4), POINTER   :: E_ELEC_Hg2(:,:)
@@ -4268,15 +6137,19 @@
       !=================================================================
 
       ! Initialize
+      RC         =  GC_SUCCESS
+      ErrMsg     =  ''
+      ThisLoc    =  ' -> at DO_RED_INPLUME (in GeosCore/mercury_mod.F)'
       E_ELEC_Hg2 => NULL()
 
-      
       ! Get a pointer to the monthly mean OH from HEMCO (bmy, 3/11/15)
       CALL HCO_GetPtr( am_I_Root, HcoState, 
      &                'CFPP_NEI2005_Hg2', E_ELEC_Hg2, RC )
       IF ( RC /= GC_SUCCESS ) THEN
-         CALL ERROR_STOP ( 
-     &      'Cannot get pointer to CFPP_NEI2005_Hg2!', LOC )
+         ErrMsg = 
+     &     'Cannot get pointer to HEMCO field CFPP_NEI2005_Hg2!'
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
       ENDIF
 
       ! Do the reduction
@@ -4304,6 +6177,505 @@
 !------------------------------------------------------------------------------
 !BOP
 !
+! !IROUTINE: offlineocean_readmo
+!
+! !DESCRIPTION: Subroutine OFFLINEOCEAN\_READMO reads the monthly varying
+!     offline ocean evasion emissions if LDYNOCEAN is FALSE. Will not actually
+!     need mixed layer depth when i get stuff from Yanxu 
+!\\
+!\\
+! !INTERFACE:
+!
+      SUBROUTINE OFFLINEOCEAN_READMO( FLUX,      RC,        am_I_Root,
+     &                                State_Met, State_Chm, State_Diag )
+!
+! !USES:
+!
+      USE ErrCode_Mod
+      USE Input_Opt_Mod,      ONLY : OptInput
+      USE TIME_MOD,           ONLY : EXPAND_DATE,GET_YEAR, GET_TS_EMIS !hmh 9/16/15
+      USE TIME_MOD,           ONLY : ITS_A_NEW_MONTH, GET_MONTH
+      USE CMN_SIZE_MOD
+      USE GC_GRID_MOD,        ONLY : GET_AREA_M2
+#if defined( BPCH_DIAG )
+      USE DIAG03_MOD,         ONLY : AD03, ND03 ! hmh 9/16/15 for Hg_up/down
+#endif
+      ! adding hmh 5/17/16
+      USE DAO_MOD,            ONLY : IS_WATER 
+      USE CMN_SIZE_MOD             ! Size parameters
+      USE State_Chm_Mod,      ONLY : ChmState 
+      USE State_Diag_Mod,     ONLY : DgnState
+      USE State_Met_Mod,      ONLY : MetState
+      USE HCO_INTERFACE_MOD,  ONLY : HcoState
+      USE HCO_EmisList_Mod,   ONLY : HCO_GetPtr
+
+      !
+! !INPUT PARAMETERS:
+!
+      ! hmh adding 5/17/16
+      TYPE(MetState), INTENT(IN)    :: State_Met    ! Meteorology State object
+      TYPE(ChmState), INTENT(IN)    :: State_Chm    ! Chemistry State object
+      LOGICAL,        INTENT(IN)    :: am_I_Root    ! Are we on the root CPU?
+!
+! !INPUT/OUTPUT PARAMETERS:
+!
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag   ! Diagnostics State Object
+!
+! !OUTPUT PARAMETERS:
+!
+      REAL*8,         INTENT(OUT)   :: FLUX(IIPAR,JJPAR,1) ! hmh 9/14/15
+      INTEGER,        INTENT(OUT)   :: RC           ! Success or failure?
+
+! 
+! !REVISION HISTORY: 
+!  12 Aug 2015 - H. Horowitz - Initial version
+!  15 Sep 2015 - H. Horowitz - removing am_I_root & trying to fix netcdf issue.
+!     also removing input_opt; don't need it here. Try making Array 2D instead
+!     of 3-D.
+!  16 Sep 2015 - H. Horowitz - adding diags for Hg_up and Hg_down (separates
+!     the positive and negative oceanic fluxes from the net EHg0_oc.
+!  17 May 2016 - H. Horowitz - setting up to read concentrations and do flux
+!     calculations like in ocean_mercury_mod subrtine ocean_mercury_flux       
+!  30 Nov 2017 - C. Thackray (cpt) - merging into v11
+!------------------------------------------------------------------------------
+!BOC
+!
+! !LOCAL VARIABLES:
+!
+      INTEGER                 :: I, J, M, DN(12) ! M is mon., DN is days in mon
+      INTEGER                 :: NNN
+      INTEGER                 :: THISYEAR
+      INTEGER                 :: THISMONTH
+
+      LOGICAL, SAVE           :: FIRST = .TRUE.
+      LOGICAL                 :: IS_OCEAN_BOX 
+      INTEGER                 :: NN, N
+      REAL(fp)                :: A_M2,     DTSRCE
+      REAL(fp)                :: CHg0aq,   CHg0,     vi, Hg0aqtemp         
+      REAL(fp)                :: TC,       TK,       Kw
+      REAL(fp)                :: Sc,       ScCO2,    USQ      
+      REAL(fp)                :: FRAC_L,   FRAC_O,   H, D  
+      REAL(fp)                :: FUP(IIPAR,JJPAR,N_Hg_CATS)
+      REAL(fp)                :: FDOWN(IIPAR,JJPAR,N_Hg_CATS)
+      REAL(fp)                :: Hg0aq(IIPAR,JJPAR,N_Hg_CATS)
+      REAL(fp)                :: MHg0_air
+
+      ! Conversion factor from [cm/h * ng/L] --> [kg/m2/s]
+      REAL(fp),  PARAMETER    :: TO_KGM2S = 1.0e-11_fp / 3600.0e+0 _fp
+
+      ! Small numbers to avoid dividing by zero
+      REAL(fp),  PARAMETER    :: SMALLNUM   = 1.0e-32_fp
+      
+      
+      REAL(fp)                :: SFCWINDSQR 
+
+      ! Pointers
+      ! We need to define local arrays to hold corresponding values 
+      ! from the Chemistry State (State_Chm) object. (mpayer, 12/6/12)
+      REAL(fp), POINTER       :: STT(:,:,:,:)
+            
+      ! For values from Input_Opt
+      LOGICAL                 :: LDYNOCEAN 
+
+      ! Characters
+      CHARACTER(LEN=255)      :: ThisLoc
+      CHARACTER(LEN=512)      :: ErrMsg
+
+      !=================================================================
+      ! OFFLINEOCEAN_READMO begins here! 
+      !=================================================================
+
+      ! Initialize
+      RC      = GC_SUCCESS
+      ErrMsg  = ''
+      ThisLoc = ' -> at OFFLINEOCEAN_READMO (in GeosCore/mercury_mod.F)'
+
+      ! Get month
+      THISMONTH = GET_MONTH()      
+      M         = THISMONTH
+
+      ! Days in each month (will use later) 9/16/15 hmh
+      DN =  (/ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 /)
+
+#if defined( NC_DIAG )
+      !-----------------------------------------------------------------
+      ! %%%%% HISTORY (aka netCDF diagnostics) %%%%%
+      !
+      ! Zero flux arrays of State_Diag to prevent leftover values
+      ! from the last timestep from being included in the averaging
+      !-----------------------------------------------------------------
+      IF ( State_Diag%Archive_FluxHg0fromOceanToAir ) THEN
+         State_Diag%FluxHg0fromOceanToAir = 0.0_f4
+      ENDIF
+
+      IF ( State_Diag%Archive_FluxHg0fromAirToOcean ) THEN
+         State_Diag%FluxHg0fromAirToOcean = 0.0_f4
+      ENDIF
+#endif
+
+      !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+      ! read monthly ocean evasion  !
+      !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+      IF ( ITS_A_NEW_MONTH() ) THEN 
+      
+         CALL HCO_GetPtr( am_I_Root, HcoState, 'GLOBAL_OCEAN', 
+     &                    OCEAN_CONC,  RC )
+         IF ( RC /= GC_SUCCESS ) THEN
+            ErrMsg = 'Cannot get pointer to HEMCO field GLOBAL_OCEAN!'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
+
+      ENDIF
+
+      ! Only doing Hg0 overall, should add trap for LSPLIT (cpt - 2017)
+      DO NNN = 1, N_Hg_CATS
+         IF ( NNN .eq. 1 ) THEN
+            Hg0aq(:,:,NNN) = OCEAN_CONC(:,:,1)
+         ELSE
+            Hg0aq(:,:,NNN) = 0.0e+0_fp
+         ENDIF
+      ENDDO
+
+            ! Emission timestep [s]
+      DTSRCE = GET_TS_EMIS()
+
+      STT => State_Chm%Species
+         
+      ! Loop over surface boxes  
+!$OMP PARALLEL DO
+!$OMP+DEFAULT( SHARED )
+!$OMP+PRIVATE( I,  A_M2, vi, ScCO2)
+!$OMP+PRIVATE( J,   NN, TC, TK )
+!$OMP+PRIVATE( N,   CHg0,    FRAC_L,   FRAC_O  )
+!$OMP+PRIVATE( H,   Kw,  CHg0aq, Hg0aqtemp, MHg0_air )
+!$OMP+PRIVATE( IS_OCEAN_BOX, Sc,  Usq, D )
+!$OMP+SCHEDULE( DYNAMIC )
+      DO J = 1, JJPAR
+      DO I = 1, IIPAR
+
+         ! Grid box surface area [m2]
+         A_M2       = GET_AREA_M2( I, J, 1 )
+         ! Initialize values
+         Kw         = 0e0_fp
+         TK         = 0e0_fp
+         TC         = 0e0_fp
+
+         ! Get fractions of land and ocean in the grid box [unitless]
+         ! Use fractional land type information in MERRA. Also make sure
+         ! we do not use boxes that are mostly sea ice for consistency
+         ! FROCEAN is a constant, so to get correct ocean fraction we
+         ! need to subtract the sea ice fraction. Don't let the fraction
+         ! be less than zero (jaf, 4/26/11)
+         FRAC_L       = State_Met%FRLAND(I,J)
+         FRAC_O       = MAX( State_Met%FROCEAN(I,J) -
+     &                       State_Met%FRSEAICE(I,J), 0e0_fp )
+         IS_OCEAN_BOX = ( ( FRAC_O > 0e0_fp                     ) .and. 
+     &                    ( State_Met%SEAICE00(I,J)  > 0.5e0_fp ) )
+
+         IF ( (IS_OCEAN_BOX) ) THEN
+            !--------------------------------------------------------------
+            ! Sea surface temperature in both [K] and [C]
+            !--------------------------------------------------------------
+            ! where TSKIN is the temperature (K) at the ground/sea surface
+            ! (Use as surrogate for SST, cap at freezing point)
+
+            TK     = MAX( State_Met%TSKIN(I,J), 273.15e0_fp )
+
+            TC     = TK - 273.15e0_fp
+
+            !==============================================================
+            ! Volatilisation of Hg0
+            !==============================================================
+            
+            ! Henry's law constant (gas->liquid) [unitless] [L water/L air]  
+            ! (ref: Andersson et al. 2008)
+
+            H      = EXP( ( -2404.3e0_fp / TK ) + 6.92e0_fp )
+
+            ! Viscosity as a function of changing temperatures
+            ! (ref: Loux 2001)
+            ! The paper says the viscosity is given in cP but us really P
+            ! and we therefor multiply with 100 to get cP.
+            vi    = ( 10**( ( 1301.0e0_fp / ( 998.333e0_fp + 8.1855e0_fp 
+     &              * ( TC - 20.0e0_fp )+ 0.00585e0_fp 
+     &           * (TC - 20.0e0_fp )**2 ) ) 
+     &              - 3.30233e0_fp ) ) * 100.0e0_fp      
+
+            ! Schmidt # for Hg [unitless]                             
+            ! Sc = v/D = kinematic viscosity/diffusivity
+            ! (ref: Poissant et al 2000; Wilke and Chang 1995)
+            ! to correct for seawater D0 is decreased by 6% as suggested
+            ! by Wanninkhof (1992)
+
+            D = 7.4e-8_fp * sqrt( 2.26e0_fp * 18.0e0_fp ) * TK /
+     &             ( ( 14.8e0_fp**0.6e0_fp ) *vi )
+
+            Sc   = ( 0.017e0_fp * EXP( -0.025e0_fp * TC ) ) / D                
+            
+            ! Schmidt # of CO2 [unitless] for CO2 in seawater at 20 degrees C
+            ! The value is set to a constant based on other ocean studies
+            ! (Gardfeld et al. 2003, Rolfhus & Fitzgerald2004,Mason et al.2001)
+
+            ! Correction of the Schmidt # with temperature based on Poissant
+            ! et al. (2000) (for freshwatersystems).
+
+            ScCO2  = 644.7e0_fp + TC * ( -6.16e0_fp + TC * ( 0.11e0_fp)) 
+
+            ! Square of surface (actually 10m) wind speed [m2/s2]
+            Usq    = State_Met%U10M(I,J)**2 + State_Met%V10M(I,J)**2
+
+            !------------------------------------------------------
+            ! Parameterizations for calculating water side mass trasfer 
+            ! coefficient 
+            !------------------------------------------------------
+            ! Mass transfer coefficient [cm/h], from Nightingale et al. 2000
+            Kw     = ( 0.25e0_fp * Usq ) / SQRT( Sc / ScCO2 )   
+            ! Loop over all Hg categories
+            DO NN = 1, N_Hg_CATS
+
+               ! Hg0 tracer number (for STT)
+               N             = Hg0_Id_List(NN)
+
+               !--------------------------------------------------------
+               ! Calculate oceanic and gas-phase concentration of Hg(0)
+               !--------------------------------------------------------
+                  
+               ! Concentration of Hg(0) in the ocean [ng/L]
+               ! now converting from Hg0aq in mol/m3 to ng/L
+               CHg0aq = Hg0aq(I,J,NN) *200.59e0_fp * 1.0e9_fp / 1.0e3_fp
+
+               ! Gas phase Hg(0) concentration: convert [kg] -> [ng/L]
+               MHg0_air = STT(I,J,1,N)
+               CHg0          = MHg0_air 
+     &                         *  1.0e9_fp /State_Met%AIRVOL(I,J,1)
+               
+               !--------------------------------------------------------
+               ! Compute flux of Hg(0) from the ocean to the air
+               !--------------------------------------------------------
+
+               ! Compute ocean flux of Hg0 [cm/h*ng/L]
+               FLUX(I,J,NN)  = Kw * ( CHg0aq - ( CHg0 / H ) )
+
+               !Extra diagnostic: compute flux up and flux down
+               FUP(I,J,NN)   = ( Kw * CHg0aq )
+               FDOWN(I,J,NN) = ( Kw * CHg0 / H )     
+               !--------------------------------------------------
+               ! Convert [cm/h*ng/L] --> [kg/m2/s] --> [kg/s]
+               ! Also account for ocean fraction of grid box
+               FLUX(I,J,NN)  = FLUX(I,J,NN) * TO_KGM2S * A_M2 * FRAC_O 
+
+               ! hmh 5/11/16 reverting to old version and uncommenting here
+               FUP(I,J,NN)  = FUP(I,J,NN) * TO_KGM2S * A_M2 * FRAC_O
+               FDOWN(I,J,NN)  = FDOWN(I,J,NN) * TO_KGM2S * A_M2 * FRAC_O
+               !--------------------------------------------------
+
+               !--------------------------------------------------------
+               ! Flux limited by ocean and atm Hg(0)
+               !--------------------------------------------------------
+
+               ! Cap the flux w/ the available Hg(0) ocean mass
+               ! THIS IS THE PROBLEM!
+               Hg0aqtemp = CHg0aq * A_M2 * FRAC_O *1.0e-8_fp
+               
+               IF ( FLUX(I,J,NN) * DTSRCE > Hg0aqtemp ) THEN 
+                  FLUX(I,J,NN) = Hg0aqtemp / DTSRCE 
+                  FUP(I,J,NN)  = FLUX(I,J,NN)-FDOWN(I,J,NN)
+               ENDIF
+                
+               ! Cap the neg flux w/ the available Hg(0) atm mass
+
+               IF ( (-FLUX(I,J,NN) * DTSRCE ) > MHg0_air ) THEN
+                  FLUX(I,J,NN) = -MHg0_air / DTSRCE       
+               ENDIF
+               
+               ! make sure Fup and Fdown do not underflow either
+               ! debug 2x2.5 diagnostic?
+               FUP(I,J,NN) = MAX(FUP(I,J,NN), SMALLNUM )
+               FDOWN(I,J,NN) = MAX(FDOWN(I,J,NN), SMALLNUM )
+
+#if defined( BPCH_DIAG )
+               !--------------------------------------------------------
+               ! %%%%% ND03 (bpch) DIAGNOSTICS %%%%%
+               !
+               ! Fluxes of Hg0 from air to ocean and ocean to air [kg]
+               !--------------------------------------------------------
+               IF ( ND03 > 0 ) THEN
+                  AD03(I,J,16,NN) = AD03(I,J,16,NN) 
+     &                 + FUP(I,J,NN) * DTSRCE
+                  AD03(I,J,17,NN) = AD03(I,J,17,NN) 
+     &                 + FDOWN(I,J,NN) *DTSRCE
+               ENDIF
+#endif
+
+#if defined( NC_DIAG )
+               !--------------------------------------------------------
+               ! %%%%% HISTORY (aka netCDF diagnostics) %%%%%
+               !
+               ! Fluxes of Hg0 from air to ocean and ocean to air [kg/s]
+               ! NOTE: Implement for total Hg species at ths time
+               !--------------------------------------------------------
+               IF ( NN == 1 ) THEN
+
+                  ! Flux of Hg0 from ocean to air [kg/s]
+                  IF ( State_Diag%Archive_FluxHg0fromOceanToAir ) THEN
+                     State_Diag%FluxHg0fromOceanToAir(I,J) =  
+     &                  FUP(I,J,NN)
+                  ENDIF
+
+                  IF ( State_Diag%Archive_FluxHg0fromAirToOcean ) THEN
+                     State_Diag%FluxHg0fromAirToOcean(I,J) =  
+     &                  FDOWN(I,J,NN)
+                  ENDIF
+
+               ENDIF
+#endif
+
+            ENDDO
+
+         ELSE
+
+            DO NN = 1, N_Hg_CATS 
+               FLUX(I,J,NN) = 0e0_fp
+               FUP(I,J,NN)=0e0_fp
+               FDOWN(I,J,NN)=0e0_fp 
+            ENDDO               
+
+         ENDIF 
+      ENDDO
+      ENDDO
+!$OMP END PARALLEL DO
+
+      ! Free pointer
+      NULLIFY( STT )
+
+      END SUBROUTINE OFFLINEOCEAN_READMO
+!EOC
+#if defined( NC_DIAG )
+!------------------------------------------------------------------------------
+!                  GEOS-Chem Global Chemical Transport Model                  !
+!------------------------------------------------------------------------------
+!BOP
+!
+! !IROUTINE: Reset_Hg_Diags
+!
+! !DESCRIPTION: Zeroes the relevant diagnostic fields of State_Diag for 
+!  the Hg and tagged Hg simulations.  Some of these need to be done
+!  for example, at the start of each timestep.
+!\\
+!\\
+! !INTERFACE:
+!
+      SUBROUTINE Reset_Hg_Diags( am_I_Root, Input_Opt, State_Diag, RC )
+!
+! !USES:
+!
+      USE ErrCode_Mod
+      USE Input_Opt_Mod,  ONLY : OptInput
+      USE State_Diag_Mod, ONLY : DgnState
+      USE Time_Mod,       ONLY : Its_Time_For_Chem
+!
+! !INPUT PARAMETERS: 
+!
+      LOGICAL,        INTENT(IN)    :: am_I_Root   ! Are we on the root CPU?
+      TYPE(OptInput), INTENT(IN)    :: Input_Opt   ! Input Options object
+!
+! !INPUT/OUTPUT PARAMETERS: 
+!
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag  ! Diagnostics State object
+!
+! !OUTPUT PARAMETERS: 
+!
+      INTEGER,        INTENT(OUT)   :: RC          ! Success or failure
+!
+! !REMARKS:
+!  NOTE: Not all netCDF diagnostic fields need to be zeroed.  Some fields
+!  of State_Diag are always
+!
+! !REVISION HISTORY:
+!  06 Jan 2015 - R. Yantosca - Initial version
+!EOP
+!------------------------------------------------------------------------------
+!BOC
+!
+! !LOCAL VARIABLES:
+!
+      CHARACTER(LEN=255) :: ErrMsg, ThisLoc
+
+      ! Assume success
+      RC      = GC_SUCCESS
+      ErrMsg  = ''
+      ThisLoc = 
+     &  ' -> at Reset_Hg_Diags (in module GeosCore/mercury_mod.F'
+
+      !=================================================================
+      ! Reset_Hg_Diags begins here!
+      !=================================================================
+
+      ! Exit if it's not a Hg sim
+      IF ( .not. Input_Opt%ITS_A_MERCURY_SIM ) THEN
+         ErrMsg = 'Routine "Reset_Hg_Diags" was called, but this ' //
+     &            'routine is only valid for Hg or tagHg simulations!'
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+
+      !--------------------------------------------------------------
+      ! Zero diagnostics in depo_mercury_mod.F
+      !--------------------------------------------------------------
+      IF ( State_Diag%Archive_FluxHg2HgPfromAirToSnow ) THEN
+         State_Diag%FluxHg2HgPfromAirToSnow = 0.0_fp
+      ENDIF
+
+      ! These are called once per chemistry or emissions timestep
+      IF ( Its_Time_For_Chem() ) THEN
+         
+         !--------------------------------------------------------------
+         ! Zero diagnostics in mercury_mod.F
+         !--------------------------------------------------------------
+         IF ( State_Diag%Archive_DryDepChm   .or. 
+     &        State_Diag%Archive_DryDep    ) THEN
+            State_Diag%DryDepChm = 0.0_f4
+         ENDIF    
+
+         !-------------------------------------------------------------
+         ! Zero diagnostics in ocean_mercury_mod.F
+         !-------------------------------------------------------------
+         IF ( State_Diag%Archive_EmisHg2rivers ) THEN
+            State_Diag%EmisHg2rivers = 0.0_f4
+         ENDIF
+
+         IF ( State_Diag%Archive_EmisHg2snowToOcean ) THEN
+            State_Diag%EmisHg2snowToOcean = 0.0_f4
+         ENDIF
+
+         IF ( State_Diag%Archive_FluxHg0fromAirToOcean ) THEN
+            State_Diag%FluxHg0fromAirToOcean = 0.0_f4
+         ENDIF
+      
+         IF ( State_Diag%Archive_FluxHg0fromOceantoAir ) THEN
+            State_Diag%FluxHg0fromOceanToAir = 0.0_f4
+         ENDIF
+              
+         IF ( State_Diag%Archive_FluxHg2HgPfromAirToOcean ) THEN
+            State_Diag%FluxHg2HgPfromAirToOcean = 0.0_f4
+         ENDIF
+         
+         IF ( State_Diag%Archive_FluxOCtoDeepOcean ) THEN
+            State_Diag%FluxOCtoDeepOcean = 0.0_f4
+         ENDIF 
+
+      ENDIF
+
+      END SUBROUTINE Reset_Hg_Diags
+!EOC
+#endif
+!------------------------------------------------------------------------------
+!                  GEOS-Chem Global Chemical Transport Model                  !
+!------------------------------------------------------------------------------
+!BOP
+!
 ! !IROUTINE: init_mercury
 !
 ! !DESCRIPTION: Subroutine INIT\_MERCURY allocates and zeroes all 
@@ -4319,7 +6691,6 @@
       USE CMN_DIAG_MOD
       USE CMN_SIZE_MOD
       USE ErrCode_Mod
-      USE ERROR_MOD,          ONLY : ALLOC_ERR, ERROR_STOP
       USE Input_Opt_Mod,      ONLY : OptInput
       USE Species_Mod,        ONLY : Species
       USE State_Chm_Mod,      ONLY : ChmState
@@ -4349,6 +6720,7 @@
 !  25 Apr 2016 - R. Yantosca - Now use species database for tagHg indexing
 !  29 Apr 2016 - R. Yantosca - Don't initialize pointers in declaration stmts
 !  01 Jul 2016 - R. Yantosca - Now rename species DB object ThisSpc to SpcInfo
+!  30 Aug 2018 - C. Thackray - Merged halogen chem options
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -4361,9 +6733,13 @@
       LOGICAL                :: LDRYD
       LOGICAL                :: LNLPBL
       LOGICAL                :: LGTMM
+      LOGICAL                :: LHALOGENCHEM
       INTEGER                :: nAdvect
       INTEGER                :: AS, N
-      CHARACTER(LEN=255)     :: LOCATION
+
+      ! Strings
+      CHARACTER(LEN=255)     :: ThisLoc
+      CHARACTER(LEN=512)     :: ErrMsg
 
       ! Pointers
       TYPE(Species), POINTER :: SpcInfo
@@ -4386,8 +6762,9 @@
       LSPLIT         = Input_Opt%LSPLIT           ! Tagged simulation?
       nAdvect        = State_Chm%nAdvect          ! # of Hg advected species
 
-      ! Location string for ERROR_STOP
-      LOCATION       = 'DEFINE_TAGGED_Hg ("mercury_mod.f")'
+      ! Location string for error messages
+      ErrMsg   = ''
+      ThisLoc  = '-> at DEFINE_TAGGED_Hg (in GeosCore/mercury_mod.f)'
 
       ! Store the # of tagged Hg categories in a module variable
       N_Hg_CATS   = State_Chm%N_Hg_CATS
@@ -4478,298 +6855,367 @@
       !=================================================================
       ! Allocate arrays
       !=================================================================
-      ALLOCATE( COSZM( IIPAR, JJPAR ), STAT=AS )
-      IF ( AS /= 0 ) CALL ALLOC_ERR( 'COSZM' )
+      ALLOCATE( COSZM( IIPAR, JJPAR ), STAT=RC )
+      CALL GC_CheckVar( 'mercury_mod.F:COSZM', 0, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
       COSZM = 0e+0_fp
 
-      ALLOCATE( EHg0_an( IIPAR, JJPAR ), STAT=AS )
-      IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_an' )
+      ALLOCATE( EHg0_an( IIPAR, JJPAR ), STAT=RC )
+      CALL GC_CheckVar( 'mercury_mod.F:EHg0_an', 0, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
       EHg0_an = 0e+0_fp
 
-      ALLOCATE( EHg0_am( IIPAR, JJPAR ), STAT=AS )
-      IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_am' )
+      ALLOCATE( EHg0_am( IIPAR, JJPAR ), STAT=RC )
+      CALL GC_CheckVar( 'mercury_mod.F:EHg0_am', 0, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
       EHg0_am = 0e+0_fp
 
-      ALLOCATE( EHg2_an( IIPAR, JJPAR ), STAT=AS )
-      IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg2_an' )
+      ALLOCATE( EHg2_an( IIPAR, JJPAR ), STAT=RC )
+      CALL GC_CheckVar( 'mercury_mod.F:EHg2_an', 0, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
       EHg2_an = 0e+0_fp
 
-      ALLOCATE( EHgP_an( IIPAR, JJPAR ), STAT=AS )
-      IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHgP_an' )
+      ALLOCATE( EHgP_an( IIPAR, JJPAR ), STAT=RC )
+      CALL GC_CheckVar( 'mercury_mod.F:EHgP_an', 0, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
       EHgP_an = 0e+0_fp
 
-      ALLOCATE( EHg0_oc( IIPAR, JJPAR, N_Hg_CATS ), STAT=AS )
-      IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_oc' )
+      ALLOCATE( EHg0_oc( IIPAR, JJPAR, N_Hg_CATS ), STAT=RC )
+      CALL GC_CheckVar( 'mercury_mod.F:EHg0_oc', 0, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
       EHg0_oc = 0e+0_fp
 
-      ALLOCATE( EHg0_dist( IIPAR, JJPAR), STAT=AS )
-      IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_dist' )
+      ALLOCATE( EHg0_dist( IIPAR, JJPAR), STAT=RC )
+      CALL GC_CheckVar( 'mercury_mod.F:EHg0_dist', 0, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
       EHg0_dist = 0e+0_fp
 
-      ALLOCATE( EHg0_geo( IIPAR, JJPAR ), STAT=AS )
-      IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_geo' )
+      ALLOCATE( EHg0_geo( IIPAR, JJPAR ), STAT=RC )
+      CALL GC_CheckVar( 'mercury_mod.F:EHg0_Geo', 0, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
       EHg0_geo = 0e+0_fp
 
-      ALLOCATE( EHg0_bb( IIPAR, JJPAR ), STAT=AS )
-      IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_bb' )
+      ALLOCATE( EHg0_bb( IIPAR, JJPAR ), STAT=RC )
+      CALL GC_CheckVar( 'mercury_mod.F:EHg0_bb', 0, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
       EHg0_bb = 0e+0_fp
 
-      ALLOCATE( EHg0_snow( IIPAR, JJPAR, N_Hg_CATS ), STAT=AS )
-      IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_snow' )
+      ALLOCATE( EHg0_snow( IIPAR, JJPAR, N_Hg_CATS ), STAT=RC )
+      CALL GC_CheckVar( 'mercury_mod.F:EHg0_snow', 0, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
       EHg0_snow = 0e+0_fp
 
       ! Allocate the following if tagged Hg simulation
       IF ( LSPLIT ) THEN
 
          ! Tagged Hg0 arrays (eds 8/31/10)
-         ALLOCATE( EHg0_can( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_can' )
+         ALLOCATE( EHg0_can( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg0_can', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg0_can = 0e+0_fp
 
-         ALLOCATE( EHg0_usa( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_usa' )
+         ALLOCATE( EHg0_usa( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg0_usa', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg0_usa = 0e+0_fp
 
-         ALLOCATE( EHg0_cam( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_cam' )
+         ALLOCATE( EHg0_cam( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg0_cam', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg0_cam = 0e+0_fp
 
-         ALLOCATE( EHg0_sam( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_sam' )
+         ALLOCATE( EHg0_sam( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg0_sam', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg0_sam = 0e+0_fp
 
-         ALLOCATE( EHg0_waf( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_waf' )
+         ALLOCATE( EHg0_waf( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg0_waf', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg0_waf = 0e+0_fp
 
-         ALLOCATE( EHg0_eaf( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_eaf' )
+         ALLOCATE( EHg0_eaf( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg0_eaf', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg0_eaf = 0e+0_fp
 
-         ALLOCATE( EHg0_saf( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_saf' )
+         ALLOCATE( EHg0_saf( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg0_saf', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg0_saf = 0e+0_fp
 
-         ALLOCATE( EHg0_naf( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_naf' )
+         ALLOCATE( EHg0_naf( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg0_naf', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg0_naf = 0e+0_fp
 
-         ALLOCATE( EHg0_eur( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_eur' )
+         ALLOCATE( EHg0_eur( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg0_eur', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg0_eur = 0e+0_fp
 
-         ALLOCATE( EHg0_eeu( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_eeu' )
+         ALLOCATE( EHg0_eeu( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg0_eeu', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg0_eeu = 0e+0_fp
 
-         ALLOCATE( EHg0_mde( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_mde' )
+         ALLOCATE( EHg0_mde( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg0_mde', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg0_mde = 0e+0_fp
 
-         ALLOCATE( EHg0_sov( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_sov' )
+         ALLOCATE( EHg0_sov( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg0_sov', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg0_sov = 0e+0_fp
 
-         ALLOCATE( EHg0_sas( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_sas' )
+         ALLOCATE( EHg0_sas( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg0_sas', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg0_sas = 0e+0_fp
 
-         ALLOCATE( EHg0_eas( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_eas' )
+         ALLOCATE( EHg0_eas( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg0_eas', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg0_eas = 0e+0_fp
 
-         ALLOCATE( EHg0_sea( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_sea' )
+         ALLOCATE( EHg0_sea( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg0_sea', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg0_sea = 0e+0_fp
 
-         ALLOCATE( EHg0_jpn( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_jpn' )
+         ALLOCATE( EHg0_jpn( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg0_jpn', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg0_jpn = 0e+0_fp
 
-         ALLOCATE( EHg0_oce( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_oce' )
+         ALLOCATE( EHg0_oce( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg0_oce', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg0_oce = 0e+0_fp
 
          ! Tagged Hg2 arrays (eds 8/31/10)
-         ALLOCATE( EHg2_can( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg2_can' )
+         ALLOCATE( EHg2_can( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg2_can', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg2_can = 0e+0_fp
 
-         ALLOCATE( EHg2_usa( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg2_usa' )
+         ALLOCATE( EHg2_usa( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg2_usa', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg2_usa = 0e+0_fp
 
-         ALLOCATE( EHg2_cam( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg2_cam' )
+         ALLOCATE( EHg2_cam( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg2_cam', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg2_cam = 0e+0_fp
 
-         ALLOCATE( EHg2_sam( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg2_sam' )
+         ALLOCATE( EHg2_sam( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg2_sam', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg2_sam = 0e+0_fp
 
-         ALLOCATE( EHg2_waf( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg2_waf' )
+         ALLOCATE( EHg2_waf( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg2_waf', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg2_waf = 0e+0_fp
 
-         ALLOCATE( EHg2_eaf( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg2_eaf' )
+         ALLOCATE( EHg2_eaf( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg2_eaf', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg2_eaf = 0e+0_fp
 
-         ALLOCATE( EHg2_saf( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg2_saf' )
+         ALLOCATE( EHg2_saf( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg2_saf', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg2_saf = 0e+0_fp
 
-         ALLOCATE( EHg2_naf( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg2_naf' )
+         ALLOCATE( EHg2_naf( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg2_naf', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg2_naf = 0e+0_fp
 
-         ALLOCATE( EHg2_eur( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg2_eur' )
+         ALLOCATE( EHg2_eur( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg2_eur', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg2_eur = 0e+0_fp
 
-         ALLOCATE( EHg2_eeu( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg2_eeu' )
+         ALLOCATE( EHg2_eeu( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg2_eeu', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg2_eeu = 0e+0_fp
 
-         ALLOCATE( EHg2_mde( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg2_mde' )
+         ALLOCATE( EHg2_mde( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg2_mde', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg2_mde = 0e+0_fp
 
-         ALLOCATE( EHg2_sov( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg2_sov' )
+         ALLOCATE( EHg2_sov( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg2_sov', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg2_sov = 0e+0_fp
 
-         ALLOCATE( EHg2_sas( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg2_sas' )
+         ALLOCATE( EHg2_sas( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg2_sas', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg2_sas = 0e+0_fp
 
-         ALLOCATE( EHg2_eas( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg2_eas' )
+         ALLOCATE( EHg2_eas( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:Hg2_eas', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg2_eas = 0e+0_fp
 
-         ALLOCATE( EHg2_sea( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg2_sea' )
+         ALLOCATE( EHg2_sea( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg2_sea', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg2_sea = 0e+0_fp
 
-         ALLOCATE( EHg2_jpn( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg2_jpn' )
+         ALLOCATE( EHg2_jpn( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg2_jpn', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg2_jpn = 0e+0_fp
 
-         ALLOCATE( EHg2_oce( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg2_oce' )
+         ALLOCATE( EHg2_oce( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg2_oce', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg2_oce = 0e+0_fp
 
          ! Tagged HgP arrays (eds 8/31/10)
-         ALLOCATE( EHgP_can( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHgP_can' )
+         ALLOCATE( EHgP_can( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHgP_can', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHgP_can = 0e+0_fp
 
-         ALLOCATE( EHgP_usa( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHgP_usa' )
+         ALLOCATE( EHgP_usa( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHgP_usa', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHgP_usa = 0e+0_fp
 
-         ALLOCATE( EHgP_cam( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHgP_cam' )
+         ALLOCATE( EHgP_cam( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHgP_cam', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHgP_cam = 0e+0_fp
 
-         ALLOCATE( EHgP_sam( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHgP_sam' )
+         ALLOCATE( EHgP_sam( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHgP_sam', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHgP_sam = 0e+0_fp
 
-         ALLOCATE( EHgP_waf( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHgP_waf' )
+         ALLOCATE( EHgP_waf( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHgP_waf', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHgP_waf = 0e+0_fp
 
-         ALLOCATE( EHgP_eaf( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHgP_eaf' )
+         ALLOCATE( EHgP_eaf( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHgP_eaf', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHgP_eaf = 0e+0_fp
 
-         ALLOCATE( EHgP_saf( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHgP_saf' )
+         ALLOCATE( EHgP_saf( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHgP_saf', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHgP_saf = 0e+0_fp
 
-         ALLOCATE( EHgP_naf( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHgP_naf' )
+         ALLOCATE( EHgP_naf( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHgP_naf', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHgP_naf = 0e+0_fp
 
-         ALLOCATE( EHgP_eur( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHgP_eur' )
+         ALLOCATE( EHgP_eur( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHgP_eur', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHgP_eur = 0e+0_fp
 
-         ALLOCATE( EHgP_eeu( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHgP_eeu' )
+         ALLOCATE( EHgP_eeu( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHgP_eeu', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHgP_eeu = 0e+0_fp
 
-         ALLOCATE( EHgP_mde( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHgP_mde' )
+         ALLOCATE( EHgP_mde( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHgP_mde', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHgP_mde = 0e+0_fp
 
-         ALLOCATE( EHgP_sov( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHgP_sov' )
+         ALLOCATE( EHgP_sov( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHgP_sov', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHgP_sov = 0e+0_fp
 
-         ALLOCATE( EHgP_sas( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHgP_sas' )
+         ALLOCATE( EHgP_sas( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHgP_sas', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHgP_sas = 0e+0_fp
 
-         ALLOCATE( EHgP_eas( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHgP_eas' )
+         ALLOCATE( EHgP_eas( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHgP_eas', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHgP_eas = 0e+0_fp
 
-         ALLOCATE( EHgP_sea( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHgP_sea' )
+         ALLOCATE( EHgP_sea( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHgP_sea', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHgP_sea = 0e+0_fp
 
-         ALLOCATE( EHgP_jpn( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHgP_jpn' )
+         ALLOCATE( EHgP_jpn( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHgP_jpn', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHgP_jpn = 0e+0_fp
 
-         ALLOCATE( EHgP_oce( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHgP_oce' )
+         ALLOCATE( EHgP_oce( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHgP_oce', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHgP_oce = 0e+0_fp
 
       ENDIF
 
       IF ( LGTMM ) THEN
 
-         ALLOCATE( EHg0_gtm( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_gtm' )
+         ALLOCATE( EHg0_gtm( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg0_gtm', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg0_gtm = 0e+0_fp
 
       ELSE
 
-         ALLOCATE( EHg0_ln( IIPAR, JJPAR, N_Hg_CATS ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_ln' )
+         ALLOCATE( EHg0_ln( IIPAR, JJPAR, N_Hg_CATS ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg0_ln', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg0_ln = 0e+0_fp
 
-         ALLOCATE( EHg0_vg( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_vg' )
+         ALLOCATE( EHg0_vg( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg0_vg', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg0_vg = 0e+0_fp
 
-         ALLOCATE( EHg0_so( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'EHg0_so' )
+         ALLOCATE( EHg0_so( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:EHg0_so', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          EHg0_so = 0e+0_fp
 
       ENDIF
 
-      ALLOCATE( TCOSZ( IIPAR, JJPAR ), STAT=AS )
-      IF ( AS /= 0 ) CALL ALLOC_ERR( 'TCOSZ' )
+      ALLOCATE( TCOSZ( IIPAR, JJPAR ), STAT=RC )
+      CALL GC_CheckVar( 'mercury_mod.F:TCOSZ', 0, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
       TCOSZ = 0e+0_fp
 
-      ALLOCATE( TTDAY( IIPAR, JJPAR ), STAT=AS )
-      IF ( AS /= 0 ) CALL ALLOC_ERR( 'TTDAY' )
+      ALLOCATE( TTDAY( IIPAR, JJPAR ), STAT=RC )
+      CALL GC_CheckVar( 'mercury_mod.F:TTDAY', 0, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
       TTDAY = 0e+0_fp
  
       ! Allocate ZERO_DVEL if we use non-local PBL mixing or
       ! if drydep is turned off 
       IF ( LNLPBL .OR. (.not. LDRYD) ) THEN
-         ALLOCATE( ZERO_DVEL( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'ZERO_DVEL' )
+         ALLOCATE( ZERO_DVEL( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:ZERO_DVEL', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          ZERO_DVEL = 0e+0_fp
       ENDIF
 
-      ALLOCATE( HG2_SEASALT_LOSSRATE( IIPAR, JJPAR ), STAT=AS )
-      IF ( AS /= 0 ) CALL ALLOC_ERR( 'HG2_SEASALT_LOSSRATE' )
+      ALLOCATE( HG2_SEASALT_LOSSRATE( IIPAR, JJPAR ), STAT=RC )
+      CALL GC_CheckVar( 'mercury_mod.F:HG2_SEASALT_LOSSRATE', 0, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
       HG2_SEASALT_LOSSRATE = 0e+0_fp
 
       !=================================================================
@@ -4778,23 +7224,27 @@
       IF ( LSPLIT ) THEN
 
          ! Species indices for tagged anthro regions
-         ALLOCATE( AN_Hg0( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'AN_Hg0' )
+         ALLOCATE( AN_Hg0( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:AN_Hg0', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          AN_Hg0 = 0e+0_fp
 
-         ALLOCATE( AN_Hg2( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'AN_Hg2' )
+         ALLOCATE( AN_Hg2( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:AN_Hg2', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          AN_Hg2 = 0e+0_fp
 
-         ALLOCATE( AN_HgP( IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'AN_HgP' )
+         ALLOCATE( AN_HgP( IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'mercury_mod.F:AN_HgP', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          AN_HgP = 0e+0_fp
 
       ENDIF
 
       ! HG_EMIS is needed for non-local PBL mixing 
-      ALLOCATE ( HG_EMIS( IIPAR, JJPAR, nAdvect ), STAT=AS )
-      IF ( AS /= 0 ) CALL ALLOC_ERR( 'HG_EMIS' )
+      ALLOCATE ( HG_EMIS( IIPAR, JJPAR, nAdvect ), STAT=RC )
+      CALL GC_CheckVar( 'mercury_mod.F:HG_EMIS', 0, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
       HG_EMIS = 0e+0_fp
 
       !=================================================================
@@ -4821,17 +7271,14 @@
       ! no Hg emitted through transpiration (VEGEMIS off)
       LVEGEMIS=.FALSE.
      
+      ! Switch adds bromine in marine boundary layer
+      L_ADD_MBL_BR=.FALSE.
+
       ! Switch adds bromine explosion in Northern springtime
-      LPOLARBR=.TRUE.
+      LPOLARBR=.FALSE.
 
-      ! Switch turns on Hg+Br chemistry
-      LBRCHEM=.TRUE.
-
-      ! Switch turns on Hg+BrO chemistry
-      LBROCHEM=.FALSE.
-
-      ! Switch turn on Hg+OH, Hg+O3 chemistry
-      LOHO3CHEM=.FALSE.
+      ! Switch for only doing reduction in cloud water
+      LRED_CLOUDONLY = .TRUE.
 
       ! Switches for new reduction parameterization
       LRED_JNO2=.TRUE. ! Make propto JNO2 otherwise [OH]
@@ -4884,7 +7331,7 @@
 !
 ! !USES:
 !
-      USE ERROR_MOD,         ONLY : ERROR_STOP
+      USE ErrCode_Mod
       USE HCO_ERROR_MOD
       USE HCO_INTERFACE_MOD, ONLY : HcoState
       USE HCO_ExtList_Mod,   ONLY : GetExtOpt
@@ -4904,6 +7351,8 @@
 ! !REVISION HISTORY:
 !  06 Jan 2015 - R. Yantosca - Initial version
 !  11 Oct 2016 - R. Yantosca - Move call to DO_RED_INPLUME here
+!  13 Feb 2018 - C. Thackray - Put chem switches here
+!  30 Aug 2018 - C. Thackray - Merged halogen chem options
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -4917,19 +7366,85 @@
       LOGICAL :: FOUND
 
       ! Strings
-      CHARACTER(LEN=255) :: LOC='SET_OPTIONS_FROM_HEMCO (mercury_mod.F)'
+      CHARACTER(LEN=255) :: ThisLoc
+      CHARACTER(LEN=512) :: ErrMsg
 
       !-----------------------------------------------------------------
-      ! Set the value of LRED_JNO2 depending on whether or not
-      ! the HEMCO collection LRED_JNO2 is activated
+      ! Initialize
+      !-----------------------------------------------------------------
+      RC      = HCO_SUCCESS
+      ErrMsg  = ''
+      ThisLoc = 
+     &  ' -> at SET_OPTIONS_FROM_HEMCO (in GeosCore/mercury_mod.F)'
+
+      !-----------------------------------------------------------------
+      ! Set the value of chemistry flags depending on whether or not
+      ! the HEMCO collection LFLAGNAME is activated
       !-----------------------------------------------------------------
       CALL GetExtOpt( HcoState%Config, -999, 'LRED_JNO2',  
      &                OptValBool=LRED_JNO2, FOUND=FOUND, RC=RC )
       IF ( RC /= HCO_SUCCESS ) THEN
-         CALL ERROR_STOP( 'GetExtOpt LRED_JNO2', LOC )
+         ErrMsg = 'LRED_JNO2 not found in HEMCO_Config.rc file!'
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
       ENDIF
       IF ( .not. FOUND ) THEN
          LRED_JNO2 = .FALSE.
+      ENDIF
+
+      CALL GetExtOpt( HcoState%Config, -999, 'LHALOGENCHEM',  
+     &                OptValBool=LHALOGENCHEM, FOUND=FOUND, RC=RC )
+      IF ( RC /= HCO_SUCCESS ) THEN
+         ErrMsg = 'LHALOGENCHEM not found in HEMCO_Config.rc file!'
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+      IF ( .not. FOUND ) THEN
+         LHALOGENCHEM = .TRUE.
+      ENDIF
+
+      CALL GetExtOpt( HcoState%Config, -999, 'LHGAQCHEM',  
+     &                OptValBool=LHGAQCHEM, FOUND=FOUND, RC=RC )
+      IF ( RC /= HCO_SUCCESS ) THEN
+         ErrMsg = 'LHGAQCHEM not found in HEMCO_Config.rc file!'
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+      IF ( .not. FOUND ) THEN
+         LHGAQCHEM = .FALSE.
+      ENDIF
+
+      CALL GetExtOpt( HcoState%Config, -999, 'LBRCHEM',  
+     &                OptValBool=LBRCHEM, FOUND=FOUND, RC=RC )
+      IF ( RC /= HCO_SUCCESS ) THEN
+         ErrMsg = 'LBRCHEM not found in HEMCO_Config.rc file!'
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+      IF ( .not. FOUND ) THEN
+         LBRCHEM = .FALSE.
+      ENDIF
+
+      CALL GetExtOpt( HcoState%Config, -999, 'LBROCHEM',  
+     &                OptValBool=LBROCHEM, FOUND=FOUND, RC=RC )
+      IF ( RC /= HCO_SUCCESS ) THEN
+         ErrMsg = 'LBROCHEM not found in HEMCO_Config.rc file!'
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+      IF ( .not. FOUND ) THEN
+         LBROCHEM = .FALSE.
+      ENDIF
+
+      CALL GetExtOpt( HcoState%Config, -999, 'LOHO3CHEM',  
+     &                OptValBool=LOHO3CHEM, FOUND=FOUND, RC=RC )
+      IF ( RC /= HCO_SUCCESS ) THEN
+         ErrMsg = 'LOHO3CHEM not found in HEMCO_Config.rc file!'
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+      IF ( .not. FOUND ) THEN
+         LOHO3CHEM = .FALSE.
       ENDIF
 
       !-----------------------------------------------------------------
@@ -4941,7 +7456,9 @@
       CALL GetExtOpt( HcoState%Config, -999, 'BrOx_GC', 
      &                OptValBool=LGC, FOUND=FOUND, RC=RC )
       IF ( RC /= HCO_SUCCESS ) THEN
-         CALL ERROR_STOP( 'GetExtOpt BrOx_GC', LOC )
+         ErrMsg = 'BrOx_GC not found in HEMCO_Config.rc file!'
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
       ENDIF
       IF ( .not. FOUND ) THEN
          LGC = .FALSE.
@@ -4963,7 +7480,9 @@
       CALL GetExtOpt( HcoState%Config, -999, 'NEI2005',  
      &                OptValBool=LNEI2005, FOUND=FOUND, RC=RC )
       IF ( RC /= HCO_SUCCESS ) THEN
-         CALL ERROR_STOP( 'GetExtOpt LNEI2005', LOC )
+         ErrMsg = 'NEI2005 not found in HEMCO_Config.rc file!'
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
       ENDIF
       IF ( .not. FOUND ) THEN
          LNEI2005 = .FALSE.
@@ -4976,7 +7495,9 @@
       CALL GetExtOpt( HcoState%Config, -999, 'LRED_INPLUME',  
      &                OptValBool=LInPlume, FOUND=FOUND, RC=RC )
       IF ( RC /= HCO_SUCCESS ) THEN
-         CALL ERROR_STOP( 'GetExtOpt LInPlume5', LOC )
+         ErrMsg = 'LRED_INPLUME not found in HEMCO_Config.rc file!'
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
       ENDIF
       IF ( .not. FOUND ) THEN
          LInPlume = .FALSE.
@@ -4998,12 +7519,22 @@
       WRITE( 6, 120   ) LGCBROMINE
       WRITE( 6, 130   ) LNEI2005
       WRITE( 6, 140   ) LInPlume
+      WRITE( 6, 150   ) LHALOGENCHEM
+      WRITE( 6, 160   ) LHGAQCHEM
+      WRITE( 6, 170   ) LBRCHEM
+      WRITE( 6, 180   ) LBROCHEM
+      WRITE( 6, 190   ) LOHO3CHEM
       WRITE( 6, '(a)' ) REPEAT( '=', 79 )
  100  FORMAT( 'Adjusting Hg simulation settings from HEMCO inputs' )
  110  FORMAT( 'LRED_JNO2  is set to ', L1                          )
  120  FORMAT( 'LGCBROMINE is set to ', L1                          )
  130  FORMAT( 'LNEI2005   is set to ', L1                          )
  140  FORMAT( 'LInPlume   is set to ', L1                          )
+ 150  FORMAT( 'LHALOGENCHEM   is set to ', L1                          )
+ 160  FORMAT( 'LHGAQCHEM  is set to ', L1                          )
+ 170  FORMAT( 'LBRCHEM    is set to ', L1                          )
+ 180  FORMAT( 'LBROCHEM   is set to ', L1                          )
+ 190  FORMAT( 'LOHO3CHEM  is set to ', L1                          )
       
       END SUBROUTINE SET_OPTIONS_FROM_HEMCO
 !EOC
@@ -5032,11 +7563,11 @@
       !=================================================================
       ! CLEANUP_MERCURY begins here!
       !=================================================================
-      IF ( ALLOCATED( AN_Hg0   ) ) DEALLOCATE( AN_Hg0   )  
-      IF ( ALLOCATED( AN_Hg2   ) ) DEALLOCATE( AN_Hg2   )      
-      IF ( ALLOCATED( AN_HgP   ) ) DEALLOCATE( AN_HgP   )      
-      IF ( ALLOCATED( COSZM    ) ) DEALLOCATE( COSZM    )      
-      IF ( ALLOCATED( EHg0_an  ) ) DEALLOCATE( EHg0_an  )
+      IF ( ALLOCATED( AN_Hg0   ) ) DEALLOCATE( AN_Hg0  )  
+      IF ( ALLOCATED( AN_Hg2   ) ) DEALLOCATE( AN_Hg2  )      
+      IF ( ALLOCATED( AN_HgP   ) ) DEALLOCATE( AN_HgP  )      
+      IF ( ALLOCATED( COSZM    ) ) DEALLOCATE( COSZM   )      
+      IF ( ALLOCATED( EHg0_an  ) ) DEALLOCATE( EHg0_an )
       IF ( ALLOCATED( EHg0_can ) ) DEALLOCATE( EHg0_can )
       IF ( ALLOCATED( EHg0_usa ) ) DEALLOCATE( EHg0_usa )
       IF ( ALLOCATED( EHg0_sam ) ) DEALLOCATE( EHg0_sam )
@@ -5090,25 +7621,36 @@
       IF ( ALLOCATED( EHgP_oce ) ) DEALLOCATE( EHgP_oce )
       IF ( ALLOCATED( EHg0_oc  ) ) DEALLOCATE( EHg0_oc  )
       IF ( ALLOCATED( EHg0_ln  ) ) DEALLOCATE( EHg0_ln  )
-      IF ( ALLOCATED( EHg0_snow) ) DEALLOCATE( EHg0_snow)
+      IF ( ALLOCATED( EHg0_snow) ) DEALLOCATE( EHg0_snow )
       IF ( ALLOCATED( EHg0_geo ) ) DEALLOCATE( EHg0_geo )
-      IF ( ALLOCATED( EHg0_bb  ) ) DEALLOCATE( EHg0_bb  )
-      IF ( ALLOCATED( EHg0_gtm ) ) DEALLOCATE( EHg0_gtm )
-      IF ( ALLOCATED( EHg0_vg  ) ) DEALLOCATE( EHg0_vg  )
-      IF ( ALLOCATED( EHg0_so  ) ) DEALLOCATE( EHg0_so  )
-      IF ( ALLOCATED( EHg0_dist) ) DEALLOCATE( EHg0_dist)
-      IF ( ALLOCATED( TCOSZ    ) ) DEALLOCATE( TCOSZ    )
-      IF ( ALLOCATED( TTDAY    ) ) DEALLOCATE( TTDAY    )
+      IF ( ALLOCATED( EHg0_bb  ) ) DEALLOCATE( EHg0_bb )
+      IF ( ALLOCATED( EHg0_gtm  ) ) DEALLOCATE( EHg0_gtm )
+      IF ( ALLOCATED( EHg0_vg  ) ) DEALLOCATE( EHg0_vg )
+      IF ( ALLOCATED( EHg0_so  ) ) DEALLOCATE( EHg0_so )
+      IF ( ALLOCATED( EHg0_dist) ) DEALLOCATE( EHg0_dist )
+      IF ( ALLOCATED( TCOSZ    ) ) DEALLOCATE( TCOSZ   )
+      IF ( ALLOCATED( TTDAY    ) ) DEALLOCATE( TTDAY   )
 !      IF ( ALLOCATED( TRANSP   ) ) DEALLOCATE( TRANSP  )
-      IF ( ALLOCATED( ZERO_DVEL) ) DEALLOCATE( ZERO_DVEL)
+      IF ( ALLOCATED( ZERO_DVEL) ) DEALLOCATE( ZERO_DVEL )
       IF ( ALLOCATED( HG2_SEASALT_LOSSRATE ) ) 
      &     DEALLOCATE( HG2_SEASALT_LOSSRATE   ) 
-      IF ( ALLOCATED( HG_EMIS  ) ) DEALLOCATE( HG_EMIS  ) 
+      IF ( ALLOCATED( HG_EMIS   ) ) DEALLOCATE( HG_EMIS   ) 
   
       ! Free pointers to HEMCO fields
       O3    => NULL()
-      OH    => NULL()
+      OH_trop  => NULL()
+      OH_strat  => NULL()
       JNO2  => NULL()
+      HEM_NO => NULL()
+      HEM_NO2 => NULL()
+      HEM_CLO => NULL()
+      HEM_CL => NULL()
+      HEM_OA => NULL()
+      HEM_HOCl => NULL()
+      HEM_HO2_trop => NULL()
+      HEM_HO2_strat => NULL()
+      OCEAN_CONC => NULL()
+
 
       ! Free Hg indexing pointers
       Hg0_Id_List => NULL()

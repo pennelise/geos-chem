@@ -24,11 +24,9 @@
 !
       ! Scalars
       INTEGER              :: ND04, LD04
-      INTEGER, PARAMETER   :: PD04 = 10
+      INTEGER, PARAMETER   :: PD04 = 1
 
       ! Arrays
-      REAL*4,  ALLOCATABLE :: AD04(:,:,:)
-      REAL*4,  ALLOCATABLE :: AD04_plane(:,:,:)
       REAL*4,  ALLOCATABLE :: AD04_chem(:,:,:)
 !     
 ! !PUBLIC MEMBER FUNCTIONS:
@@ -91,14 +89,14 @@
       !=================================================================
       ! ZERO_DIAG04 begins here!
       !=================================================================
+#if defined( BPCH_DIAG )
 
       ! Exit if ND04 is turned off
       IF ( ND04 == 0 ) RETURN
 
       ! Zero 2-D array (for N=7 tracers) and 3-D plane and chem arrays
-      AD04(:,:,:)       = 0e0
-      AD04_plane(:,:,:) = 0e0
       AD04_chem(:,:,:)  = 0e0
+#endif
 
       END SUBROUTINE ZERO_DIAG04
 !EOC
@@ -119,8 +117,10 @@
 !
 ! !USES:
 !
+#if defined( BPCH_DIAG )
       USE BPCH2_MOD,   ONLY : BPCH2, GET_MODELNAME, GET_HALFPOLAR
       USE FILE_MOD,    ONLY : IU_BPCH
+#endif
       USE GC_GRID_MOD, ONLY : GET_XOFFSET, GET_YOFFSET
       USE TIME_MOD,    ONLY : GET_CT_EMIS, GET_DIAGb,  GET_DIAGe
 
@@ -152,6 +152,7 @@
 !
 ! !LOCAL VARIABLES:
 !
+#if defined( BPCH_DIAG )
       INTEGER            :: CENTER180, HALFPOLAR, IFIRST, JFIRST 
       INTEGER            :: LFIRST,    LMAX,      M,      N       
       REAL(f4)           :: ARRAY(IIPAR,JJPAR,LLPAR)
@@ -194,34 +195,12 @@
          ! Get quantities
          N            = TINDEX(4,M)
  
-         IF ( N <= 7 ) THEN
-
-            CATEGORY     = 'CO2-SRCE'
-            UNIT         = 'molec/cm2/s'
-            !UNIT         = ''                     ! Let GAMAP pick the unit
-            LMAX = 1
-            ARRAY(:,:,1) = AD04(:,:,N) / SCALE
-
-         ELSE IF ( N == 8 ) THEN
-
-            CATEGORY     = 'CO2-SRCE'
-            UNIT         = 'molec/cm3/s'
-            LMAX = LD04
-            ARRAY(:,:,1:LMAX) = AD04_plane(:,:,1:LMAX) / SCALE
-
-         ELSE IF ( N == 9 ) THEN
+         IF ( N == 1 ) THEN
 
             CATEGORY     = 'CO2-SRCE'
             UNIT         = 'molec/cm3/s'
             LMAX = LD04
             ARRAY(:,:,1:LMAX) = AD04_chem(:,:,1:LMAX) / SCALE
-            
-         ELSE IF ( N == 10 ) THEN
-
-            CATEGORY     = 'CO2-SRCE'
-            UNIT         = 'molec/cm2/s'
-            LMAX = 1
-            ARRAY(:,:,1) = AD04(:,:,N) / SCALE
             
          ELSE 
 
@@ -237,6 +216,7 @@
      &               JFIRST,    LFIRST,    ARRAY(:,:,1:LMAX) )
 
       ENDDO
+#endif
 
       END SUBROUTINE WRITE_DIAG04
 !EOC
@@ -275,26 +255,21 @@
       !=================================================================
       ! INIT_DIAG04 begins here!
       !=================================================================
+#if defined( BPCH_DIAG )
 
       ! Exit if ND04 is turned off
       IF ( ND04 == 0 ) RETURN
 
       ! Get number of levels for 3-D arrays
-	LD04 = MIN( ND04, LLPAR )
+      LD04 = MIN( ND04, LLPAR )
 	
-      ! 2-D array ("CO2-SRCE")
-      ALLOCATE( AD04( IIPAR, JJPAR, PD04 ), STAT=AS )
-      IF ( AS /= 0 ) CALL ALLOC_ERR( 'AD04' )
-
       ! 3-D arrays ("CO2-SRCE")
-      ALLOCATE( AD04_plane( IIPAR, JJPAR, LLPAR ), STAT=AS )
-      IF ( AS /= 0 ) CALL ALLOC_ERR( 'AD04_plane' )
-
       ALLOCATE( AD04_chem( IIPAR, JJPAR, LLPAR ), STAT=AS )
       IF ( AS /= 0 ) CALL ALLOC_ERR( 'AD04_chem' )
 
       ! Zero arrays
       CALL ZERO_DIAG04
+#endif
 
       END SUBROUTINE INIT_DIAG04
 !EOC
@@ -322,9 +297,9 @@
       !=================================================================
       ! CLEANUP_DIAG04 begins here!
       !=================================================================
-      IF ( ALLOCATED( AD04       ) ) DEALLOCATE( AD04 ) 
-      IF ( ALLOCATED( AD04_plane ) ) DEALLOCATE( AD04_plane )
+#if defined( BPCH_DIAG )
       IF ( ALLOCATED( AD04_chem  ) ) DEALLOCATE( AD04_chem  ) 
+#endif
 
       END SUBROUTINE CLEANUP_DIAG04
 !EOC

@@ -20,10 +20,6 @@
       IMPLICIT NONE
       PRIVATE
 !
-! !PUBLIC DATA MEMBERS:
-!
-      LOGICAL, PUBLIC :: DO_SAVE_DIAG50    ! On/off flag for ND50 diagnostic
-!
 ! !PUBLIC MEMBER FUNCTIONS:
 ! 
       PUBLIC  :: CLEANUP_DIAG50
@@ -70,12 +66,12 @@
 !  (2 ) Added COUNT_CHEM to count the chemistry timesteps per day, since some
 !        quantities are only archived after a fullchem call (bmy, 10/25/04)
 !  (3 ) Bug fix: Now get I0 and J0 properly for nested grids (bmy, 11/9/04)
-!  (4 ) Now only archive AOD's once per chemistry timestep (bmy, 1/14/05)
+!  (4 ) Now only archive AODs once per chemistry timestep (bmy, 1/14/05)
 !  (5 ) Now references "pbl_mix_mod.f" (bmy, 2/16/05)
 !  (6 ) Now save cloud fractions & grid box heights (bmy, 4/20/05)
-!  (7 ) Remove TRCOFFSET since it's always zero.  Also now get HALFPOLAR for
+!  (7 ) Remove TRCOFFSET since it is always zero.  Also now get HALFPOLAR for
 !        both GCAP and GEOS grids. (bmy, 6/24/05)
-!  (8 ) Bug fix: don't save SLP unless it is allocated (bmy, 8/2/05)
+!  (8 ) Bug fix: do not save SLP unless it is allocated (bmy, 8/2/05)
 !  (9 ) Now references XNUMOLAIR from "tracer_mod.f" (bmy, 10/25/05)
 !  (10) Modified INIT_DIAG49 to save out transects (cdh, bmy, 11/30/06)
 !  (11) Now use 3D timestep counter for full chem in the trop (phs, 1/24/07)
@@ -105,6 +101,7 @@
 !
 ! !PRIVATE TYPES:
 !
+#if defined( BPCH_DIAG ) || defined( BPCH_TIMESER )
       !=================================================================
       ! MODULE VARIABLES
       !
@@ -114,18 +111,9 @@
       ! IOFF             : Longitude offset
       ! JOFF             : Latitude offset
       ! LOFF             : Altitude offset
-      ! ND50_IMIN        : Minimum latitude  index for DIAG51 region
-      ! ND50_IMAX        : Maximum latitude  index for DIAG51 region
-      ! ND50_JMIN        : Minimum longitude index for DIAG51 region
-      ! ND50_JMAX        : Maximum longitude index for DIAG51 region
-      ! ND50_LMIN        : Minimum altitude  index for DIAG51 region
-      ! ND50_LMAX        : Minimum latitude  index for DIAG51 region
       ! ND50_NI          : Number of longitudes in DIAG51 region 
       ! ND50_NJ          : Number of latitudes  in DIAG51 region
       ! ND50_NL          : Number of levels     in DIAG51 region
-      ! ND50_N_TRACERS   : Number of tracers for DIAG51
-      ! ND50_OUTPUT_FILE : Name of bpch file w  timeseries data
-      ! ND50_TRACERS     : Array of DIAG51 tracer numbers
       ! Q                : Accumulator array for various quantities
       ! TAU0             : Starting TAU used to index the bpch file
       ! TAU1             : Ending TAU used to index the bpch file
@@ -144,10 +132,6 @@
       INTEGER              :: LOFF,           I0
       INTEGER              :: J0,             ND50_NI
       INTEGER              :: ND50_NJ,        ND50_NL
-      INTEGER              :: ND50_N_TRACERS, ND50_TRACERS(529)
-      INTEGER              :: ND50_IMIN,      ND50_IMAX
-      INTEGER              :: ND50_JMIN,      ND50_JMAX
-      INTEGER              :: ND50_LMIN,      ND50_LMAX
       INTEGER              :: HALFPOLAR
       INTEGER, PARAMETER   :: CENTER180=1
       REAL*4               :: LONRES,         LATRES
@@ -155,11 +139,11 @@
       CHARACTER(LEN=20)    :: MODELNAME
       CHARACTER(LEN=40)    :: RESERVED = ''
       CHARACTER(LEN=80)    :: TITLE
-      CHARACTER(LEN=255)   :: ND50_OUTPUT_FILE
 
       ! Arrays
       REAL(fp),  ALLOCATABLE :: Q(:,:,:,:)
       INTEGER, ALLOCATABLE :: COUNT_CHEM3D(:,:,:)
+#endif
 
       CONTAINS
 !EOC
@@ -185,7 +169,9 @@
       USE State_Chm_Mod,      ONLY : ChmState
       USE State_Met_Mod,      ONLY : MetState
       USE State_Met_Mod,      ONLY : MetState
+#if defined( BPCH_DIAG ) || defined( BPCH_TIMESER )
       USE Time_Mod,           ONLY : ITS_A_NEW_DAY
+#endif
 !
 ! !INPUT PARAMETERS:
 !
@@ -210,9 +196,15 @@
 !------------------------------------------------------------------------------
 !BOC
 
+
       !=================================================================
       ! DIAG50 begins here!
       !=================================================================
+
+      ! Assume success
+      RC = GC_SUCCESS
+
+#if defined( BPCH_DIAG ) || defined( BPCH_TIMESER )
 
       ! Accumulate data over a 24-hr period in the Q array
       CALL ACCUMULATE_DIAG50
@@ -223,6 +215,8 @@
      &     Input_Opt%DO_DIAG_WRITE    ) THEN
          CALL WRITE_DIAG50( am_I_Root, Input_Opt, State_Chm, RC )
       ENDIF
+
+#endif
 
       END SUBROUTINE DIAG50
 !EOC
@@ -244,20 +238,22 @@
 !
 ! !USES:
 !
-      USE CHEMGRID_MOD,       ONLY : ITS_IN_THE_CHEMGRID
-      USE CMN_FJX_MOD,        ONLY : ODAER, ODMDUST, NRH, NDUST
-      USE CMN_FJX_MOD,        ONLY : IWVSELECT, ACOEF_WV, BCOEF_WV
-      USE CMN_O3_MOD               ! SAVEOH
       USE ErrCode_Mod
       USE Input_Opt_Mod,      ONLY : OptInput
-      USE PhysConstants            ! SCALE_HEIGHT, XNUMOLAIR
-      USE PBL_MIX_MOD,        ONLY : GET_PBL_TOP_L, GET_PBL_TOP_m
       USE State_Chm_Mod,      ONLY : ChmState
       USE State_Chm_Mod,      ONLY : Ind_
       USE State_Met_Mod,      ONLY : MetState
-      USE TIME_MOD,           ONLY : GET_ELAPSED_MIN, GET_TS_CHEM
+#if defined( BPCH_DIAG ) || defined( BPCH_TIMESER )
+      USE CMN_SIZE_MOD,       ONLY : IIPAR, JJPAR, LLPAR
+      USE CMN_FJX_MOD,        ONLY : ODAER, ODMDUST, NRH, NDUST
+      USE CMN_FJX_MOD,        ONLY : IWVSELECT, ACOEF_WV, BCOEF_WV
+!      USE CMN_O3_MOD               ! SAVEOH
+      USE PhysConstants            ! SCALE_HEIGHT, XNUMOLAIR
+      USE PBL_MIX_MOD,        ONLY : GET_PBL_TOP_L, GET_PBL_TOP_m
+      USE TIME_MOD,           ONLY : GET_ELAPSED_SEC, GET_TS_CHEM
       USE TIME_MOD,           ONLY : TIMESTAMP_STRING, GET_TS_DYN
       USE Aerosol_Mod,        ONLY : PM25
+#endif
 !
 ! !INPUT PARAMETERS:
 !
@@ -282,7 +278,7 @@
 !        Also now use extra counter COUNT_CHEM to count the number of
 !        chemistry timesteps since NO, NO2, OH, O3 only when a full-chemistry
 !        timestep happens. (bmy, 10/25/04)
-!  (3 ) Only archive AOD's when it is a chem timestep (bmy, 1/14/05)
+!  (3 ) Only archive AODs when it is a chem timestep (bmy, 1/14/05)
 !  (4 ) Remove reference to "CMN".  Also now get PBL heights in meters and 
 !        model layers from GET_PBL_TOP_m and GET_PBL_TOP_L of "pbl_mix_mod.f".
 !        (bmy, 2/16/05)
@@ -290,7 +286,7 @@
 !        cloud fraction as tracer #79 and box height as tracer #93.  Now 
 !        remove references to CLMOSW, CLROSW, and PBL from "dao_mod.f". 
 !        (bmy, 4/20/05)
-!  (6 ) Remove references to TRCOFFSET because it's always zero (bmy, 6/24/05)
+!  (6 ) Remove references to TRCOFFSET because it is always zero (bmy, 6/24/05)
 !  (7 ) Now do not save SLP data if it is not allocated (bmy, 8/2/05)
 !  (8 ) Now make sure all USE statements are USE, ONLY (bmy, 10/3/05)
 !  (9 ) Now references XNUMOLAIR from "tracer_mod.f" (bmy, 10/25/05)
@@ -298,7 +294,7 @@
 !  (11) IS_CHEM check is not appropriate anymore. Keep COUNT_CHEM3D for 
 !       species known in troposphere only (ccc, 8/12/09)
 !  (12) Output AOD at 3rd jv_spec.dat row wavelength.  Include all seven dust 
-!        bin's individual AOD (amv, bmy, 12/21/09)
+!        bin individual AOD (amv, bmy, 12/21/09)
 !  12 Nov 2010 - R. Yantosca - Now save out PEDGE-$ (pressure at level edges)
 !                              rather than Psurface - PTOP
 !  02 Dec 2010 - R. Yantosca - Added ProTeX headers
@@ -313,20 +309,24 @@
 !  24 Mar 2015 - E. Lundgren - Remove dependency on tracer_mod
 !  25 Mar 2015 - E. Lundgren - Change tracer units from kg to kg/kg
 !  17 May 2016 - M. Sulprizio- Add IS_CHEM logical for incrementing COUNT_CHEM3D
-!  16 Jun 2016 - K. Yu       - Now define species ID's with the Ind_ function
-!  17 Jun 2016 - R. Yantosca - Only define species ID's on the first call
+!  16 Jun 2016 - K. Yu       - Now define species IDs with the Ind_ function
+!  17 Jun 2016 - R. Yantosca - Only define species IDs on the first call
 !  22 Jun 2016 - M. Yannetti - Replace TCVV with spec db and physical const
 !  28 Jun 2016 - M. Sulprizio- Replace NPVERT with LLPAR to remove dependence
 !                              on comode_loop_mod.F
 !  30 Jun 2016 - R. Yantosca - Remove instances of STT.  Now get the advected
 !                              species ID from State_Chm%Map_Advect.
 !  11 Aug 2016 - R. Yantosca - Remove temporary tracer-removal code
+!  06 Feb 2018 - E. Lundgren - Change GET_ELAPSED_MIN to GET_ELAPSED_SEC to
+!                              match new timestep unit of seconds
 !EOP
 !------------------------------------------------------------------------------
 !BOC
 !
 ! !LOCAL VARIABLES:
 !
+#if defined( BPCH_DIAG ) || defined( BPCH_TIMESER )
+
       ! SAVEd scalars
       LOGICAL, SAVE       :: FIRST = .TRUE.
       LOGICAL, SAVE       :: IS_FULLCHEM, IS_SEASALT
@@ -334,7 +334,7 @@
       INTEGER, SAVE       :: id_HNO3,     id_HNO4, id_N2O5, id_NO
       INTEGER, SAVE       :: id_PAN,      id_NPMN,  id_PPN,  id_O3
       INTEGER, SAVE       :: id_R4N2,     id_SALA, id_SALC, id_NO2
-      INTEGER             :: id_IPMN
+      INTEGER, SAVE       :: id_IPMN,     id_OH
 
       ! Scalars
       LOGICAL             :: IS_CHEM
@@ -345,18 +345,17 @@
       REAL(fp)            :: C1, C2, PBLDEC, TEMPBL, TMP, SCALEAODnm
       CHARACTER(LEN=16)   :: STAMP
 
-      ! Aerosol types (rvm, aad, bmy, 7/20/04)
-      INTEGER             :: IND(6) = (/ 22, 29, 36, 43, 50, 15 /)
-
       ! Pointers
-      REAL(fp), POINTER     :: Spc(:,:,:,:)
-
+      REAL(fp), POINTER   :: Spc(:,:,:,:)
+#endif
       !=================================================================
       ! ACCUMULATE_DIAG50 begins here!
       !=================================================================
 
       ! Assume success
       RC        =  GC_SUCCESS
+
+#if defined( BPCH_DIAG ) || defined( BPCH_TIMESER )
 
       ! Number of advected species
       nAdvect = State_Chm%nAdvect
@@ -381,6 +380,7 @@
          id_SALA = Ind_('SALA')
          id_SALC = Ind_('SALC')
          id_NO2  = Ind_('NO2' )
+         id_OH   = Ind_('OH'  )
 
          ! Set logical flags
          IS_OPTD     = ASSOCIATED( State_Met%OPTD    )
@@ -400,7 +400,7 @@
       ENDIF
 
       ! Is it a chemistry timestep?
-      IS_CHEM = ( MOD( GET_ELAPSED_MIN()-GET_TS_DYN(), 
+      IS_CHEM = ( MOD( GET_ELAPSED_SEC()-GET_TS_DYN(), 
      &                 GET_TS_CHEM() ) == 0 )
 
       ! Echo time information to the screen
@@ -445,7 +445,7 @@
             I = GET_I( X )
 
             ! Only increment if we were in the chemistry grid
-            IF ( ITS_IN_THE_CHEMGRID( I, J, L, State_Met ) ) THEN
+            IF ( State_Met%InChemGrid(I,J,L) ) THEN
                COUNT_CHEM3D(X,Y,K) = COUNT_CHEM3D(X,Y,K) + 1
             ENDIF
 
@@ -463,10 +463,10 @@
 !$OMP+DEFAULT( SHARED ) 
 !$OMP+PRIVATE( W, N, X, Y, K, I, J, L, TMP, H, R, SCALEAODnm )
 !$OMP+SCHEDULE( DYNAMIC )
-      DO W = 1, ND50_N_TRACERS
+      DO W = 1, Input_Opt%N_ND50
 
          ! ND50 Tracer number
-         N = ND50_TRACERS(W)
+         N = Input_Opt%ND50_TRACERS(W)
 
          ! Loop over levels
          DO K = 1, ND50_NL
@@ -490,13 +490,16 @@
      &                      ( AIRMW 
      &                      / State_Chm%SpcData(N)%Info%emMW_g ) )
 
-            ELSE IF ( N == 501 .and. IS_FULLCHEM ) THEN
-
-               !--------------------------------------
-               ! OH CONCENTRATION [molec/cm3]
-               ! NOTE: Only archive at chem timestep
-               !--------------------------------------
-               Q(X,Y,K,W) = Q(X,Y,K,W) + SAVEOH(I,J,L)
+! NOTE: We can restore this once we figure out what the proper unit
+! conversion is (bmy, 11/20/17)
+!            ELSE IF ( N == 501 .and. IS_FULLCHEM ) THEN
+!
+!               !--------------------------------------
+!               ! OH CONCENTRATION [molec/cm3]
+!               ! NOTE: Only archive at chem timestep
+!               !--------------------------------------
+!!               Q(X,Y,K,W) = Q(X,Y,K,W) + SAVEOH(I,J,L)
+!               Q(X,Y,K,W) = Q(X,Y,K,W) + Spc(I,J,L,id_OH)
 
             ELSE IF ( N == 502 .and. IS_NOy ) THEN
 
@@ -885,6 +888,8 @@
       ! Free pointers
       Spc => NULL()
 
+#endif
+
       END SUBROUTINE ACCUMULATE_DIAG50
 !EOC
 !------------------------------------------------------------------------------
@@ -904,18 +909,19 @@
 !
 ! !USES:
 !
+      USE ErrCode_Mod
+      USE Input_Opt_Mod,      ONLY : OptInput
+      USE State_Chm_Mod,      ONLY : ChmState
+#if defined( BPCH_DIAG ) || defined( BPCH_TIMESER )
       USE BPCH2_MOD,          ONLY : BPCH2
       USE BPCH2_MOD,          ONLY : GET_MODELNAME
       USE BPCH2_MOD,          ONLY : GET_HALFPOLAR
       USE BPCH2_MOD,          ONLY : OPEN_BPCH2_FOR_WRITE
       USE CMN_SIZE_MOD             ! Size Parameters
-      USE ErrCode_Mod
       USE ERROR_MOD,          ONLY : ALLOC_ERR
       USE GC_GRID_MOD,        ONLY : GET_XOFFSET
       USE GC_GRID_MOD,        ONLY : GET_YOFFSET
-      USE Input_Opt_Mod,      ONLY : OptInput
       USE inquireMod,         ONLY : findFreeLUN
-      USE State_Chm_Mod,      ONLY : ChmState
       USE TIME_MOD,           ONLY : EXPAND_DATE
       USE TIME_MOD,           ONLY : GET_NYMD_DIAG
       USE TIME_MOD,           ONLY : GET_NHMS
@@ -923,13 +929,19 @@
       USE TIME_MOD,           ONLY : GET_TS_DYN
       USE TIME_MOD,           ONLY : TIMESTAMP_STRING
 
-#if   defined( USE_HDF5 )
+#if defined( USE_HDF5 )
+      !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+      !%%%%% NOTE: THIS IS PROBABLY BROKEN, WE WILL NOT REPLACE IT
+      !%%%%% BECAUSE WE ARE GOING TO MOVE TO netCDF OUTPUT (bmy, 4/11/18)
+      !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
       ! Only include this if we are linking to HDF5 library (bmy, 12/21/09)
       USE HDF_MOD,            ONLY : OPEN_HDF
       USE HDF_MOD,            ONLY : CLOSE_HDF
       USE HDF_MOD,            ONLY : WRITE_HDF
       USE HDF5,               ONLY : HID_T
       INTEGER(HID_T)              :: IU_ND50_HDF
+#endif
+
 #endif
 !
 ! !INPUT PARAMETERS:
@@ -951,11 +963,11 @@
 !  (2 ) Now only archive NO, NO2, OH, O3 on every chemistry timestep (i.e. 
 !        only when fullchem is called).  Also remove reference to FIRST. 
 !        (bmy, 10/25/04)
-!  (3 ) Now divide tracers 82-87 (i.e. various AOD's) by GOOD_CT_CHEM since
+!  (3 ) Now divide tracers 82-87 (i.e. various AODs) by GOOD_CT_CHEM since
 !        these are only updated once per chemistry timestep (bmy, 1/14/05)
 !  (4 ) Now save grid box heights as tracer #93.  Now save 3-D cloud fraction
 !        as tracer #79. (bmy, 4/20/05)
-!  (5 ) Remove references to TRCOFFSET because it's always zero (bmy, 6/24/05)
+!  (5 ) Remove references to TRCOFFSET because it is always zero (bmy, 6/24/05)
 !  (6 ) Now make sure all USE statements are USE, ONLY (bmy, 10/3/05)
 !  (7 ) DIVISOR is now a 3-D array.  Now zero COUNT_CHEM3D.  Now zero Q
 !        array with array assignment statement. (phs, 1/24/07)
@@ -979,6 +991,7 @@
 !
 ! !LOCAL VARIABLES:
 !
+#if defined( BPCH_DIAG ) || defined( BPCH_TIMESER )
       INTEGER            :: DIVISOR(ND50_NI,ND50_NJ,ND50_NL)
       INTEGER            :: I,    J,     L,   W, N, nAdvect
       INTEGER            :: GMNL, GMTRC, IOS, X, Y, K, NHMS
@@ -986,9 +999,7 @@
       CHARACTER(LEN=40)  :: CATEGORY
       CHARACTER(LEN=40)  :: UNIT
       CHARACTER(LEN=255) :: FILENAME
-
-      ! For fields from Input_Opt
-      LOGICAL            :: LND50_HDF
+#endif
 
       !=================================================================
       ! WRITE_DIAG50 begins here!
@@ -997,14 +1008,13 @@
       ! Assume success
       RC        =  GC_SUCCESS
 
+#if defined( BPCH_DIAG ) || defined( BPCH_TIMESER )
+
       ! Nubmer of advected species
       nAdvect   = State_Chm%nAdvect
 
-      ! Copy values from Input_Opt
-      LND50_HDF = Input_Opt%LND50_HDF
-
       ! Replace time & date tokens in the filename
-      FILENAME = ND50_OUTPUT_FILE
+      FILENAME = Input_Opt%ND50_FILE
 
       ! Change to get the good timestamp: day that was run and not next 
       ! day if saved at midnight
@@ -1021,11 +1031,13 @@
  100  FORMAT( '     - DIAG50: Opening file ', a, ' on unit ', i4 ) 
 
       ! Open output file
-      IF ( LND50_HDF ) THEN
+      IF ( Input_Opt%LND50_HDF ) THEN
 #if   defined( USE_HDF5 )
          ! Only include this if we are linking to HDF5 library (bmy, 12/21/09)
-         CALL OPEN_HDF( IU_ND50_HDF, FILENAME,  ND50_IMAX, ND50_IMIN,   
-     &                  ND50_JMAX,   ND50_JMIN, ND50_NI,   ND50_NJ )
+         CALL OPEN_HDF( IU_ND50_HDF,         FILENAME,
+     &                  Input_Opt%ND50_IMAX, Input_Opt%ND50_IMIN,   
+     &                  Input_Opt%ND50_JMAX, Input_Opt%ND50_JMIN,
+     &                  ND50_NI,             ND50_NJ )
 #endif
       ELSE
          CALL OPEN_BPCH2_FOR_WRITE( IU_ND50, FILENAME, TITLE )
@@ -1046,10 +1058,10 @@
 !$OMP PARALLEL DO 
 !$OMP+DEFAULT( SHARED ) 
 !$OMP+PRIVATE( X, Y, K, W, DIVISOR )
-      DO W = 1, ND50_N_TRACERS
+      DO W = 1, Input_Opt%N_ND50
 
          ! ND50 Tracer number
-         N = ND50_TRACERS(W)
+         N = Input_Opt%ND50_TRACERS(W)
          
          ! Pick the proper divisor
          ! OH is defined only in boxes with active chemistry
@@ -1081,10 +1093,10 @@
       !=================================================================
       ! Write each tracer from "timeseries.dat" to the timeseries file
       !=================================================================
-      DO W = 1, ND50_N_TRACERS
+      DO W = 1, Input_Opt%N_ND50
 
          ! ND50 tracer number
-         N = ND50_TRACERS(W)
+         N = Input_Opt%ND50_TRACERS(W)
 
          ! Save by simulation
          IF ( N <= nAdvect ) THEN
@@ -1264,7 +1276,7 @@
             !---------------------            
             CATEGORY  = 'OD-MAP-$'
             UNIT      = 'unitless'
-            GMNL      = ND50_ NL
+            GMNL      = ND50_NL
             GMTRC     = 6
 
          ELSE IF ( N == 518 ) THEN
@@ -1284,7 +1296,7 @@
             !---------------------            
             CATEGORY  = 'OD-MAP-$'
             UNIT      = 'unitless'
-            GMNL      = ND50_ NL
+            GMNL      = ND50_NL
             GMTRC     = 12
             
          ELSE IF ( N == 520 ) THEN
@@ -1348,7 +1360,7 @@
          ! Save to bpch file 
          ! or HDF5 file
          !------------------------
-         IF ( LND50_HDF ) THEN
+         IF ( Input_Opt%LND50_HDF ) THEN
 #if   defined( USE_HDF5 )
             ! Only include this if we are linking to HDF5 library 
             ! (bmy, 12/21/09)
@@ -1356,7 +1368,9 @@
      &                      CATEGORY,     GMTRC,        UNIT,
      &                      TAU0,         TAU1,         RESERVED,
      &                      ND50_NI,      ND50_NJ,      GMNL,
-     &                      ND50_IMIN+I0, ND50_JMIN+J0, ND50_LMIN,
+     &                      Input_Opt%ND50_IMIN+I0,
+     &                      Input_Opt%ND50_JMIN+J0,
+     &                      Input_Opt%ND50_LMIN,
      &                      REAL( Q(1:ND50_NI, 1:ND50_NJ, 1:GMNL, W)))
 #endif
          ELSE
@@ -1365,7 +1379,9 @@
      &                  CATEGORY,     GMTRC,        UNIT,      
      &                  TAU0,         TAU1,         RESERVED,  
      &                  ND50_NI,      ND50_NJ,      GMNL,     
-     &                  ND50_IMIN+I0, ND50_JMIN+J0, ND50_LMIN, 
+     &                  Input_Opt%ND50_IMIN+I0,
+     &                  Input_Opt%ND50_JMIN+J0,
+     &                  Input_Opt%ND50_LMIN, 
      &                  REAL( Q(1:ND50_NI, 1:ND50_NJ, 1:GMNL, W),4))
          ENDIF
       ENDDO
@@ -1375,7 +1391,7 @@
  120  FORMAT( '     - DIAG50: Closing file ', a )
 
       ! Close file
-      IF ( LND50_HDF ) THEN
+      IF ( Input_Opt%LND50_HDF ) THEN
 #if   defined( USE_HDF5 )
          ! Only include this if we are linking to HDF5 library (bmy, 12/21/09)
          CALL CLOSE_HDF( IU_ND50_HDF )
@@ -1394,7 +1410,7 @@
  130  FORMAT( '     - DIAG50: Zeroing arrays at ', a )
 
       ! Set STARTING TAU for the next bpch write
-      TAU0       = GET_TAU() + ( GET_TS_DYN() / 60e+0_fp )
+      TAU0       = GET_TAU() + ( GET_TS_DYN() / 3600e+0_fp )
 
       ! Zero counters
       COUNT        = 0
@@ -1402,6 +1418,7 @@
       
       ! Zero accumulating array
       Q            = 0e+0_fp
+#endif
 
       END SUBROUTINE WRITE_DIAG50
 !EOC
@@ -1444,12 +1461,13 @@
       !=================================================================
       ! GET_I begins here!
       !=================================================================
-
+#if defined( BPCH_DIAG ) || defined( BPCH_TIMESER )
       ! Add the offset to X to get I  
       I = IOFF + X
 
       ! Handle wrapping around the date line, if necessary
       IF ( I > IIPAR ) I = I - IIPAR
+#endif
 
       END FUNCTION GET_I
 !EOC
@@ -1466,39 +1484,33 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE INIT_DIAG50( DO_ND50, N_ND50, TRACERS, IMIN, IMAX,    
-     &                        JMIN,    JMAX,   LMIN,    LMAX, FILE )
+      SUBROUTINE INIT_DIAG50( am_I_Root, Input_Opt, RC )
 !
 ! !USES:
 !
-      USE BPCH2_MOD,    ONLY : GET_MODELNAME
-      USE BPCH2_MOD,    ONLY : GET_HALFPOLAR
+      USE ErrCode_Mod
+      USE Input_Opt_Mod, ONLY : OptInput
+#if defined( BPCH_DIAG ) || defined( BPCH_TIMESER )
+      USE BPCH2_MOD,     ONLY : GET_MODELNAME
+      USE BPCH2_MOD,     ONLY : GET_HALFPOLAR
       USE CMN_SIZE_MOD
-      USE ERROR_MOD,    ONLY : ALLOC_ERR
-      USE ERROR_MOD,    ONLY : ERROR_STOP
-      USE GC_GRID_MOD,  ONLY : GET_XOFFSET
-      USE GC_GRID_MOD,  ONLY : GET_YOFFSET
-      USE GC_GRID_MOD,  ONLY : ITS_A_NESTED_GRID
-      USE TIME_MOD,     ONLY : GET_TAUb
+      USE ErrCode_Mod
+      USE ERROR_MOD,     ONLY : ALLOC_ERR
+      USE ERROR_MOD,     ONLY : ERROR_STOP
+      USE GC_GRID_MOD,   ONLY : GET_XOFFSET
+      USE GC_GRID_MOD,   ONLY : GET_YOFFSET
+      USE GC_GRID_MOD,   ONLY : ITS_A_NESTED_GRID
+      USE TIME_MOD,      ONLY : GET_TAUb
+#endif
 !
 ! !INPUT PARAMETERS: 
 !
-      ! DO_ND50 : Switch to turn on ND50 timeseries diagnostic
-      ! N_ND50  : Number of ND50 read by "input_mod.f"
-      ! TRACERS : Array w/ ND50 tracer #'s read by "input_mod.f"
-      ! IMIN    : Min longitude index read by "input_mod.f"
-      ! IMAX    : Max longitude index read by "input_mod.f" 
-      ! JMIN    : Min latitude index read by "input_mod.f" 
-      ! JMAX    : Min latitude index read by "input_mod.f" 
-      ! LMIN    : Min level index read by "input_mod.f" 
-      ! LMAX    : Min level index read by "input_mod.f" 
-      ! FILE    : ND50 output file name read by "input_mod.f"
-      LOGICAL,            INTENT(IN) :: DO_ND50
-      INTEGER,            INTENT(IN) :: N_ND50, TRACERS(100)
-      INTEGER,            INTENT(IN) :: IMIN,   IMAX 
-      INTEGER,            INTENT(IN) :: JMIN,   JMAX      
-      INTEGER,            INTENT(IN) :: LMIN,   LMAX 
-      CHARACTER(LEN=255), INTENT(IN) :: FILE
+      LOGICAL,        INTENT(IN)  :: am_I_Root   ! Are we on the root CPU?
+      TYPE(OptInput), INTENT(IN)  :: Input_Opt   ! Input Options object
+!
+! !OUTPUT PARAMETERS:
+!
+      INTEGER,        INTENT(OUT) :: RC          ! Success or failure?
 !
 ! !REMARKS:
 ! 
@@ -1519,31 +1531,25 @@
 !
 ! !LOCAL VARIABLES:
 !
+#if defined( BPCH_DIAG ) || defined( BPCH_TIMESER )
       INTEGER            :: AS
       CHARACTER(LEN=255) :: LOCATION
+#endif
 
       !=================================================================
       ! INIT_DIAG50 begins here!
       !=================================================================
 
+      ! Assume success
+      RC = GC_SUCCESS
+
+#if defined( BPCH_DIAG ) || defined( BPCH_TIMESER )
+
       ! Initialize
       LOCATION               = 'INIT_DIAG50 ("diag50_mod.f")'
-      ND50_TRACERS(:)        = 0
-
-      ! Get values from "input_mod.f"
-      DO_SAVE_DIAG50         = DO_ND50 
-      ND50_N_TRACERS         = N_ND50
-      ND50_TRACERS(1:N_ND50) = TRACERS(1:N_ND50)
-      ND50_IMIN              = IMIN
-      ND50_IMAX              = IMAX
-      ND50_JMIN              = JMIN
-      ND50_JMAX              = JMAX
-      ND50_LMIN              = LMIN
-      ND50_LMAX              = LMAX
-      ND50_OUTPUT_FILE       = TRIM( FILE )
 
       ! Exit if ND50 is turned off 
-      IF ( .not. DO_SAVE_DIAG50 ) RETURN
+      IF ( .not. Input_Opt%DO_ND50 ) RETURN
 
       !=================================================================
       ! Error check longitude, latitude, altitude limits
@@ -1563,21 +1569,24 @@
       !-----------
 
       ! Error check ND50_IMIN
-      IF ( ND50_IMIN+I0 < 1 .or. ND50_IMIN+I0 > IIPAR ) THEN
+      IF ( Input_Opt%ND50_IMIN+I0 < 1       .or.
+     &     Input_Opt%ND50_IMIN+I0 > IIPAR ) THEN
          CALL ERROR_STOP( 'Bad ND50_IMIN value!', LOCATION )
       ENDIF
 
       ! Error check ND50_IMAX
-      IF ( ND50_IMAX+I0 < 1 .or. ND50_IMAX+I0 > IIPAR ) THEN
+      IF ( Input_Opt%ND50_IMAX+I0 < 1      .or.
+     &     Input_Opt%ND50_IMAX+I0 > IIPAR ) THEN
          CALL ERROR_STOP( 'Bad ND50_IMAX value!', LOCATION )
       ENDIF
 
       ! Compute longitude limits to write to disk 
       ! Also handle wrapping around the date line
-      IF ( ND50_IMAX >= ND50_IMIN ) THEN
-         ND50_NI = ( ND50_IMAX - ND50_IMIN ) + 1
+      IF ( Input_Opt%ND50_IMAX >= Input_Opt%ND50_IMIN ) THEN
+         ND50_NI = ( Input_Opt%ND50_IMAX - Input_Opt%ND50_IMIN ) + 1
       ELSE 
-         ND50_NI = ( IIPAR - ND50_IMIN ) + 1 + ND50_IMAX
+         ND50_NI = ( IIPAR - Input_Opt%ND50_IMIN ) + 1 +
+     &               Input_Opt%ND50_IMAX
          WRITE( 6, '(a)' ) 'We are wrapping around the date line!'
       ENDIF
 
@@ -1591,18 +1600,20 @@
       !-----------
       
       ! Error check JMIN_AREA
-      IF ( ND50_JMIN+J0 < 1 .or. ND50_JMIN+J0 > JJPAR ) THEN
+      IF ( Input_Opt%ND50_JMIN+J0 < 1       .or.
+     &     Input_Opt%ND50_JMIN+J0 > JJPAR ) THEN
          CALL ERROR_STOP( 'Bad ND50_JMIN value!', LOCATION )
       ENDIF
      
       ! Error check JMAX_AREA
-      IF ( ND50_JMAX+J0 < 1 .or.ND50_JMAX+J0 > JJPAR ) THEN
+      IF ( Input_Opt%ND50_JMAX+J0 < 1       .or.
+     &     Input_Opt%ND50_JMAX+J0 > JJPAR ) THEN
          CALL ERROR_STOP( 'Bad ND50_JMAX value!', LOCATION )
       ENDIF
 
       ! Compute latitude limits to write to disk (bey, bmy, 3/16/99)
-      IF ( ND50_JMAX >= ND50_JMIN ) THEN
-         ND50_NJ = ( ND50_JMAX - ND50_JMIN ) + 1
+      IF ( Input_Opt%ND50_JMAX >= Input_Opt%ND50_JMIN ) THEN
+         ND50_NJ = ( Input_Opt%ND50_JMAX - Input_Opt%ND50_JMIN ) + 1
       ELSE
          CALL ERROR_STOP( 'ND50_JMAX < ND50_JMIN!', LOCATION )
       ENDIF     
@@ -1612,13 +1623,14 @@
       !-----------
 
       ! Error check ND50_LMIN, ND50_LMAX
-      IF ( ND50_LMIN < 1 .or. ND50_LMAX > LLPAR ) THEN 
+      IF ( Input_Opt%ND50_LMIN < 1       .or.
+     &     Input_Opt%ND50_LMAX > LLPAR ) THEN 
          CALL ERROR_STOP( 'Bad ND50 altitude values!', LOCATION )
       ENDIF
 
       ! # of levels to save in ND50 timeseries
-      IF ( ND50_LMAX >= ND50_LMIN ) THEN  
-         ND50_NL = ( ND50_LMAX - ND50_LMIN ) + 1
+      IF ( Input_Opt%ND50_LMAX >= Input_Opt%ND50_LMIN ) THEN  
+         ND50_NL = ( Input_Opt%ND50_LMAX - Input_Opt%ND50_LMIN ) + 1
       ELSE
          CALL ERROR_STOP( 'ND50_LMAX < ND50_LMIN!', LOCATION )
       ENDIF
@@ -1626,9 +1638,9 @@
       !-----------
       ! Offsets
       !-----------
-      IOFF      = ND50_IMIN - 1
-      JOFF      = ND50_JMIN - 1
-      LOFF      = ND50_LMIN - 1
+      IOFF      = Input_Opt%ND50_IMIN - 1
+      JOFF      = Input_Opt%ND50_JMIN - 1
+      LOFF      = Input_Opt%ND50_LMIN - 1
 
       !------------
       ! Counter
@@ -1654,7 +1666,7 @@
       !=================================================================
 
       ! Accumulator array
-      ALLOCATE( Q( ND50_NI, ND50_NJ, ND50_NL, ND50_N_TRACERS), STAT=AS )
+      ALLOCATE( Q( ND50_NI, ND50_NJ, ND50_NL, Input_Opt%N_ND50),STAT=AS)
       IF ( AS /= 0 ) CALL ALLOC_ERR( 'Q' )
       Q = 0e+0_fp
 
@@ -1662,6 +1674,7 @@
       ALLOCATE( COUNT_CHEM3D( ND50_NI, ND50_NJ, ND50_NL ), STAT=AS )
       IF ( AS /= 0 ) CALL ALLOC_ERR( 'COUNT_CHEM3D' )
       COUNT_CHEM3D = 0e+0_fp
+#endif
 
       END SUBROUTINE INIT_DIAG50
 !EOC
@@ -1677,7 +1690,7 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE CLEANUP_DIAG50
+      SUBROUTINE CLEANUP_DIAG50()
 ! 
 ! !REVISION HISTORY: 
 !  20 Jul 2004 - R. Yantosca - Initial version
@@ -1686,11 +1699,13 @@
 !EOP
 !------------------------------------------------------------------------------
 !BOC
+#if defined( BPCH_DIAG ) || defined( BPCH_TIMESER )
       !=================================================================
       ! CLEANUP_DIAG50 begins here!
       !=================================================================
       IF ( ALLOCATED( Q            ) ) DEALLOCATE( Q            )
       IF ( ALLOCATED( COUNT_CHEM3D ) ) DEALLOCATE( COUNT_CHEM3D )
+#endif
 
       END SUBROUTINE CLEANUP_DIAG50
 !EOC

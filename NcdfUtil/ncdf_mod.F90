@@ -500,6 +500,7 @@ CONTAINS
     CHARACTER(LEN=255)     :: a_val              ! netCDF attribute value
     INTEGER                :: a_type             ! netCDF attribute type
     INTEGER                :: st1d(1), ct1d(1)   ! For 1D arrays    
+    INTEGER                :: I
 
     !=================================================================
     ! NC_READ_VAR_CORE begins here
@@ -548,6 +549,18 @@ CONTAINS
     ELSE 
        CALL NcGet_Var_Attributes( fID,          TRIM(v_name), &
                                   TRIM(a_name), varUnit     )
+
+       ! Check if the last character of VarUnit is the ASCII null character
+       ! ("\0", ASCII value = 0), which is used to denote the end of a string.
+       ! The ASCII null character may be introduced if the netCDF file was
+       ! written using a language other than Fortran.  The compiler might
+       ! interpret the null character as part of the string instead of as
+       ! an empty space.  If the null space is there, then replace it with
+       ! a Fortran empty string value (''). (bmy, 7/17/18)
+       I = LEN_TRIM( VarUnit )
+       IF ( ICHAR( VarUnit(I:I) ) == 0 ) THEN
+          VarUnit(I:I) = ''
+       ENDIF
     ENDIF
 
   END SUBROUTINE NC_READ_VAR_CORE
@@ -1162,6 +1175,18 @@ CONTAINS
        a_name = "units"
        CALL NcGet_Var_Attributes(fId,TRIM(v_name),TRIM(a_name),a_val)
        VarUnit = TRIM(a_val)
+
+       ! Check if the last character of VarUnit is the ASCII null character
+       ! ("\0", ASCII value = 0), which is used to denote the end of a string.
+       ! The ASCII null character may be introduced if the netCDF file was
+       ! written using a language other than Fortran.  The compiler might
+       ! interpret the null character as part of the string instead of as
+       ! an empty space.  If the null space is there, then replace it with
+       ! a Fortran empty string value (''). (bmy, 7/17/18)
+       I = LEN_TRIM( VarUnit )
+       IF ( ICHAR( VarUnit(I:I) ) == 0 ) THEN
+          VarUnit(I:I) = ''
+       ENDIF
     ENDIF
 
     !=================================================================
@@ -2938,6 +2963,7 @@ CONTAINS
 !  15 Jun 2012 - C. Keller   - Initial version
 !  10 May 2017 - R. Yantosca - Don't manually increment vId, it's returned
 !                              as an output from NCDEF_VARIABLE
+!  18 May 2018 - C. Holmes   - Define time as an unlimited dimension
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -3025,7 +3051,7 @@ CONTAINS
 
     ! Define time dimension
     v_name = "time"
-    CALL NcDef_Dimension( fId, TRIM(v_name), ntime, id_time )
+    CALL NcDef_Dimension( fId, TRIM(v_name), ntime, id_time, unlimited=.true. )
 
     !--------------------------------
     ! VARIABLE: lon
@@ -3351,44 +3377,48 @@ CONTAINS
 !\\
 ! !INTERFACE:
 !
-  SUBROUTINE Nc_Create( NcFile,     Title,        nLon,      nLat,           &
-                        nLev,       nTime,        fId,       lonID,          & 
-                        latId,      levId,        timeId,    VarCt,          &
-                        Create_NC4, KeepDefMode,  NcFormat,  Conventions,    &
-                        History,    ProdDateTime, Reference, Contact,        &
-                        nIlev,      iLevId                                  )
+  SUBROUTINE Nc_Create( NcFile,      Title,          nLon,                   &
+                        nLat,        nLev,           nTime,                  &
+                        fId,         lonID,          latId,                  &
+                        levId,       timeId,         VarCt,                  &
+                        Create_NC4,  KeepDefMode,    NcFormat,               &
+                        Conventions, History,        ProdDateTime,           &
+                        Reference,   Contact,        nIlev,                  &
+                        iLevId,      StartTimeStamp, EndTimeStamp           )
 !
 ! !INPUT PARAMETERS:
 !
     ! Required arguments
-    CHARACTER(LEN=*), INTENT(IN   )  :: ncFile       ! ncdf file path + name 
-    CHARACTER(LEN=*), INTENT(IN   )  :: title        ! ncdf file title
-    INTEGER,          INTENT(IN   )  :: nLon         ! # of lons 
-    INTEGER,          INTENT(IN   )  :: nLat         ! # of lats 
-    INTEGER,          INTENT(IN   )  :: nLev         ! # of level midpoints
-    INTEGER,          INTENT(IN   )  :: nTime        ! # of times 
-    INTEGER,          OPTIONAL       :: nILev        ! # of level interfaces
+    CHARACTER(LEN=*), INTENT(IN   )  :: ncFile         ! ncdf file path + name 
+    CHARACTER(LEN=*), INTENT(IN   )  :: title          ! ncdf file title
+    INTEGER,          INTENT(IN   )  :: nLon           ! # of lons 
+    INTEGER,          INTENT(IN   )  :: nLat           ! # of lats 
+    INTEGER,          INTENT(IN   )  :: nLev           ! # of level midpoints
+    INTEGER,          INTENT(IN   )  :: nTime          ! # of times 
+    INTEGER,          OPTIONAL       :: nILev          ! # of level interfaces
 
     ! Optional arguments (mostly global attributes)
-    LOGICAL,          OPTIONAL       :: Create_Nc4   ! Save output as netCDF-4
-    LOGICAL,          OPTIONAL       :: KeepDefMode  ! If = T, then don't exit
-                                                     !  define mode 
-    CHARACTER(LEN=*), OPTIONAL       :: NcFormat     ! e.g. netCDF-4
-    CHARACTER(LEN=*), OPTIONAL       :: Conventions  ! e.g. COARDS, CF, etc.
-    CHARACTER(LEN=*), OPTIONAL       :: History      ! History glob attribute
-    CHARACTER(LEN=*), OPTIONAL       :: ProdDateTime ! Time/date of production
-    CHARACTER(LEN=*), OPTIONAL       :: Reference    ! Reference string
-    CHARACTER(LEN=*), OPTIONAL       :: Contact      ! People to contact
+    LOGICAL,          OPTIONAL       :: Create_Nc4     ! Save as netCDF-4
+    LOGICAL,          OPTIONAL       :: KeepDefMode    ! If = T, then don't
+                                                       !  exit define mode 
+    CHARACTER(LEN=*), OPTIONAL       :: NcFormat       ! e.g. netCDF-4
+    CHARACTER(LEN=*), OPTIONAL       :: Conventions    ! e.g. COARDS, CF, etc.
+    CHARACTER(LEN=*), OPTIONAL       :: History        ! History glob attribute
+    CHARACTER(LEN=*), OPTIONAL       :: ProdDateTime   ! Time/date of production
+    CHARACTER(LEN=*), OPTIONAL       :: Reference      ! Reference string
+    CHARACTER(LEN=*), OPTIONAL       :: Contact        ! People to contact
+    CHARACTER(LEN=*), OPTIONAL       :: StartTimeStamp ! Timestamps at start
+    CHARACTER(LEN=*), OPTIONAL       :: EndTimeStamp   !  and end of simulation
 !
 ! !OUTPUT PARAMETERS:
 ! 
-    INTEGER,          INTENT(  OUT)  :: fId          ! file id 
-    INTEGER,          INTENT(  OUT)  :: lonId        ! lon  dimension id 
-    INTEGER,          INTENT(  OUT)  :: latId        ! lat  dimension id 
-    INTEGER,          INTENT(  OUT)  :: levId        ! lev  dimension id 
-    INTEGER,          INTENT(  OUT)  :: timeId       ! time dimension id 
-    INTEGER,          INTENT(  OUT)  :: VarCt        ! variable counter 
-    INTEGER,          OPTIONAL       :: ilevId       ! ilev dimension id
+    INTEGER,          INTENT(  OUT)  :: fId            ! file id 
+    INTEGER,          INTENT(  OUT)  :: lonId          ! lon  dimension id 
+    INTEGER,          INTENT(  OUT)  :: latId          ! lat  dimension id 
+    INTEGER,          INTENT(  OUT)  :: levId          ! lev  dimension id 
+    INTEGER,          INTENT(  OUT)  :: timeId         ! time dimension id 
+    INTEGER,          INTENT(  OUT)  :: VarCt          ! variable counter 
+    INTEGER,          OPTIONAL       :: ilevId         ! ilev dimension id
 !
 ! !REMARKS:
 !  Assumes that you have:
@@ -3409,6 +3439,9 @@ CONTAINS
 !                              routine (i.e. to define variables afterwards)
 !  24 Aug 2017 - R. Yantosca - Added nIlev and iLevId variables so that we can
 !                               create the iLev dimension (level interfaces)
+!  24 Jan 2018 - R. Yantosca - Add update frequency as an optional global attr
+!  31 Jan 2018 - R. Yantosca - Add StartTimeStamp, EndTimeStamp arguments
+!  18 May 2018 - C. Holmes   - Define time as an unlimited dimension
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -3427,6 +3460,8 @@ CONTAINS
     CHARACTER(LEN=255) :: ThisPdt
     CHARACTER(LEN=255) :: ThisReference
     CHARACTER(LEN=255) :: ThisContact
+    CHARACTER(LEN=255) :: ThisStartTimeStamp
+    CHARACTER(LEN=255) :: ThisEndTimeStamp
 
     !=======================================================================
     ! Initialize
@@ -3483,9 +3518,25 @@ CONTAINS
        ThisReference = ''
     ENDIF
 
-    ! Conventions global attribute (assume COARDS)
+    ! Contact
     IF ( PRESENT( Contact ) ) THEN
        ThisContact = TRIM( Contact )
+    ELSE
+       ThisContact = ''
+    ENDIF
+
+    ! Starting date and time of the simulation
+    IF ( PRESENT( StartTimeStamp ) ) THEN
+       ThisStartTimeStamp = TRIM( StartTimeStamp )
+    ELSE
+       ThisStartTimeStamp = ''
+    ENDIF
+
+    ! Ending date and time of the simulation
+    IF ( PRESENT( EndTimeStamp ) ) THEN
+       ThisEndTimeStamp = TRIM( EndTimeStamp )
+    ELSE
+       ThisEndTimeStamp = ''
     ENDIF
 
     !=======================================================================
@@ -3501,11 +3552,14 @@ CONTAINS
     !=======================================================================
     ! Set global attributes
     !=======================================================================
+
+    ! These attributes are required for COARDS or CF conventions
     CALL NcDef_Glob_Attributes(  fId, 'title',        TRIM( Title         ) ) 
     CALL NcDef_Glob_Attributes(  fId, 'history',      TRIM( ThisHistory   ) )
     CALL NcDef_Glob_Attributes(  fId, 'format',       TRIM( ThisNcFormat  ) )
     CALL NcDef_Glob_Attributes(  fId, 'conventions',  TRIM( ThisConv      ) )
 
+    ! These attributes are optional
     IF ( PRESENT( ProdDateTime ) ) THEN 
      CALL NcDef_Glob_Attributes( fId, 'ProdDateTime', TRIM( ThisPdt       ) )
     ENDIF
@@ -3518,12 +3572,22 @@ CONTAINS
      CALL NcDef_Glob_Attributes( fId, 'contact',      TRIM( ThisContact   ) )
     ENDIF
 
+    IF ( PRESENT( StartTimeStamp ) ) THEN
+     CALL NcDef_Glob_Attributes( fId, 'simulation_start_date_and_time',      &
+                                       TRIM( ThisStartTimeStamp   )         )
+    ENDIF
+
+    IF ( PRESENT( EndTimeStamp ) ) THEN
+     CALL NcDef_Glob_Attributes( fId, 'simulation_end_date_and_time',        &
+                                       TRIM( ThisEndTimeStamp )             )
+    ENDIF
+
     !=======================================================================
     ! Set dimensions
     !=======================================================================
 
     ! Time
-    CALL NcDef_Dimension( fId, 'time', nTime, TimeId ) 
+    CALL NcDef_Dimension( fId, 'time', nTime, TimeId, unlimited=.true. ) 
 
     ! Level midpoints
     IF ( nLev > 0 ) THEN
@@ -3573,7 +3637,7 @@ CONTAINS
                          DataType,  VarCt,        DefMode,      Compress,    & 
                          AddOffset, MissingValue, ScaleFactor,  Calendar,    &
                          Axis,      StandardName, FormulaTerms, AvgMethod,   &
-                         Positive,  iLevId                                  )
+                         Positive,  iLevId,       nUpdates                  )
 !
 ! !INPUT PARAMETERS:
 ! 
@@ -3601,6 +3665,8 @@ CONTAINS
     CHARACTER(LEN=*), OPTIONAL      :: FormulaTerms ! Formula for vert coords
     CHARACTER(LEN=*), OPTIONAL      :: AvgMethod    ! Averaging method
     CHARACTER(LEN=*), OPTIONAL      :: Positive     ! Positive dir (up or down)
+    REAL*4,           OPTIONAL      :: nUpdates     ! # of updates (for time-
+                                                    !  averaged fields only)
 !
 ! !INPUT/OUTPUT PARAMETERS:
 !
@@ -3779,7 +3845,7 @@ CONTAINS
     ! Standard name (optional) -- skip if null string
     IF ( PRESENT( StandardName ) ) THEN
        IF ( LEN_TRIM( StandardName ) > 0 ) THEN
-          Att = 'standard_Name'
+          Att = 'standard_name'
           CALL NcDef_Var_Attributes( fId, VarCt, TRIM(Att), TRIM(StandardName))
        ENDIF
     ENDIF
@@ -3789,6 +3855,14 @@ CONTAINS
        IF ( LEN_TRIM( FormulaTerms ) > 0 ) THEN
           Att = 'formula_terms'
           CALL NcDef_Var_Attributes( fId, VarCt, TRIM(Att), TRIM(FormulaTerms))
+       ENDIF
+    ENDIF
+
+    ! Number of updates
+    IF ( PRESENT( nUpdates ) ) THEN
+       IF ( nUpdates > 0.0 ) THEN
+          Att = 'number_of_updates'
+          CALL NcDef_Var_Attributes( fId, VarCt, TRIM(Att), nUpdates )
        ENDIF
     ENDIF
 

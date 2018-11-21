@@ -27,8 +27,6 @@
 !
 ! !PUBLIC DATA MEMBERS:
 !
-      CHARACTER(LEN=255), PUBLIC :: INITIAL_FILE ! File w/ initial species mass
-      CHARACTER(LEN=255), PUBLIC :: FINAL_FILE   ! File w/ final   species mass
 !
 ! !REVISION HISTORY:
 !  (1 ) Now expand date & time tokens in filenames (bmy, 1/31/05)
@@ -39,6 +37,8 @@
 !  05 Nov 2014 - M. Yannetti - PRECISION_MOD Changed REAL*8 to REAL(fp)
 !  19 Mar 2015 - E. Lundgren - Change tracer units from kg to kg/kg
 !  29 Nov 2016 - M. Sulprizio- Convert species locally from kg/kg to kg
+!  30 Jan 2018 - M. Sulprizio- Remove INITIAL_FILE and FINAL_FILE and get from
+!                              Input_Opt instead
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -58,28 +58,31 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE STDRUN( am_I_Root, Input_Opt, State_Met, State_Chm, RC,
-     &                   LBEGIN )
+      SUBROUTINE STDRUN( am_I_Root, Input_Opt,  State_Met, 
+     &                   State_Chm, State_Diag, RC,        LBEGIN )
 !
 ! !USES:
 !
-      USE BPCH2_MOD,          ONLY : BPCH2             
-      USE BPCH2_MOD,          ONLY : OPEN_BPCH2_FOR_WRITE
-      USE BPCH2_MOD,          ONLY : GET_HALFPOLAR
-      USE BPCH2_MOD,          ONLY : GET_MODELNAME
+#if defined( BPCH_DIAG )
+      USE BPCH2_MOD,      ONLY : BPCH2
+      USE BPCH2_MOD,      ONLY : OPEN_BPCH2_FOR_WRITE
+      USE BPCH2_MOD,      ONLY : GET_HALFPOLAR
+      USE BPCH2_MOD,      ONLY : GET_MODELNAME
+#endif
       USE CMN_SIZE_MOD
       USE ErrCode_Mod
-      USE FILE_MOD,           ONLY : IOERROR
-      USE Input_Opt_Mod,      ONLY : OptInput
-      USE inquireMod,         ONLY : findFreeLUN
-      USE State_Chm_Mod,      ONLY : ChmState
-      USE State_Chm_Mod,      ONLY : Ind_
-      USE State_Met_Mod,      ONLY : MetState
-      USE TIME_MOD,           ONLY : EXPAND_DATE
-      USE TIME_MOD,           ONLY : GET_NYMD
-      USE TIME_MOD,           ONLY : GET_NHMS
-      USE TIME_MOD,           ONLY : GET_TAU
-      USE UnitConv_Mod,       ONLY : Convert_Spc_Units
+      USE FILE_MOD,       ONLY : IOERROR
+      USE Input_Opt_Mod,  ONLY : OptInput
+      USE inquireMod,     ONLY : findFreeLUN
+      USE State_Chm_Mod,  ONLY : ChmState
+      USE State_Chm_Mod,  ONLY : Ind_
+      USE State_Diag_Mod, ONLY : DgnState
+      USE State_Met_Mod,  ONLY : MetState
+      USE TIME_MOD,       ONLY : EXPAND_DATE
+      USE TIME_MOD,       ONLY : GET_NYMD
+      USE TIME_MOD,       ONLY : GET_NHMS
+      USE TIME_MOD,       ONLY : GET_TAU
+      USE UnitConv_Mod,   ONLY : Convert_Spc_Units
 !
 ! !INPUT PARAMETERS: 
 !
@@ -92,7 +95,7 @@
 ! !INPUT/OUTPUT PARAMETERS:
 !
       TYPE(ChmState), INTENT(INOUT) :: State_Chm   ! Chemistry State object
-
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag  ! Diagnostics State object
 !
 ! !OUTPUT PARAMETERS:
 !
@@ -127,6 +130,7 @@
 !  29 Nov 2016 - M. Sulprizio- Convert species locally from kg/kg to kg
 !  26 Jun 2017 - R. Yantosca - GC_ERROR is now contained in errcode_mod.F90
 !  28 Sep 2017 - E. Lundgren - Simplify unit conversions using wrapper routine
+!  03 Nov 2017 - R. Yantosca - Now accept State_Diag as an argument
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -151,6 +155,11 @@
       !=================================================================
       ! STDRUN begins here!
       !=================================================================
+
+      ! Assume success
+      RC = GC_SUCCESS
+
+#if defined( BPCH_DIAG )
 
       ! Number of advected species
       nAdvect = State_Chm%nAdvect
@@ -181,10 +190,10 @@
       ! Define filename for beginning or end of benchmark run
       IF ( LBEGIN ) THEN
          TITLE    = 'GEOS-CHEM Benchmark: Initial Species Mass'
-         FILENAME = INITIAL_FILE
+         FILENAME = Input_Opt%STDRUN_INIT_FILE
       ELSE
          TITLE    = 'GEOS-CHEM Benchmark: Final Species Mass'
-         FILENAME = FINAL_FILE
+         FILENAME = Input_Opt%STDRUN_FINAL_FILE
       ENDIF
            
       ! Expand any date tokens in the filename
@@ -257,6 +266,7 @@
      &                 'End of STDRUN in benchmark_mod.F')
          RETURN
       ENDIF
+#endif
 
       END SUBROUTINE STDRUN
 !EOC

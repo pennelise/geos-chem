@@ -1,4 +1,3 @@
-
 !------------------------------------------------------------------------------
 !                  GEOS-Chem Global Chemical Transport Model                  !
 !------------------------------------------------------------------------------
@@ -24,6 +23,8 @@ MODULE Input_Opt_Mod
 ! !PUBLIC MEMBER FUNCTIONS:
 !
   PUBLIC :: Set_Input_Opt
+  PUBLIC :: Set_Input_Opt_Advect
+  PUBLIC :: Set_Input_Opt_Passive
   PUBLIC :: Cleanup_Input_Opt
 !
 ! !PUBLIC DATA MEMBERS:
@@ -47,7 +48,6 @@ MODULE Input_Opt_Mod
      !----------------------------------------
      INTEGER                     :: MAX_DIAG
      INTEGER                     :: MAX_FAM
-     INTEGER                     :: MAX_SPC
 
      !----------------------------------------
      ! SIMULATION MENU fields 
@@ -56,15 +56,11 @@ MODULE Input_Opt_Mod
      INTEGER                     :: NHMSb              
      INTEGER                     :: NYMDe              
      INTEGER                     :: NHMSe              
+     INTEGER                     :: SimLengthSec
      CHARACTER(LEN=255)          :: RUN_DIR            
-     CHARACTER(LEN=255)          :: IN_RST_FILE        
      CHARACTER(LEN=255)          :: DATA_DIR           
      CHARACTER(LEN=255)          :: CHEM_INPUTS_DIR
      CHARACTER(LEN=255)          :: RES_DIR
-     CHARACTER(LEN=255)          :: GEOS_FP_DIR        
-     CHARACTER(LEN=255)          :: MERRA2_DIR          
-     CHARACTER(LEN=255)          :: DATA_DIR_1x1       
-     LOGICAL                     :: LVARTROP           
      LOGICAL                     :: LCAPTROP
      REAL(fp)                    :: OZONOPAUSE
      INTEGER                     :: NESTED_I0          
@@ -75,11 +71,13 @@ MODULE Input_Opt_Mod
      ! PASSIVE SPECIES MENU fields
      !----------------------------------------
      INTEGER                     :: NPASSIVE
+     INTEGER                     :: NPASSIVE_DECAY
      CHARACTER(LEN=63), POINTER  :: PASSIVE_NAME    (:)
      INTEGER,           POINTER  :: PASSIVE_ID      (:)
      REAL(fp),          POINTER  :: PASSIVE_MW      (:)
      REAL(fp),          POINTER  :: PASSIVE_TAU     (:)
      REAL(fp),          POINTER  :: PASSIVE_INITCONC(:)
+     INTEGER,           POINTER  :: PASSIVE_DECAYID (:)
 
      !----------------------------------------
      ! ADVECTED SPECIES MENU fields
@@ -102,25 +100,22 @@ MODULE Input_Opt_Mod
      LOGICAL                     :: ITS_A_CO2_SIM
      LOGICAL                     :: ITS_A_H2HD_SIM
      LOGICAL                     :: ITS_A_POPS_SIM
-     LOGICAL                     :: ITS_A_SPECIALTY_SIM
-     LOGICAL                     :: ITS_NOT_COPARAM_OR_CH4
 
      !----------------------------------------
      ! AEROSOL MENU fields
      !----------------------------------------
      LOGICAL                     :: LSULF              
-     LOGICAL                     :: LCRYST             
+     LOGICAL                     :: LMETALCATSO2
      LOGICAL                     :: LCARB
      LOGICAL                     :: LBRC              
      LOGICAL                     :: LSOA
      LOGICAL                     :: LMPOA
      LOGICAL                     :: LSVPOA
-     LOGICAL                     :: LISOPOA
+     LOGICAL                     :: LOMOC
      LOGICAL                     :: LDUST              
      LOGICAL                     :: LDEAD              
      LOGICAL                     :: LSSALT             
      LOGICAL                     :: LDSTUP
-     LOGICAL                     :: LDICARB            
      REAL(fp),           POINTER :: SALA_REDGE_um(:)   
      REAL(fp),           POINTER :: SALC_REDGE_um(:)   
      LOGICAL                     :: LGRAVSTRAT
@@ -130,13 +125,17 @@ MODULE Input_Opt_Mod
      REAL(fp)                    :: P_ICE_SUPERSAT
      LOGICAL                     :: LPSCCHEM
      LOGICAL                     :: LSTRATOD
+     !for BC absorption enhancement, (xnw, 8/24/15)
+     LOGICAL                     :: LBCAE
+     REAL(fp)                    :: BCAE_1
+     REAL(fp)                    :: BCAE_2
 
      !----------------------------------------
      ! EMISSIONS MENU fields
      !----------------------------------------
      LOGICAL                     :: LEMIS
      INTEGER                     :: TS_EMIS
-     INTEGER                     :: LBIOFUEL
+     LOGICAL                     :: LBIOFUEL
      LOGICAL                     :: LOTDLOC
      LOGICAL                     :: LSOILNOX
      LOGICAL                     :: LWARWICK_VSLS
@@ -151,18 +150,13 @@ MODULE Input_Opt_Mod
      LOGICAL                     :: LN2OEMIS
      LOGICAL                     :: LBASICEMIS
      LOGICAL                     :: LSETH2O
-     LOGICAL                     :: LSETCH4
-     LOGICAL                     :: LSETOCS
-     LOGICAL                     :: LSETCFC
-     LOGICAL                     :: LSETCL
-     LOGICAL                     :: LBRGCCM
-     LOGICAL                     :: LSETBR
-     LOGICAL                     :: LSETBRSTRAT
-     LOGICAL                     :: LSETNOYSTRAT
-     LOGICAL                     :: LSETN2O
-     LOGICAL                     :: LSETH2SO4
      INTEGER                     :: CFCYEAR
-     LOGICAL                     :: LFUTURECFC
+
+     !----------------------------------------
+     ! CO MENU fields
+     !----------------------------------------
+     LOGICAL                     :: LPCO_CH4
+     LOGICAL                     :: LPCO_NMVOC
 
      !----------------------------------------
      ! CO2 MENU fields
@@ -181,13 +175,6 @@ MODULE Input_Opt_Mod
      LOGICAL                     :: LPLANETAG
 
      !----------------------------------------
-     ! FUTURE MENU fields
-     !----------------------------------------
-     LOGICAL                     :: LFUTURE
-     INTEGER                     :: FUTURE_YEAR
-     CHARACTER(LEN=255)          :: FUTURE_SCEN
-
-     !----------------------------------------
      ! CHEMISTRY MENU fields
      !----------------------------------------
      LOGICAL                     :: LCHEM
@@ -197,7 +184,6 @@ MODULE Input_Opt_Mod
      INTEGER                     :: TS_CHEM
      REAL(fp)                    :: GAMMA_HO2
      LOGICAL                     :: LUCX
-     LOGICAL                     :: LCH4CHEM
      LOGICAL                     :: LACTIVEH2O
      LOGICAL                     :: LINITSPEC
      INTEGER, POINTER            :: NTLOOPNCS(:)
@@ -208,20 +194,23 @@ MODULE Input_Opt_Mod
      !----------------------------------------
      ! RADIATION MENU fields
      !----------------------------------------
-     LOGICAL                     :: LRAD
-     LOGICAL                     :: LLWRAD
-     LOGICAL                     :: LSWRAD
-     LOGICAL, POINTER            :: LSKYRAD(:)
-     INTEGER                     :: TS_RAD
+     LOGICAL                       :: LRAD
+     LOGICAL                       :: LLWRAD
+     LOGICAL                       :: LSWRAD
+     LOGICAL, POINTER              :: LSKYRAD(:)
+     INTEGER                       :: TS_RAD
+     INTEGER                       :: NWVSELECT
+     REAL(8), ALLOCATABLE          :: WVSELECT(:)
+     CHARACTER(LEN=5), ALLOCATABLE :: STRWVSELECT(:)
 
      !----------------------------------------
      ! TRANSPORT MENU fields
      !----------------------------------------
      LOGICAL                     :: LTRAN
      LOGICAL                     :: LFILL
-     LOGICAL                     :: TPCORE_IORD
-     LOGICAL                     :: TPCORE_JORD
-     LOGICAL                     :: TPCORE_KORD
+     INTEGER                     :: TPCORE_IORD
+     INTEGER                     :: TPCORE_JORD
+     INTEGER                     :: TPCORE_KORD
      INTEGER                     :: TS_DYN
 
      !----------------------------------------
@@ -274,10 +263,8 @@ MODULE Input_Opt_Mod
      INTEGER                     :: ND17,             LD17
      INTEGER                     :: ND18,             LD18
      INTEGER                     :: ND19,             LD19
-     INTEGER                     :: ND20,             LD20
      INTEGER                     :: ND21,             LD21
      INTEGER                     :: ND22,             LD22
-     INTEGER                     :: ND23,             LD23
      INTEGER                     :: ND24,             LD24
      INTEGER                     :: ND25,             LD25
      INTEGER                     :: ND26,             LD26
@@ -294,7 +281,6 @@ MODULE Input_Opt_Mod
      INTEGER                     :: ND37,             LD37
      INTEGER                     :: ND38,             LD38
      INTEGER                     :: ND39,             LD39
-     INTEGER                     :: ND40,             LD40
      INTEGER                     :: ND41,             LD41
      INTEGER                     :: ND42,             LD42
      INTEGER                     :: ND43,             LD43
@@ -302,22 +288,16 @@ MODULE Input_Opt_Mod
      INTEGER                     :: ND45,             LD45
      INTEGER                     :: ND46,             LD46
      INTEGER                     :: ND47,             LD47
-     INTEGER                     :: ND48,             LD48
-     INTEGER                     :: ND49,             LD49
-     INTEGER                     :: ND50,             LD50
-     INTEGER                     :: ND51,             LD51
      INTEGER                     :: ND52,             LD52
      INTEGER                     :: ND53,             LD53
      INTEGER                     :: ND54,             LD54
      INTEGER                     :: ND55,             LD55
      INTEGER                     :: ND56,             LD56
      INTEGER                     :: ND57,             LD57
-     INTEGER                     :: ND58,             LD58
      INTEGER                     :: ND59,             LD59
      INTEGER                     :: ND60,             LD60
      INTEGER                     :: ND61,             LD61
      INTEGER                     :: ND62,             LD62
-     INTEGER                     :: ND63,             LD63
      INTEGER                     :: ND64,             LD64
      INTEGER                     :: ND66,             LD66
      INTEGER                     :: ND67,             LD67
@@ -362,6 +342,7 @@ MODULE Input_Opt_Mod
      ! ND49 MENU fields
      !----------------------------------------
      LOGICAL                     :: DO_ND49
+     INTEGER                     :: N_ND49
      CHARACTER(LEN=255)          :: ND49_FILE
      INTEGER,            POINTER :: ND49_TRACERS(:)
      INTEGER                     :: ND49_FREQ
@@ -376,6 +357,7 @@ MODULE Input_Opt_Mod
      ! ND50 MENU fields
      !----------------------------------------
      LOGICAL                     :: DO_ND50
+     INTEGER                     :: N_ND50
      CHARACTER(LEN=255)          :: ND50_FILE
      LOGICAL                     :: LND50_HDF
      INTEGER,            POINTER :: ND50_TRACERS(:)
@@ -390,6 +372,7 @@ MODULE Input_Opt_Mod
      ! ND51 MENU fields
      !----------------------------------------
      LOGICAL                     :: DO_ND51
+     INTEGER                     :: N_ND51
      CHARACTER(LEN=255)          :: ND51_FILE
      LOGICAL                     :: LND51_HDF
      INTEGER,            POINTER :: ND51_TRACERS(:)
@@ -407,6 +390,7 @@ MODULE Input_Opt_Mod
      ! ND51b MENU fields
      !----------------------------------------
      LOGICAL                     :: DO_ND51b
+     INTEGER                     :: N_ND51b
      CHARACTER(LEN=255)          :: ND51b_FILE
      LOGICAL                     :: LND51b_HDF
      INTEGER,            POINTER :: ND51b_TRACERS(:)
@@ -424,6 +408,7 @@ MODULE Input_Opt_Mod
      ! ND63 MENU fields
      !----------------------------------------
      LOGICAL                     :: DO_ND63
+     INTEGER                     :: N_ND63
      CHARACTER(LEN=255)          :: ND63_FILE
      INTEGER,            POINTER :: ND63_TRACERS(:)
      INTEGER                     :: ND63_FREQ
@@ -438,21 +423,10 @@ MODULE Input_Opt_Mod
      LOGICAL                     :: DO_SAVE_PL
      INTEGER                     :: ND65, LD65
      LOGICAL                     :: DO_SAVE_O3
+     LOGICAL                     :: DO_SAVE_PCO
      INTEGER                     :: NFAM
      CHARACTER(LEN=255), POINTER :: FAM_NAME(:)
      CHARACTER(LEN=255), POINTER :: FAM_TYPE(:)
-
-     !----------------------------------------
-     ! UNIX CMDS fields
-     !----------------------------------------
-     CHARACTER(LEN=255)          :: BACKGROUND
-     CHARACTER(LEN=255)          :: REDIRECT
-     CHARACTER(LEN=255)          :: REMOVE_CMD
-     CHARACTER(LEN=255)          :: SEPARATOR
-     CHARACTER(LEN=255)          :: WILD_CARD
-     CHARACTER(LEN=255)          :: UNZIP_CMD
-     CHARACTER(LEN=255)          :: ZIP_SUFFIX
-     CHARACTER(LEN=1)            :: SPACE
 
      !----------------------------------------
      ! NESTED GRID MENU fields
@@ -505,9 +479,6 @@ MODULE Input_Opt_Mod
      !----------------------------------------  
      LOGICAL                     :: GOSAT_CH4_OBS
      LOGICAL                     :: TCCON_CH4_OBS
-     LOGICAL                     :: Analytical_Inv
-     REAL(fp)                    :: Emis_Pert
-     INTEGER                     :: Emis_Pert_Num
 
      !----------------------------------------
      ! POPS MENU fields
@@ -525,16 +496,26 @@ MODULE Input_Opt_Mod
      REAL(fp)                    :: POP_DEL_Hw
 
      !----------------------------------------
-     ! Fields for drydep and dust.  These get
-     ! set in the init stage based on info 
-     ! from file "input.geos". (mlong, 1/5/13)
-     !----------------------------------------
-     INTEGER                     :: N_DUST_BINS
-
-     !----------------------------------------
      ! Fields for interface to GEOS-5 GCM
      !----------------------------------------
+#if defined( MODEL_GEOS )
+     LOGICAL                     :: haveImpRst   = .FALSE.
+     LOGICAL                     :: AlwaysSetH2O = .TRUE.
+     LOGICAL                     :: UseOnlineVUD = .FALSE.
+     INTEGER                     :: LLFASTJX     = 601
+     INTEGER                     :: NN_RxnRates             ! # of diagnosed reaction rates
+     INTEGER, POINTER            :: RxnRates_IDs(:)         ! Reaction rate numbers to be diagnosed
+     INTEGER                     :: NN_RxnRconst            ! # of diagnosed reaction rates
+     INTEGER, POINTER            :: RxnRconst_IDs(:)        ! Reaction rate numbers to be diagnosed
+     INTEGER                     :: NN_Jvals                ! # of diagnosed Jvalues 
+     INTEGER, POINTER            :: Jval_IDs(:)             ! J-values to be diagnosed
+     INTEGER                     :: FJX_EXTRAL_ITERMAX = 5
+     LOGICAL                     :: FJX_EXTRAL_ERR     = .TRUE.
+     LOGICAL                     :: KppStop            = .TRUE. ! Stop KPP if integration fails twice
+#else
      LOGICAL                     :: haveImpRst
+     LOGICAL                     :: AlwaysSetH2O
+#endif
 
      !----------------------------------------
      ! Fields for LINOZ strat chem
@@ -619,6 +600,14 @@ MODULE Input_Opt_Mod
 !                              default.
 !  14 Sep 2017 - M. Sulprizio- Add USE_ONLINE_O3 and USE_TOMS_O3 to options for
 !                              overhead O3 in chemistry menu
+!  02 Nov 2017 - R. Yantosca - Bug fix: LBIOFUEL should be LOGICAL
+!  07 Nov 2017 - R. Yantosca - Remove LVARTROP; it's not needed
+!  29 Dec 2017 - C. Keller   - Added LLSTRAT. Used in gc_environment_mod.F90
+!  29 Dec 2017 - C. Keller   - Added AlwaysSetH2O.
+!  04 Apr 2018 - E. Lundgren - Remove MAX_PASV; use # from input.geos instead
+!  30 Aug 2018 - C. Keller   - Remove LLSTRAT. Only used in GEOS-5, obtained
+!                              from gridded comp module directly.
+!  15 Oct 2018 - E. Lundgren - Remove LFUTURECFC; no longer needed with ucx_mod updates
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -641,7 +630,6 @@ CONTAINS
 !
 ! !USES:
 !
-    USE CMN_SIZE_Mod,     ONLY : NDSTBIN, MAXPASV
     USE ErrCode_Mod
 !
 ! !INPUT PARAMETERS: 
@@ -659,14 +647,14 @@ CONTAINS
 ! !REMARKS:
 !  Set the following fields of Input_Opt outside of this routine:
 !  (1 ) Input_Opt%MAX_DIAG      : Max # of diagnostics
-!  (2 ) Input_Opt%MAX_SPC       : Max # of species
 !  (3 ) Input_Opt%MAX_MEMB      : Max # of members per family tracer
 !  (4 ) Input_Opt%MAX_FAM       : Max # of P/L diagnostic families
 !  (5 ) Input_Opt%MAX_DEP       : Max # of dry depositing species
-!  (6 ) Input_Opt%LINOZ_NLEVELS : Number of levels    in LINOZ climatology
-!  (7 ) Input_Opt%LINOZ_NLAT    : Number of latitudes in LINOZ climatology
-!  (8 ) Input_Opt%LINOZ_NMONTHS : Number of months    in LINOZ climatology
-!  (9 ) Input_Opt%LINOZ_NFIELDS : Number of species   in LINOZ climatology
+!  (6 ) Input_Opt%MAX_PASV      : Max # of passive species
+!  (7 ) Input_Opt%LINOZ_NLEVELS : Number of levels    in LINOZ climatology
+!  (8 ) Input_Opt%LINOZ_NLAT    : Number of latitudes in LINOZ climatology
+!  (9 ) Input_Opt%LINOZ_NMONTHS : Number of months    in LINOZ climatology
+!  (10) Input_Opt%LINOZ_NFIELDS : Number of species   in LINOZ climatology
 !                                                                             .
 !  We also need to implement better error checking.
 !
@@ -708,13 +696,16 @@ CONTAINS
 !  16 Mar 2017 - R. Yantosca - Remove obsolete family and drydep variables
 !  17 Mar 2017 - R. Yantosca - Remove IDDEP, DUSTREFF, DUSTDEN
 !  12 Jul 2017 - R. Yantosca - Initialize Input_Opt%HistoryInputFile field
+!  02 Nov 2017 - R. Yantosca - LWINDO_CU should be .FALSE., not 0
+!  07 Nov 2017 - R. Yantosca - Remove LVARTROP; it's not needed
+!  08 Mar 2018 - R. Yantosca - Bug fix, remove reference to TINDEX here
 !EOP
 !------------------------------------------------------------------------------
 !BOC
 !
 ! !LOCAL VARIABLES:
 !
-    INTEGER :: MAX_DIAG, MAX_FAM, MAX_SPC
+    INTEGER :: MAX_DIAG, MAX_FAM
 
     ! Assume success
     RC                               = GC_SUCCESS
@@ -732,7 +723,6 @@ CONTAINS
     !----------------------------------------
     MAX_DIAG                         = Input_Opt%MAX_DIAG
     MAX_FAM                          = Input_Opt%MAX_FAM
-    MAX_SPC                          = Input_Opt%MAX_SPC
   
     !----------------------------------------
     ! SIMULATION MENU fields 
@@ -741,16 +731,12 @@ CONTAINS
     Input_Opt%NHMSb                  = 0
     Input_Opt%NYMDe                  = 0
     Input_Opt%NHMSe                  = 0
+    Input_Opt%SimLengthSec           = 0
     Input_Opt%RUN_DIR                = './'
-    Input_Opt%IN_RST_FILE            = ''
     Input_Opt%DATA_DIR               = './'
     Input_Opt%RES_DIR                = './'
     Input_Opt%CHEM_INPUTS_DIR        = './'
     Input_Opt%RES_DIR                = './'
-    Input_Opt%GEOS_FP_DIR            = './'
-    Input_Opt%MERRA2_DIR             = './'
-    Input_Opt%DATA_DIR_1x1           = './'      ! NOTE: Now deprecated!
-    Input_Opt%LVARTROP               = .FALSE.
     Input_Opt%LCAPTROP               = .FALSE.
     Input_Opt%OZONOPAUSE             = -999.0 
     Input_Opt%NESTED_I0              = 0
@@ -760,23 +746,18 @@ CONTAINS
     !----------------------------------------
     ! PASSIVE SPECIES MENU fields
     !----------------------------------------
-    ALLOCATE( Input_Opt%PASSIVE_NAME    ( MAXPASV ), STAT=RC )
-    ALLOCATE( Input_Opt%PASSIVE_ID      ( MAXPASV ), STAT=RC )
-    ALLOCATE( Input_Opt%PASSIVE_MW      ( MAXPASV ), STAT=RC )
-    ALLOCATE( Input_Opt%PASSIVE_TAU     ( MAXPASV ), STAT=RC )
-    ALLOCATE( Input_Opt%PASSIVE_INITCONC( MAXPASV ), STAT=RC )
-
-    Input_Opt%NPASSIVE               = 0           
-    Input_Opt%PASSIVE_NAME    (:)    = ''
-    Input_Opt%PASSIVE_ID      (:)    = -999
-    Input_Opt%PASSIVE_MW      (:)    = 0.0_fp
-    Input_Opt%PASSIVE_TAU     (:)    = 0.0_fp
-    Input_Opt%PASSIVE_INITCONC(:)    = 0.0_fp
+    Input_Opt%NPASSIVE               = 0 
+    Input_Opt%NPASSIVE_DECAY         = 0 
                                   
     !----------------------------------------
     ! ADVECTED SPECIES MENU fields
     !----------------------------------------
-    ALLOCATE( Input_Opt%AdvectSpc_Name( MAX_SPC ), STAT=RC )
+
+    ! Hardcode maximum number of advected species to a large
+    ! value for now and add check in READ_SIMULATION_MENU (input_mod.F)
+    ! to make sure we don't exceed this value. Eventually we need to
+    ! think of a better way to do this. (mps, 1/26/18)
+    ALLOCATE( Input_Opt%AdvectSpc_Name( 600 ), STAT=RC )
 
     Input_Opt%N_ADVECT               = 0
     Input_Opt%AdvectSpc_Name         = ''
@@ -796,8 +777,6 @@ CONTAINS
     Input_Opt%ITS_A_CO2_SIM          = .FALSE.
     Input_Opt%ITS_A_H2HD_SIM         = .FALSE.
     Input_Opt%ITS_A_POPS_SIM         = .FALSE.
-    Input_Opt%ITS_A_SPECIALTY_SIM    = .FALSE.
-    Input_Opt%ITS_NOT_COPARAM_OR_CH4 = .FALSE.
 
     !----------------------------------------
     ! AEROSOL MENU fields
@@ -806,18 +785,17 @@ CONTAINS
     ALLOCATE( Input_Opt%SALC_REDGE_um( 2 ), STAT=RC )     
     
     Input_Opt%LSULF                  = .FALSE.
-    Input_Opt%LCRYST                 = .FALSE.
+    Input_Opt%LMETALCATSO2           = .FALSE.
     Input_Opt%LCARB                  = .FALSE.
     Input_Opt%LBRC                   = .FALSE.
     Input_Opt%LSOA                   = .FALSE.
     Input_Opt%LMPOA                  = .FALSE.
     Input_Opt%LSVPOA                 = .FALSE.
-    Input_Opt%LISOPOA                = .FALSE.
+    Input_Opt%LOMOC                  = .FALSE.
     Input_Opt%LDUST                  = .FALSE.
     Input_Opt%LDEAD                  = .FALSE.
     Input_Opt%LDSTUP                 = .FALSE.
     Input_Opt%LSSALT                 = .FALSE.
-    Input_Opt%LDICARB                = .FALSE.
     Input_Opt%SALA_REDGE_um          = 0e+0_fp
     Input_Opt%SALC_REDGE_um          = 0e+0_fp
     Input_Opt%LGRAVSTRAT             = .FALSE.
@@ -846,18 +824,13 @@ CONTAINS
     Input_Opt%LN2OEMIS               = .FALSE.
     Input_Opt%LBASICEMIS             = .FALSE.
     Input_Opt%LSETH2O                = .FALSE.
-    Input_Opt%LSETCH4                = .FALSE.
-    Input_Opt%LSETOCS                = .FALSE.
-    Input_Opt%LSETCFC                = .FALSE.
-    Input_Opt%LSETCL                 = .FALSE.
-    Input_Opt%LBRGCCM                = .FALSE.
-    Input_Opt%LSETBR                 = .FALSE.
-    Input_Opt%LSETBRSTRAT            = .FALSE.
-    Input_Opt%LSETNOYSTRAT           = .FALSE.
-    Input_Opt%LSETN2O                = .FALSE.
-    Input_Opt%LSETH2SO4              = .FALSE.
     Input_Opt%CFCYEAR                = 0
-    Input_Opt%LFUTURECFC             = .FALSE.
+
+    !----------------------------------------
+    ! CO MENU fields
+    !----------------------------------------
+    Input_Opt%LPCO_CH4               = .FALSE.
+    Input_Opt%LPCO_NMVOC             = .FALSE.
 
     !----------------------------------------
     ! CO2 MENU fields
@@ -877,13 +850,6 @@ CONTAINS
     Input_Opt%LPLANETAG              = .FALSE.
 
     !----------------------------------------
-    ! FUTURE MENU fields
-    !----------------------------------------
-    Input_Opt%LFUTURE                = .FALSE.
-    Input_Opt%FUTURE_YEAR            = 0
-    Input_Opt%FUTURE_SCEN            = ''
-
-    !----------------------------------------
     ! CHEMISTRY MENU fields
     !----------------------------------------
     Input_Opt%LCHEM                  = .FALSE.
@@ -893,7 +859,6 @@ CONTAINS
     Input_Opt%TS_CHEM                = 0
     Input_Opt%GAMMA_HO2              = 0e+0_fp
     Input_Opt%LUCX                   = .FALSE.
-    Input_Opt%LCH4CHEM               = .FALSE.
     Input_Opt%LACTIVEH2O             = .FALSE.
     Input_Opt%LINITSPEC              = .FALSE.
     Input_Opt%USE_ONLINE_O3          = .FALSE.
@@ -903,13 +868,18 @@ CONTAINS
     !----------------------------------------
     ! RADIATION MENU fields
     !----------------------------------------
-    ALLOCATE( Input_Opt%LSKYRAD( 2 ), STAT=RC )
+    ALLOCATE( Input_Opt%LSKYRAD( 2 ),     STAT=RC )
+    ALLOCATE( Input_Opt%WVSELECT( 3 ),    STAT=RC )
+    ALLOCATE( Input_Opt%STRWVSELECT( 3 ), STAT=RC )
 
     Input_Opt%LRAD                   = .FALSE.
     Input_Opt%LLWRAD                 = .FALSE.
     Input_Opt%LSWRAD                 = .FALSE.
     Input_Opt%LSKYRAD                = .FALSE.
     Input_Opt%TS_RAD                 = 0
+    Input_Opt%NWVSELECT              = 0
+    Input_Opt%WVSELECT               = 0e+0_fp
+    Input_Opt%STRWVSELECT            = ''
 
     !----------------------------------------
     ! TRANSPORT MENU fields
@@ -956,9 +926,8 @@ CONTAINS
     Input_Opt%HistoryInputFile       = ''
     Input_Opt%DIAG_COLLECTION        = -999
     Input_Opt%TS_DIAG                = 0
-    ALLOCATE( Input_Opt%TINDEX( MAX_DIAG, MAX_SPC ), STAT=RC )
-    ALLOCATE( Input_Opt%TCOUNT( MAX_DIAG          ), STAT=RC )
-    ALLOCATE( Input_Opt%TMAX  ( MAX_DIAG          ), STAT=RC )
+    ALLOCATE( Input_Opt%TCOUNT( MAX_DIAG  ), STAT=RC )
+    ALLOCATE( Input_Opt%TMAX  ( MAX_DIAG  ), STAT=RC )
 
     Input_Opt%ND01                   = 0
     Input_Opt%ND02                   = 0
@@ -979,10 +948,8 @@ CONTAINS
     Input_Opt%ND17                   = 0
     Input_Opt%ND18                   = 0
     Input_Opt%ND19                   = 0
-    Input_Opt%ND20                   = 0
     Input_Opt%ND21                   = 0
     Input_Opt%ND22                   = 0
-    Input_Opt%ND23                   = 0
     Input_Opt%ND24                   = 0
     Input_Opt%ND25                   = 0
     Input_Opt%ND26                   = 0
@@ -999,7 +966,6 @@ CONTAINS
     Input_Opt%ND37                   = 0
     Input_Opt%ND38                   = 0
     Input_Opt%ND39                   = 0
-    Input_Opt%ND40                   = 0
     Input_Opt%ND41                   = 0
     Input_Opt%ND42                   = 0
     Input_Opt%ND43                   = 0
@@ -1007,22 +973,16 @@ CONTAINS
     Input_Opt%ND45                   = 0
     Input_Opt%ND46                   = 0
     Input_Opt%ND47                   = 0
-    Input_Opt%ND48                   = 0
-    Input_Opt%ND49                   = 0
-    Input_Opt%ND50                   = 0
-    Input_Opt%ND51                   = 0
     Input_Opt%ND52                   = 0
     Input_Opt%ND53                   = 0
     Input_Opt%ND54                   = 0
     Input_Opt%ND55                   = 0
     Input_Opt%ND56                   = 0
     Input_Opt%ND57                   = 0
-    Input_Opt%ND58                   = 0
     Input_Opt%ND59                   = 0
     Input_Opt%ND60                   = 0
     Input_Opt%ND61                   = 0
     Input_Opt%ND62                   = 0
-    Input_Opt%ND63                   = 0
     Input_Opt%ND64                   = 0
     Input_Opt%ND65                   = 0
     Input_Opt%ND66                   = 0
@@ -1052,10 +1012,8 @@ CONTAINS
     Input_Opt%LD17                   = 0
     Input_Opt%LD18                   = 0
     Input_Opt%LD19                   = 0
-    Input_Opt%LD20                   = 0
     Input_Opt%LD21                   = 0
     Input_Opt%LD22                   = 0
-    Input_Opt%LD23                   = 0
     Input_Opt%LD24                   = 0
     Input_Opt%LD25                   = 0
     Input_Opt%LD26                   = 0
@@ -1072,7 +1030,6 @@ CONTAINS
     Input_Opt%LD37                   = 0
     Input_Opt%LD38                   = 0
     Input_Opt%LD39                   = 0
-    Input_Opt%LD40                   = 0
     Input_Opt%LD41                   = 0
     Input_Opt%LD42                   = 0
     Input_Opt%LD43                   = 0
@@ -1080,22 +1037,16 @@ CONTAINS
     Input_Opt%LD45                   = 0
     Input_Opt%LD46                   = 0
     Input_Opt%LD47                   = 0
-    Input_Opt%LD48                   = 0
-    Input_Opt%LD49                   = 0
-    Input_Opt%LD50                   = 0
-    Input_Opt%LD51                   = 0
     Input_Opt%LD52                   = 0
     Input_Opt%LD53                   = 0
     Input_Opt%LD54                   = 0
     Input_Opt%LD55                   = 0
     Input_Opt%LD56                   = 0
     Input_Opt%LD57                   = 0
-    Input_Opt%LD58                   = 0
     Input_Opt%LD59                   = 0
     Input_Opt%LD60                   = 0
     Input_Opt%LD61                   = 0
     Input_Opt%LD62                   = 0
-    Input_Opt%LD63                   = 0
     Input_Opt%LD64                   = 0
     Input_Opt%LD65                   = 0
     Input_Opt%LD66                   = 0
@@ -1107,7 +1058,6 @@ CONTAINS
     Input_Opt%LD72                   = 0
     Input_Opt%LD73                   = 0
     Input_Opt%LPRT                   = .FALSE.
-    Input_Opt%TINDEX(:,:)            = 0
     Input_Opt%TCOUNT(:)              = 0	  
     Input_Opt%TMAX(:)	             = 0
 #if defined( ESMF_ ) || defined( EXTERNAL_GRID ) || defined( EXTERNAL_FORCING )
@@ -1146,11 +1096,9 @@ CONTAINS
     !----------------------------------------
     ! ND49 MENU fields
     !----------------------------------------
-    ALLOCATE( Input_Opt%ND49_TRACERS( MAX_SPC ), STAT=RC )
-
     Input_Opt%DO_ND49                = .FALSE.
+    Input_Opt%N_ND49                 = 0
     Input_Opt%ND49_FILE              = ''
-    Input_Opt%ND49_TRACERS           = 0
     Input_Opt%ND49_FREQ              = 0
     Input_Opt%ND49_IMIN              = 0
     Input_Opt%ND49_IMAX              = 0
@@ -1162,12 +1110,10 @@ CONTAINS
     !----------------------------------------
     ! ND50 MENU fields
     !----------------------------------------
-    ALLOCATE( Input_Opt%ND50_TRACERS( MAX_SPC ), STAT=RC )
-
     Input_Opt%DO_ND50                = .FALSE.
+    Input_Opt%N_ND50                 = 0
     Input_Opt%ND50_FILE              = ''
     Input_Opt%LND50_HDF              = .FALSE.
-    Input_Opt%ND50_TRACERS           = 0
     Input_Opt%ND50_IMIN              = 0
     Input_Opt%ND50_IMAX              = 0
     Input_Opt%ND50_JMIN              = 0
@@ -1178,12 +1124,10 @@ CONTAINS
     !----------------------------------------
     ! ND51 MENU fields
     !----------------------------------------
-    ALLOCATE( Input_Opt%ND51_TRACERS( MAX_SPC ), STAT=RC )
-
     Input_Opt%DO_ND51                = .FALSE.
+    Input_Opt%N_ND51                 = 0
     Input_Opt%ND51_FILE              = ''
     Input_Opt%LND51_HDF              = .FALSE.
-    Input_Opt%ND51_TRACERS           = 0
     Input_Opt%ND51_HR_WRITE          = 0e+0_fp
     Input_Opt%ND51_HR1               = 0e+0_fp
     Input_Opt%ND51_HR2               = 0e+0_fp
@@ -1196,12 +1140,10 @@ CONTAINS
     !----------------------------------------
     ! ND51b MENU fields
     !----------------------------------------
-    ALLOCATE( Input_Opt%ND51b_TRACERS( MAX_SPC ), STAT=RC )
-
     Input_Opt%DO_ND51b               = .FALSE.
+    Input_Opt%N_ND51b                = 0
     Input_Opt%ND51b_FILE             = ''
     Input_Opt%LND51b_HDF             = .FALSE.
-    Input_Opt%ND51b_TRACERS          = 0
     Input_Opt%ND51b_HR_WRITE         = 0e+0_fp
     Input_Opt%ND51b_HR1              = 0e+0_fp
     Input_Opt%ND51b_HR2              = 0e+0_fp
@@ -1214,11 +1156,9 @@ CONTAINS
     !----------------------------------------
     ! ND63 MENU fields
     !----------------------------------------
-    ALLOCATE( Input_Opt%ND63_TRACERS( MAX_SPC ), STAT=RC )
-
     Input_Opt%DO_ND63                = .FALSE.
+    Input_Opt%N_ND63                 = 0
     Input_Opt%ND63_FILE              = ''
-    Input_Opt%ND63_TRACERS           = 0
     Input_Opt%ND63_FREQ              = 0
     Input_Opt%ND63_IMIN              = 0
     Input_Opt%ND63_IMAX              = 0
@@ -1234,20 +1174,10 @@ CONTAINS
     Input_Opt%DO_SAVE_PL             = .FALSE.
     Input_Opt%ND65                   = 0
     Input_Opt%DO_SAVE_O3             = .FALSE.
+    Input_Opt%DO_SAVE_PCO            = .FALSE.
     Input_Opt%NFAM                   = 0
     Input_Opt%FAM_NAME               = ''
     Input_Opt%FAM_TYPE               = ''
-
-    !----------------------------------------
-    ! UNIX CMDS fields
-    !----------------------------------------
-    Input_Opt%BACKGROUND             = ''
-    Input_Opt%REDIRECT               = ''  
-    Input_Opt%REMOVE_CMD             = ''
-    Input_Opt%SEPARATOR              = ''
-    Input_Opt%WILD_CARD              = ''
-    Input_Opt%UNZIP_CMD              = ''
-    Input_Opt%ZIP_SUFFIX             = ''
 
     !----------------------------------------
     ! NESTED GRID MENU fields
@@ -1263,7 +1193,7 @@ CONTAINS
     Input_Opt%TPBC_DIR_CH            = './'
     Input_Opt%LWINDO_AS              = .FALSE.
     Input_Opt%TPBC_DIR_AS            = './'
-    Input_Opt%LWINDO_CU              = 0
+    Input_Opt%LWINDO_CU              = .FALSE.
     Input_Opt%TPBC_DIR               = './'
     Input_Opt%NESTED_TS              = 0
     Input_Opt%NESTED_I1              = 0
@@ -1298,9 +1228,6 @@ CONTAINS
     !----------------------------------------  
     Input_Opt%GOSAT_CH4_OBS          = .FALSE.
     Input_Opt%TCCON_CH4_OBS          = .FALSE.
-    Input_Opt%Analytical_Inv         = .FALSE.
-    Input_Opt%Emis_Pert              = 1.0
-    Input_Opt%Emis_Pert_Num          = 0
 
     !----------------------------------------
     ! POPS MENU fields
@@ -1318,21 +1245,28 @@ CONTAINS
     Input_Opt%POP_DEL_Hw             = 0e+0_fp
 
     !----------------------------------------
-    ! Fields for DRYDEP and DUST based on
-    ! input from the file "input.geos"
-    !----------------------------------------
-    Input_Opt%N_DUST_BINS            = NDSTBIN
-
-    !----------------------------------------
     ! Fields for interface to GEOS-5 GCM
     !----------------------------------------
+#if defined( MODEL_GEOS )
+!    Input_Opt%haveImpRst             = .FALSE.
+!    Input_Opt%AlwaysSetH2O           = .FALSE.
+!    Input_Opt%LLFASTJX               = -999
+    Input_Opt%NN_RxnRates            = -999
+    Input_Opt%RxnRates_IDs          => NULL()
+    Input_Opt%NN_RxnRconst           = -999
+    Input_Opt%RxnRconst_IDs         => NULL()
+    Input_Opt%NN_Jvals               = -999
+    Input_Opt%Jval_IDs              => NULL()
+#else
     Input_Opt%haveImpRst             = .FALSE.
+    Input_Opt%AlwaysSetH2O           = .FALSE.
+#endif
 
     !----------------------------------------
     ! Fields for LINOZ strat chem
     !----------------------------------------
     Input_Opt%LINOZ_NLEVELS          = 25
-    Input_Opt%LINOZ_NLAT             =  18
+    Input_Opt%LINOZ_NLAT             = 18
     Input_Opt%LINOZ_NMONTHS          = 12
     Input_Opt%LINOZ_NFIELDS          = 7
 
@@ -1344,6 +1278,194 @@ CONTAINS
     Input_Opt%LINOZ_TPARM            = 0e+0_fp
 
   END SUBROUTINE Set_Input_Opt
+!EOC
+!------------------------------------------------------------------------------
+!                  GEOS-Chem Global Chemical Transport Model                  !
+!------------------------------------------------------------------------------
+!BOP
+!
+! !IROUTINE: Set_Input_Opt_Advect
+!
+! !DESCRIPTION: Subroutine SET\_INPUT\_OPT\_ADVECT intializes all GEOS-Chem
+!  options carried in Input Options derived type object that depend on
+!  the number of advected species (Input\_Opt%N_ADVECT).
+!\\
+!\\
+! !INTERFACE:
+!
+  SUBROUTINE Set_Input_Opt_Advect( am_I_Root, Input_Opt, RC )
+!
+! !USES:
+!
+    USE ErrCode_Mod
+!
+! !INPUT PARAMETERS: 
+!
+    LOGICAL,        INTENT(IN)    :: am_I_Root   ! Are we on the root CPU?
+!
+! !INPUT/OUTPUT PARAMETERS: 
+!
+    TYPE(OptInput), INTENT(INOUT) :: Input_Opt   ! Input Options object
+!
+! !OUTPUT PARAMETERS:
+!
+    INTEGER,        INTENT(OUT)   :: RC          ! Success or failure?
+!
+! !REMARKS:
+!  NOTE: These arrays are all for bpch diagnostics, and will eventually 
+!  be removed from GEOS-Chem.
+
+! !REVISION HISTORY: 
+!  26 Jan 2018 - M. Sulprizio- Initial version
+!  04 Apr 2018 - E. Lundgren - Renamed from Set_Input_Opt_Extra to 
+!                              Set_Input_Opt_Advect
+!EOP
+!------------------------------------------------------------------------------
+!BOC
+!
+! !LOCAL VARIABLES:
+!
+    ! Strings
+    CHARACTER(LEN=255) :: ErrMsg, ThisLoc
+
+    !=======================================================================
+    ! Initialize
+    !=======================================================================
+    RC      = GC_SUCCESS
+    ErrMsg  = ''
+    ThisLoc = &
+       ' -> at Set_Input_Opt_Advect (in module Headers/input_opt_mod.F90)'
+
+    !=======================================================================
+    ! Allocate arrays
+    !=======================================================================
+
+    ALLOCATE( Input_Opt%TINDEX(Input_Opt%MAX_DIAG,Input_Opt%N_ADVECT), STAT=RC )
+    CALL GC_CheckVar( 'Input_Opt%TINDEX', 0, RC )
+    IF ( RC /= GC_SUCCESS ) RETURN
+    Input_Opt%TINDEX = 0
+
+    ALLOCATE( Input_Opt%ND49_TRACERS(Input_Opt%N_ADVECT+Input_Opt%MAX_DIAG),&
+              STAT=RC )
+    CALL GC_CheckVar( 'Input_Opt%ND49_TRACERS', 0, RC )
+    IF ( RC /= GC_SUCCESS ) RETURN
+    Input_Opt%ND49_TRACERS = 0
+
+    ALLOCATE( Input_Opt%ND50_TRACERS (Input_Opt%N_ADVECT+Input_Opt%MAX_DIAG),&
+              STAT=RC )
+    CALL GC_CheckVar( 'Input_Opt%ND50_TRACERS', 0, RC )
+    IF ( RC /= GC_SUCCESS ) RETURN
+    Input_Opt%ND50_TRACERS = 0
+
+    ALLOCATE( Input_Opt%ND51_TRACERS (Input_Opt%N_ADVECT+Input_Opt%MAX_DIAG),&
+              STAT=RC )
+    CALL GC_CheckVar( 'Input_Opt%ND51_TRACERS', 0, RC )
+    IF ( RC /= GC_SUCCESS ) RETURN
+    Input_Opt%ND51_TRACERS = 0
+
+    ALLOCATE( Input_Opt%ND51b_TRACERS(Input_Opt%N_ADVECT+Input_Opt%MAX_DIAG),&
+              STAT=RC )
+    CALL GC_CheckVar( 'Input_Opt%ND51b_TRACERS', 0, RC )
+    IF ( RC /= GC_SUCCESS ) RETURN
+    Input_Opt%ND51b_TRACERS = 0
+
+    ALLOCATE( Input_Opt%ND63_TRACERS (Input_Opt%N_ADVECT+Input_Opt%MAX_DIAG),&
+              STAT=RC )
+    CALL GC_CheckVar( 'Input_Opt%ND63_TRACERS', 0, RC )
+    IF ( RC /= GC_SUCCESS ) RETURN
+    Input_Opt%ND63_TRACERS = 0
+
+  END SUBROUTINE Set_Input_Opt_Advect
+!EOC
+!------------------------------------------------------------------------------
+!                  GEOS-Chem Global Chemical Transport Model                  !
+!------------------------------------------------------------------------------
+!BOP
+!
+! !IROUTINE: Set_Input_Opt_Passive
+!
+! !DESCRIPTION: Subroutine SET\_INPUT\_OPT\_PASSIVE intializes all GEOS-Chem
+!  options carried in Input Options derived type object that depend on
+!  the number of passive species (Input\_Opt%N_PASSIVE).
+!\\
+!\\
+! !INTERFACE:
+!
+  SUBROUTINE Set_Input_Opt_Passive( am_I_Root, Input_Opt, RC )
+!
+! !USES:
+!
+    USE ErrCode_Mod
+!
+! !INPUT PARAMETERS: 
+!
+    LOGICAL,        INTENT(IN)    :: am_I_Root   ! Are we on the root CPU?
+!
+! !INPUT/OUTPUT PARAMETERS: 
+!
+    TYPE(OptInput), INTENT(INOUT) :: Input_Opt   ! Input Options object
+!
+! !OUTPUT PARAMETERS:
+!
+    INTEGER,        INTENT(OUT)   :: RC          ! Success or failure?
+!
+! !REMARKS:
+!  NOTE: These arrays are all for bpch diagnostics, and will eventually 
+!  be removed from GEOS-Chem.
+
+! !REVISION HISTORY: 
+!  04 Apr 2018 - E. Lundgren - Initial version
+!EOP
+!------------------------------------------------------------------------------
+!BOC
+!
+! !LOCAL VARIABLES:
+!
+    ! Strings
+    CHARACTER(LEN=255) :: ErrMsg, ThisLoc
+
+    !=======================================================================
+    ! Initialize
+    !=======================================================================
+    RC      = GC_SUCCESS
+    ErrMsg  = ''
+    ThisLoc = &
+       ' -> at Set_Input_Opt_Passive (in module Headers/input_opt_mod.F90)'
+
+    !=======================================================================
+    ! Allocate arrays
+    !=======================================================================
+    ALLOCATE( Input_Opt%PASSIVE_NAME( Input_Opt%NPASSIVE ), STAT=RC )
+    CALL GC_CheckVar( 'Input_Opt%PASSIVE_NAME', 0, RC )
+    IF ( RC /= GC_SUCCESS ) RETURN
+    Input_Opt%PASSIVE_NAME = ''
+
+    ALLOCATE( Input_Opt%PASSIVE_ID( Input_Opt%NPASSIVE ), STAT=RC )
+    CALL GC_CheckVar( 'Input_Opt%PASSIVE_ID', 0, RC )
+    IF ( RC /= GC_SUCCESS ) RETURN
+    Input_Opt%PASSIVE_ID = -999
+
+    ALLOCATE( Input_Opt%PASSIVE_MW( Input_Opt%NPASSIVE ), STAT=RC )
+    CALL GC_CheckVar( 'Input_Opt%PASSIVE_MW', 0, RC )
+    IF ( RC /= GC_SUCCESS ) RETURN
+    Input_Opt%PASSIVE_MW = 0.0_fp
+
+    ALLOCATE( Input_Opt%PASSIVE_TAU( Input_Opt%NPASSIVE ), STAT=RC )
+    CALL GC_CheckVar( 'Input_Opt%PASSIVE_TAU', 0, RC )
+    IF ( RC /= GC_SUCCESS ) RETURN
+    Input_Opt%PASSIVE_TAU = 0.0_fp
+
+    ALLOCATE( Input_Opt%PASSIVE_INITCONC( Input_Opt%NPASSIVE ), STAT=RC )
+    CALL GC_CheckVar( 'Input_Opt%PASSIVE_INITCONC', 0, RC )
+    IF ( RC /= GC_SUCCESS ) RETURN
+    Input_Opt%PASSIVE_INITCONC = 0.0_fp
+
+    ALLOCATE( Input_Opt%PASSIVE_DECAYID( Input_Opt%NPASSIVE ), STAT=RC )
+    CALL GC_CheckVar( 'Input_Opt%PASSIVE_DECAYID', 0, RC )
+    IF ( RC /= GC_SUCCESS ) RETURN
+    Input_Opt%PASSIVE_DECAYID = 0
+                                  
+  END SUBROUTINE Set_Input_Opt_Passive
 !EOC
 !------------------------------------------------------------------------------
 !                  GEOS-Chem Global Chemical Transport Model                  !
@@ -1488,6 +1610,16 @@ CONTAINS
     IF ( ASSOCIATED( Input_Opt%LINOZ_TPARM ) ) THEN
        DEALLOCATE( Input_Opt%LINOZ_TPARM )
     ENDIF
+
+#if defined( MODEL_GEOS )
+    IF ( ASSOCIATED( Input_Opt%RxnRconst_IDs ) ) THEN
+       DEALLOCATE( Input_Opt%RxnRconst_IDs )
+    ENDIF
+
+    IF ( ASSOCIATED( Input_Opt%RxnRates_IDs ) ) THEN
+       DEALLOCATE( Input_Opt%RxnRates_IDs )
+    ENDIF
+#endif
 
   END SUBROUTINE Cleanup_Input_Opt
 !EOC

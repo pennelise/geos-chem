@@ -23,7 +23,7 @@
 ! !DEFINED PARAMETERS:
 !
       INTEGER, PUBLIC, PARAMETER   :: PD03    = 22         ! Dim of AD03 array
-      INTEGER, PUBLIC, PARAMETER   :: PD03_PL = 13         ! # of PL-HG2 diags
+      INTEGER, PUBLIC, PARAMETER   :: PD03_PL = 21         ! # of PL-HG2 diags
 
 !
 ! !PUBLIC DATA MEMBERS:
@@ -36,8 +36,11 @@
       REAL*4,  PUBLIC, ALLOCATABLE :: AD03(:,:,:,:)
       REAL*4,  PUBLIC, ALLOCATABLE :: AD03_Hg2_Hg0(:,:,:,:)
       REAL*4,  PUBLIC, ALLOCATABLE :: AD03_Hg2_Br(:,:,:,:) 
+      REAL*4,  PUBLIC, ALLOCATABLE :: AD03_Hg2_Br_Y(:,:,:,:) 
       REAL*4,  PUBLIC, ALLOCATABLE :: AD03_Hg2_OH(:,:,:,:)
       REAL*4,  PUBLIC, ALLOCATABLE :: AD03_Hg2_O3(:,:,:,:)
+      REAL*4,  PUBLIC, ALLOCATABLE :: AD03_Hg2_BRY(:,:,:,:)
+      REAL*4,  PUBLIC, ALLOCATABLE :: AD03_Hg2_CLY(:,:,:,:)
       REAL*4,  PUBLIC, ALLOCATABLE :: AD03_Hg2_SS(:,:,:)
       REAL*4,  PUBLIC, ALLOCATABLE :: AD03_nat(:,:,:)
       REAL*4,  PUBLIC, ALLOCATABLE :: AD03_Hg2_SSR(:,:,:)
@@ -118,23 +121,28 @@
       !=================================================================
       ! ZERO_DIAG03 begins here!
       !=================================================================
+#if defined( BPCH_DIAG )
 
       ! Exit if ND03 is turned off
       IF ( ND03 == 0 ) RETURN
 
       ! Zero arrays
-      AD03         = 0e+0_fp
-      AD03_Hg2_Hg0 = 0e+0_fp
-      AD03_Hg2_Br  = 0e+0_fp 
-      AD03_Hg2_OH  = 0e+0_fp
-      AD03_Hg2_O3  = 0e+0_fp
-      AD03_Hg2_SS  = 0e+0_fp
-      AD03_Hg2_SSR = 0e+0_fp 
-      AD03_nat     = 0e+0_fp
-      AD03_Br      = 0e+0_fp  
-      AD03_RGM     = 0e+0_fp     
-      AD03_PBM     = 0e+0_fp
-      AD03_RIV     = 0e+0_fp
+      AD03           = 0e+0_fp
+      AD03_Hg2_Hg0   = 0e+0_fp
+      AD03_Hg2_Br    = 0e+0_fp 
+      AD03_Hg2_OH    = 0e+0_fp
+      AD03_Hg2_BRY   = 0e+0_fp
+      AD03_Hg2_CLY   = 0e+0_fp
+      AD03_Hg2_Br_Y  = 0e+0_fp
+      AD03_Hg2_O3    = 0e+0_fp
+      AD03_Hg2_SS    = 0e+0_fp
+      AD03_Hg2_SSR   = 0e+0_fp 
+      AD03_nat       = 0e+0_fp
+      AD03_Br        = 0e+0_fp  
+      AD03_RGM       = 0e+0_fp     
+      AD03_PBM       = 0e+0_fp
+      AD03_RIV       = 0e+0_fp
+#endif
 
       END SUBROUTINE ZERO_DIAG03
 !EOC
@@ -268,6 +276,8 @@
 
       ! Assume success
       RC        =  GC_SUCCESS
+
+#if defined( BPCH_DIAG )
 
       ! Exit if ND03 is turned off
       IF ( ND03 == 0 ) RETURN
@@ -848,7 +858,29 @@
             ELSE IF ( N == 7 ) THEN
 
                !--------------------------------
-               ! #7: Br concentration
+               ! #7: Prod of Hg(II) from rxn w/BrY 
+               !--------------------------------
+               CATEGORY          = 'PL-HG2-$'
+               UNIT              = 'kg'
+               LMAX              = LD03
+               NN                = N
+               ARRAY(:,:,1:LMAX) = AD03_Hg2_BRY(:,:,1:LMAX,1)
+      
+            ELSE IF ( N == 8 ) THEN
+
+               !--------------------------------
+               ! #8: Prod of Hg(II) from rxn w/ClY
+               !--------------------------------
+               CATEGORY          = 'PL-HG2-$'
+               UNIT              = 'kg'
+               LMAX              = LD03
+               NN                = N
+               ARRAY(:,:,1:LMAX) = AD03_Hg2_CLY(:,:,1:LMAX,1)
+      
+            ELSE IF ( N == 9 ) THEN
+
+               !--------------------------------
+               ! #9: Br concentration
                !--------------------------------
                CATEGORY          = 'PL-HG2-$'
                UNIT              = 'molec/cm3'
@@ -856,10 +888,10 @@
                NN                = N
                ARRAY(:,:,1:LMAX) = AD03_Br(:,:,1:LMAX,1) / NCHEMSTEP
       
-            ELSE IF ( N == 8 ) THEN
+            ELSE IF ( N == 10 ) THEN
 
                !--------------------------------
-               ! #8: BrO concentration
+               ! #10: BrO concentration
                !--------------------------------
                CATEGORY          = 'PL-HG2-$'
                UNIT              = 'molec/cm3'
@@ -867,10 +899,10 @@
                NN                = N
                ARRAY(:,:,1:LMAX) = AD03_Br(:,:,1:LMAX,2) / NCHEMSTEP
 
-            ELSE IF ( N == 9 ) THEN
+            ELSE IF ( N == 11 ) THEN
 
                !--------------------------------
-               ! #9: Reactive particulate mercury
+               ! #11: Reactive particulate mercury
                !--------------------------------
                CATEGORY          = 'PL-HG2-$'
                UNIT              = 'pptv'
@@ -878,10 +910,10 @@
                NN                = N
                ARRAY(:,:,1:LMAX) = AD03_PBM(:,:,1:LMAX) / NDIAGSTEP
 
-            ELSE IF ( N == 10 ) THEN
+            ELSE IF ( N == 12 ) THEN
 
                !--------------------------------
-               ! #10: Reactive gaseous mercury
+               ! #12: Reactive gaseous mercury
                !--------------------------------
                CATEGORY          = 'PL-HG2-$'
                UNIT              = 'pptv'
@@ -889,7 +921,7 @@
                NN                = N
                ARRAY(:,:,1:LMAX) = AD03_RGM(:,:,1:LMAX) / NDIAGSTEP 
 
-            ELSE IF ( N == 11 ) THEN
+            ELSE IF ( N == 13 ) THEN
 
                !--------------------------------
                ! #13: Polar Br concentration    
@@ -900,18 +932,18 @@
                NN                = N
                ARRAY(:,:,1:LMAX) = AD03_Br(:,:,1:LMAX,3) / NCHEMSTEP
             
-            ELSE IF ( N == 12 ) THEN
+            ELSE IF ( N == 14 ) THEN
 
                !--------------------------------
                ! #14: Polar BrO concentration   
-                !--------------------------------
+               !--------------------------------
                CATEGORY          = 'PL-HG2-$'
                UNIT              = 'pptv'
                LMAX              = LD03
                NN                = N
                ARRAY(:,:,1:LMAX) = AD03_Br(:,:,1:LMAX,4) / NCHEMSTEP
             
-            ELSE IF ( N == 13 ) THEN
+            ELSE IF ( N == 15 ) THEN
 
                !--------------------------------
                ! #15: Polar O3 concentration    
@@ -921,6 +953,72 @@
                LMAX              = LD03
                NN                = N
                ARRAY(:,:,1:LMAX) = AD03_Br(:,:,1:LMAX,5) / NCHEMSTEP
+ 
+            ELSE IF ( N == 16 ) THEN
+
+               !--------------------------------
+               ! #16: HgBr + Br2 
+               !--------------------------------
+               CATEGORY          = 'PL-HG2-$'
+               UNIT              = 'kg'
+               LMAX              = LD03
+               NN                = N
+               ARRAY(:,:,1:LMAX) = AD03_Hg2_Br_Y(:,:,1:LMAX,1)
+ 
+            ELSE IF ( N == 17 ) THEN
+
+               !--------------------------------
+               ! #17: HgBr + BrBrO
+               !--------------------------------
+               CATEGORY          = 'PL-HG2-$'
+               UNIT              = 'kg'
+               LMAX              = LD03
+               NN                = N
+               ARRAY(:,:,1:LMAX) = AD03_Hg2_Br_Y(:,:,1:LMAX,2)
+ 
+            ELSE IF ( N == 18 ) THEN
+
+               !--------------------------------
+               ! #18: HgBr + BrHO2
+               !--------------------------------
+               CATEGORY          = 'PL-HG2-$'
+               UNIT              = 'kg'
+               LMAX              = LD03
+               NN                = N
+               ARRAY(:,:,1:LMAX) = AD03_Hg2_Br_Y(:,:,1:LMAX,3)
+ 
+            ELSE IF ( N == 19 ) THEN
+
+               !--------------------------------
+               ! #19: HgBr + BrNO2
+               !--------------------------------
+               CATEGORY          = 'PL-HG2-$'
+               UNIT              = 'kg'
+               LMAX              = LD03
+               NN                = N
+               ARRAY(:,:,1:LMAX) = AD03_Hg2_Br_Y(:,:,1:LMAX,4)
+ 
+            ELSE IF ( N == 20 ) THEN
+
+               !--------------------------------
+               ! #20: HgBr + BrClO
+               !--------------------------------
+               CATEGORY          = 'PL-HG2-$'
+               UNIT              = 'kg'
+               LMAX              = LD03
+               NN                = N
+               ARRAY(:,:,1:LMAX) = AD03_Hg2_Br_Y(:,:,1:LMAX,5)
+ 
+            ELSE IF ( N == 21 ) THEN
+
+               !--------------------------------
+               ! #21: HgBr + BrOH
+               !--------------------------------
+               CATEGORY          = 'PL-HG2-$'
+               UNIT              = 'kg'
+               LMAX              = LD03
+               NN                = N
+               ARRAY(:,:,1:LMAX) = AD03_Hg2_Br_Y(:,:,1:LMAX,6)
  
             ELSE
 
@@ -941,6 +1039,7 @@
          ENDDO
 
       END IF
+#endif
 
       END SUBROUTINE WRITE_DIAG03
 !EOC
@@ -985,6 +1084,7 @@
       !=================================================================
       ! INIT_DIAG03 begins here!
       !=================================================================
+#if defined( BPCH_DIAG )
 
       ! Exit if ND03 is turned off
       IF ( ND03 == 0 ) THEN
@@ -1011,6 +1111,15 @@
 
       ALLOCATE( AD03_Hg2_Br( IIPAR, JJPAR, LD03, N_HG_CATS ), STAT=AS )
       IF ( AS /= 0 ) CALL ALLOC_ERR( 'AD03_Hg2_Br' )
+
+      ALLOCATE( AD03_Hg2_Br_Y( IIPAR, JJPAR, LD03, 6 ), STAT=AS )
+      IF ( AS /= 0 ) CALL ALLOC_ERR( 'AD03_Hg2_Br_Y' )
+
+      ALLOCATE( AD03_Hg2_BRY( IIPAR, JJPAR, LD03, N_HG_CATS ), STAT=AS )
+      IF ( AS /= 0 ) CALL ALLOC_ERR( 'AD03_Hg2_BrY' )
+
+      ALLOCATE( AD03_Hg2_CLY( IIPAR, JJPAR, LD03, N_HG_CATS ), STAT=AS )
+      IF ( AS /= 0 ) CALL ALLOC_ERR( 'AD03_Hg2_ClY' )
 
       ALLOCATE( AD03_Hg2_O3( IIPAR, JJPAR, LD03, N_HG_CATS ), STAT=AS )
       IF ( AS /= 0 ) CALL ALLOC_ERR( 'AD03_Hg2_O3' )
@@ -1044,6 +1153,7 @@
 
       ! Zero arrays
       CALL ZERO_DIAG03
+#endif
 
       END SUBROUTINE INIT_DIAG03
 !EOC
@@ -1072,20 +1182,25 @@
       !=================================================================
       ! CLEANUP_DIAG03 begins here!
       !=================================================================
-      IF ( ALLOCATED( AD03         ) ) DEALLOCATE( AD03         ) 
-      IF ( ALLOCATED( AD03_Hg2_Hg0 ) ) DEALLOCATE( AD03_Hg2_Hg0 )
-      IF ( ALLOCATED( AD03_Hg2_OH  ) ) DEALLOCATE( AD03_Hg2_OH  )
-      IF ( ALLOCATED( AD03_Hg2_Br  ) ) DEALLOCATE( AD03_Hg2_Br  )
-      IF ( ALLOCATED( AD03_Hg2_O3  ) ) DEALLOCATE( AD03_Hg2_O3  )
-      IF ( ALLOCATED( AD03_Hg2_SS  ) ) DEALLOCATE( AD03_Hg2_SS  )
-      IF ( ALLOCATED( AD03_nat     ) ) DEALLOCATE( AD03_nat     )
-      IF ( ALLOCATED( AD03_Hg2_SSR ) ) DEALLOCATE( AD03_Hg2_SSR ) 
-      IF ( ALLOCATED( AD03_Br      ) ) DEALLOCATE( AD03_Br      ) 
+#if defined( BPCH_DIAG )
+      IF ( ALLOCATED( AD03          ) ) DEALLOCATE( AD03          ) 
+      IF ( ALLOCATED( AD03_Hg2_Hg0  ) ) DEALLOCATE( AD03_Hg2_Hg0  )
+      IF ( ALLOCATED( AD03_Hg2_OH   ) ) DEALLOCATE( AD03_Hg2_OH   )
+      IF ( ALLOCATED( AD03_Hg2_Br   ) ) DEALLOCATE( AD03_Hg2_Br   )
+      IF ( ALLOCATED( AD03_Hg2_BRY  ) ) DEALLOCATE( AD03_Hg2_BRY  )
+      IF ( ALLOCATED( AD03_Hg2_CLY  ) ) DEALLOCATE( AD03_Hg2_CLY  )
+      IF ( ALLOCATED( AD03_Hg2_Br_Y ) ) DEALLOCATE( AD03_Hg2_Br_Y )
+      IF ( ALLOCATED( AD03_Hg2_O3   ) ) DEALLOCATE( AD03_Hg2_O3   )
+      IF ( ALLOCATED( AD03_Hg2_SS   ) ) DEALLOCATE( AD03_Hg2_SS   )
+      IF ( ALLOCATED( AD03_nat      ) ) DEALLOCATE( AD03_nat      )
+      IF ( ALLOCATED( AD03_Hg2_SSR  ) ) DEALLOCATE( AD03_Hg2_SSR  ) 
+      IF ( ALLOCATED( AD03_Br       ) ) DEALLOCATE( AD03_Br       ) 
 ! added hma 20100216-----------------------------------------------------------
-      IF ( ALLOCATED( AD03_PBM     ) ) DEALLOCATE( AD03_PBM     )
-      IF ( ALLOCATED( AD03_RGM     ) ) DEALLOCATE( AD03_RGM     )
+      IF ( ALLOCATED( AD03_PBM      ) ) DEALLOCATE( AD03_PBM      )
+      IF ( ALLOCATED( AD03_RGM      ) ) DEALLOCATE( AD03_RGM      )
 !------------------------------------------------------------------------------
-      IF ( ALLOCATED( AD03_RIV     ) ) DEALLOCATE( AD03_RIV     )
+      IF ( ALLOCATED( AD03_RIV      ) ) DEALLOCATE( AD03_RIV      )
+#endif
 
       END SUBROUTINE CLEANUP_DIAG03
 !EOC

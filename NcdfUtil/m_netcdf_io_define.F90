@@ -90,7 +90,7 @@ CONTAINS
 !
 ! !INTERFACE:
 !
-  SUBROUTINE NcDef_dimension(ncid,name,len,id)
+  SUBROUTINE NcDef_dimension(ncid,name,len,id,unlimited)
 !
 ! !USES:
 !
@@ -104,12 +104,15 @@ CONTAINS
 !!  ncid  : netCDF file id
 !!  name  : dimension name
 !!  len   : dimension number
-    CHARACTER (LEN=*), INTENT(IN) :: name
-    INTEGER,           INTENT(IN) :: ncid, len
+    CHARACTER (LEN=*), INTENT(IN)  :: name
+    INTEGER,           INTENT(IN)  :: ncid, len
+    LOGICAL, OPTIONAL, INTENT(IN)  :: unlimited
 !
 ! !OUTPUT PARAMETERS:
 !!  id    : dimension id
     INTEGER,           INTENT(OUT) :: id
+
+    INTEGER  :: len0
 !
 ! !DESCRIPTION: Defines dimension.
 !\\
@@ -119,16 +122,26 @@ CONTAINS
 !
 ! !REVISION HISTORY:
 !  Initial code.
-!
+!  18 May 2018 - C. Holmes - Add support for unlimited dimensions
+!  25 Jun 2018 - R. Yantosca - Fixed typo
 !EOP
 !------------------------------------------------------------------------------
 !BOC
 !
 ! !LOCAL VARIABLES:
-    CHARACTER (len=128) :: err_msg
+    CHARACTER (len=512) :: err_msg
     INTEGER :: ierr
-!
-    ierr = Nf_Def_Dim (ncid, name, len, id)
+
+    ! If unlimited variable is present and true, 
+    ! then make this dimension unlimited
+    len0 = len
+    if (present(unlimited)) then
+       if (unlimited) then
+          len0 = NF_UNLIMITED
+       endif
+    endif
+
+    ierr = Nf_Def_Dim (ncid, name, len0, id)
 
     IF (ierr.ne.NF_NOERR) then
        err_msg = 'Nf_Def_Dim: can not define dimension : '// Trim (name)
@@ -194,7 +207,7 @@ CONTAINS
 !BOC
 !
 ! !LOCAL VARIABLES:
-    character (len=128) :: err_msg
+    character (len=512) :: err_msg
     integer ::  ierr
     logical ::  doStop
     ! Compression settings
@@ -288,7 +301,7 @@ CONTAINS
 !BOC
 !
 ! !LOCAL VARIABLES:
-    CHARACTER (LEN=128) :: err_msg
+    CHARACTER (LEN=512) :: err_msg
     INTEGER             :: mylen, ierr
 !
     mylen = LEN(att_val)
@@ -344,7 +357,7 @@ CONTAINS
 !BOC
 !
 ! !LOCAL VARIABLES:
-    character (len=128) :: err_msg
+    character (len=512) :: err_msg
     integer             :: mylen, ierr
 !
     mylen = 1
@@ -400,7 +413,7 @@ CONTAINS
 !BOC
 !
 ! !LOCAL VARIABLES:
-    CHARACTER (LEN=128) :: err_msg
+    CHARACTER (LEN=512) :: err_msg
     INTEGER             :: mylen, ierr
 !
     mylen = 1
@@ -456,7 +469,7 @@ CONTAINS
 !BOC
 !
 ! !LOCAL VARIABLES:
-    CHARACTER (LEN=128) :: err_msg
+    CHARACTER (LEN=512) :: err_msg
     INTEGER             ::  mylen, ierr
 !
     mylen = 1
@@ -513,7 +526,7 @@ CONTAINS
 !BOC
 !
 ! !LOCAL VARIABLES:
-    CHARACTER (LEN=128) :: err_msg
+    CHARACTER (LEN=512) :: err_msg
     INTEGER             :: mylen, ierr
 !
     mylen = SIZE( att_val )
@@ -569,7 +582,7 @@ CONTAINS
 !BOC
 !
 ! !LOCAL VARIABLES:
-    CHARACTER (LEN=128) :: err_msg
+    CHARACTER (LEN=512) :: err_msg
     INTEGER             :: mylen, ierr
 !
     mylen = SIZE( att_val )
@@ -625,7 +638,7 @@ CONTAINS
 !BOC
 !
 ! !LOCAL VARIABLES:
-    character (len=128) :: err_msg
+    character (len=512) :: err_msg
     integer             ::  mylen, ierr
 !
     mylen = size( att_val )
@@ -682,7 +695,7 @@ CONTAINS
 !BOC
 !
 ! !LOCAL VARIABLES:
-    CHARACTER (LEN=128) :: err_msg
+    CHARACTER (LEN=512) :: err_msg
     INTEGER             ::  mylen, ierr
 !
     mylen = len(att_val)
@@ -739,7 +752,7 @@ CONTAINS
 !BOC
 !
 ! !LOCAL VARIABLES:
-    CHARACTER (LEN=128) :: err_msg
+    CHARACTER (LEN=512) :: err_msg
     INTEGER             :: mylen, ierr
 !
     mylen = 1
@@ -796,7 +809,7 @@ CONTAINS
 !BOC
 !
 ! !LOCAL VARIABLES:
-    character (len=128) :: err_msg
+    character (len=512) :: err_msg
     integer             :: mylen, ierr
 !
     mylen = 1
@@ -853,7 +866,7 @@ CONTAINS
 !BOC
 !
 ! !LOCAL VARIABLES:
-    character (len=128) :: err_msg
+    character (len=512) :: err_msg
     integer             :: mylen, ierr
 !
     mylen = 1
@@ -911,7 +924,7 @@ CONTAINS
 !BOC
 !
 ! !LOCAL VARIABLES:
-    CHARACTER (LEN=128) :: err_msg
+    CHARACTER (LEN=512) :: err_msg
     INTEGER             :: mylen, ierr
 !
     mylen = SIZE( att_val )
@@ -968,7 +981,7 @@ CONTAINS
 !BOC
 !
 ! !LOCAL VARIABLES:
-    character (len=128) :: err_msg
+    character (len=512) :: err_msg
     integer             :: mylen, ierr
 !
     mylen = SIZE( att_val )
@@ -1025,7 +1038,7 @@ CONTAINS
 !BOC
 !
 ! !LOCAL VARIABLES:
-    character (len=128) :: err_msg
+    character (len=512) :: err_msg
     integer             :: mylen, ierr
 !
     mylen = SIZE( att_val )
@@ -1078,7 +1091,7 @@ CONTAINS
 !BOC
 !
 ! !LOCAL VARIABLES:
-    character (len=128) :: err_msg
+    character (len=512) :: err_msg
     integer             ::  mylen, ierr
 !
     ierr = Nf_Set_Fill (ncid, NF_NOFILL, omode)
@@ -1128,7 +1141,7 @@ CONTAINS
 !BOC
 !
 ! !LOCAL VARIABLES:
-    CHARACTER (LEN=128) :: err_msg
+    CHARACTER (LEN=512) :: err_msg
     INTEGER             ::  ierr
 !
     ierr = Nf_Enddef (ncid)
@@ -1178,7 +1191,7 @@ CONTAINS
 !BOC
 !
 ! !LOCAL VARIABLES:
-    character (len=128) :: err_msg
+    character (len=512) :: err_msg
     integer             :: ierr
 !
     ierr = Nf_Redef (ncid)

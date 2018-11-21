@@ -101,6 +101,8 @@
       ! ZERO_DIAG53 begins here!
       !=================================================================
 
+#if defined( BPCH_DIAG )
+
       ! Exit if ND53 is turned off
       IF ( ND53 == 0 ) RETURN
 
@@ -118,6 +120,7 @@
       AD53_POPP_OCPI_NO3 = 0e+0_fp
       AD53_POPP_BCPO_NO3 = 0e+0_fp
       AD53_POPP_BCPI_NO3 = 0e+0_fp
+#endif
 
       END SUBROUTINE ZERO_DIAG53
 !EOC
@@ -138,7 +141,9 @@
 !
 ! !USES:
 !
+#if defined( BPCH_DIAG )
       USE BPCH2_MOD,    ONLY : BPCH2, GET_MODELNAME, GET_HALFPOLAR
+#endif
       USE FILE_MOD,     ONLY : IU_BPCH
       USE GC_GRID_MOD,  ONLY : GET_XOFFSET, GET_YOFFSET
       USE TIME_MOD,     ONLY : GET_CT_EMIS, GET_DIAGb,  GET_DIAGe
@@ -150,8 +155,8 @@
 ! !REMARKS:
 !   # : Field    : Description                     : Units    : Scale factor
 !  -------------------------------------------------------------------------
-!  (1 ) PG-SRCE  : POP emissions                   : kg       : 1
-!  (2 ) PG-PP-$  : Gas phase POP reacted with OH   : kg       : 1
+!  (1 ) PG-SRCE  : POP emissions                   : kg/s     : 1
+!  (2 ) PG-PP-$  : Gas phase POP reacted with OH   : kg/s     : SCALE
 !                   or partitioned
 ! 
 ! !REVISION HISTORY:
@@ -160,6 +165,10 @@
 !  26 Aug 2014 - M. Sulprizio- Now track POPs emissions through HEMCO and
 !                              write to bpch in diag3.F
 !  17 Dec 2014 - R. Yantosca - Leave time/date variables as 8-byte
+!  15 Oct 2018 - R. Yantosca - Data for #17-#29 are now divided by seconds
+!                              in pops_mod.F. Divide by the # of chemistry
+!                              timesteps. This is done to better match the
+!                              netCDF output.  BPCH will be removed soon.
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -171,8 +180,8 @@
       INTEGER               :: M,         N,           NN
       REAL(f4)              :: ARRAY(IIPAR,JJPAR,LLPAR)
       REAL(f4)              :: LONRES,    LATRES
-      REAL(fp)              :: SCALE
-      REAL(f8)              :: DIAGb,     DIAGe
+      REAL(fp)              :: SCALE,     SECONDS
+      REAL(f8)              :: DIAGb,     DIAGe       
       CHARACTER(LEN=20)     :: MODELNAME 
       CHARACTER(LEN=40)     :: CATEGORY,  RESERVED,    UNIT
       REAL(fp)              :: NCHEMSTEP !CDH for sea salt loss rate
@@ -180,6 +189,7 @@
       !=================================================================
       ! WRITE_DIAG53 begins here!
       !=================================================================
+#if defined( BPCH_DIAG )
 
       ! Exit if ND53 is turned off
       IF ( ND53 == 0 ) RETURN
@@ -198,6 +208,7 @@
       RESERVED  = ''
       SCALE     = DBLE( GET_CT_EMIS() ) + 1e-32_fp
       NCHEMSTEP = DBLE( GET_CT_CHEM() ) + TINY( 1e+0_fp )
+      SECONDS   = ( DIAGe - DIAGb ) * 3600e+0_fp
 
       !=================================================================
       ! Write data to the bpch file
@@ -221,10 +232,10 @@
             ! New gas phase from OC (negative formation of OC)
             !-----------------------------------------------------------
             CATEGORY          = 'PG-PP-$'
-            UNIT              = 'kg'
+            UNIT              = 'kg/s'
             LMAX              = LD53 
             NN                = N-16
-            ARRAY(:,:,1:LMAX) = AD53_PG_OC_NEG(:,:,1:LMAX)
+            ARRAY(:,:,1:LMAX) = AD53_PG_OC_NEG(:,:,1:LMAX) / SCALE
 
          ELSE IF ( N == 18  ) THEN
 
@@ -232,10 +243,10 @@
             ! New OC phase from gas (positive formation of OC)
             !-----------------------------------------------------------
             CATEGORY          = 'PG-PP-$'
-            UNIT              = 'kg'
+            UNIT              = 'kg/s'
             LMAX              = LD53 
             NN                = N-16
-            ARRAY(:,:,1:LMAX) = AD53_PG_OC_POS(:,:,1:LMAX)
+            ARRAY(:,:,1:LMAX) = AD53_PG_OC_POS(:,:,1:LMAX) / SCALE
 
          ELSE IF ( N == 19  ) THEN
 
@@ -243,10 +254,10 @@
             ! New gas phase from BC (negative formation of BC)
             !-----------------------------------------------------------
             CATEGORY          = 'PG-PP-$'
-            UNIT              = 'kg'
+            UNIT              = 'kg/s'
             LMAX              = LD53 
             NN                = N-16
-            ARRAY(:,:,1:LMAX) = AD53_PG_BC_NEG(:,:,1:LMAX)
+            ARRAY(:,:,1:LMAX) = AD53_PG_BC_NEG(:,:,1:LMAX) / SCALE
 
          ELSE IF ( N == 20 ) THEN
 
@@ -254,10 +265,10 @@
             ! New BC phase from gas (positive formation of BC)
             !-----------------------------------------------------------
             CATEGORY          = 'PG-PP-$'
-            UNIT              = 'kg'
+            UNIT              = 'kg/s'
             LMAX              = LD53 
             NN                = N-16
-            ARRAY(:,:,1:LMAX) = AD53_PG_BC_POS(:,:,1:LMAX)
+            ARRAY(:,:,1:LMAX) = AD53_PG_BC_POS(:,:,1:LMAX) / SCALE
 
 
          ELSE IF ( N == 21  ) THEN
@@ -266,10 +277,10 @@
             ! Production of oxidized POPG from rxn with OH (clf, 1/27/11)
             !-----------------------------------------------------------
             CATEGORY          = 'PG-PP-$'
-            UNIT              = 'kg'
+            UNIT              = 'kg/s'
             LMAX              = LD53 
             NN                = N-16
-            ARRAY(:,:,1:LMAX) = AD53_POPG_OH(:,:,1:LMAX)     
+            ARRAY(:,:,1:LMAX) = AD53_POPG_OH(:,:,1:LMAX) / SCALE
 
          ELSE IF ( N == 22  ) THEN
 
@@ -277,10 +288,10 @@
             ! Production of oxidized POPOCPO from rxn with O3 (clf, 6/28/11)
             !-----------------------------------------------------------
             CATEGORY          = 'PG-PP-$'
-            UNIT              = 'kg'
+            UNIT              = 'kg/s'
             LMAX              = LD53 
             NN                = N-16
-            ARRAY(:,:,1:LMAX) = AD53_POPP_OCPO_O3(:,:,1:LMAX) 
+            ARRAY(:,:,1:LMAX) = AD53_POPP_OCPO_O3(:,:,1:LMAX) / SCALE
 
          ELSE IF ( N == 23  ) THEN
 
@@ -288,10 +299,10 @@
             ! Production of oxidized POPOCPI from rxn with O3 (clf, 6/28/11)
             !-----------------------------------------------------------
             CATEGORY          = 'PG-PP-$'
-            UNIT              = 'kg'
+            UNIT              = 'kg/s'
             LMAX              = LD53 
             NN                = N-16
-            ARRAY(:,:,1:LMAX) = AD53_POPP_OCPI_O3(:,:,1:LMAX) 
+            ARRAY(:,:,1:LMAX) = AD53_POPP_OCPI_O3(:,:,1:LMAX) / SCALE
 
          ELSE IF ( N == 24  ) THEN
 
@@ -299,10 +310,10 @@
             ! Production of oxidized POPBCPO from rxn with O3 (clf, 6/28/11)
             !-----------------------------------------------------------
             CATEGORY          = 'PG-PP-$'
-            UNIT              = 'kg'
+            UNIT              = 'kg/s'
             LMAX              = LD53 
             NN                = N-16
-            ARRAY(:,:,1:LMAX) = AD53_POPP_BCPO_O3(:,:,1:LMAX)    
+            ARRAY(:,:,1:LMAX) = AD53_POPP_BCPO_O3(:,:,1:LMAX) / SCALE 
 
          ELSE IF ( N == 25  ) THEN
 
@@ -310,10 +321,10 @@
             ! Production of oxidized POPBCPI from rxn with O3 (clf, 6/28/11)
             !-----------------------------------------------------------
             CATEGORY          = 'PG-PP-$'
-            UNIT              = 'kg'
+            UNIT              = 'kg/s'
             LMAX              = LD53 
             NN                = N-16
-            ARRAY(:,:,1:LMAX) = AD53_POPP_BCPI_O3(:,:,1:LMAX)  
+            ARRAY(:,:,1:LMAX) = AD53_POPP_BCPI_O3(:,:,1:LMAX) / SCALE
 
          ELSE IF ( N == 26  ) THEN
 
@@ -321,10 +332,10 @@
             ! Production of oxidized POPOCPO from rxn with NO3 (clf, 6/28/11)
             !-----------------------------------------------------------
             CATEGORY          = 'PG-PP-$'
-            UNIT              = 'kg'
+            UNIT              = 'kg/s'
             LMAX              = LD53 
             NN                = N-16
-            ARRAY(:,:,1:LMAX) = AD53_POPP_OCPO_NO3(:,:,1:LMAX) 
+            ARRAY(:,:,1:LMAX) = AD53_POPP_OCPO_NO3(:,:,1:LMAX) / SCALE
 
          ELSE IF ( N == 27  ) THEN
 
@@ -332,10 +343,10 @@
             ! Production of oxidized POPOCPI from rxn with NO3 (clf, 6/28/11)
             !-----------------------------------------------------------
             CATEGORY          = 'PG-PP-$'
-            UNIT              = 'kg'
+            UNIT              = 'kg/s'
             LMAX              = LD53 
             NN                = N-16
-            ARRAY(:,:,1:LMAX) = AD53_POPP_OCPI_NO3(:,:,1:LMAX) 
+            ARRAY(:,:,1:LMAX) = AD53_POPP_OCPI_NO3(:,:,1:LMAX) / SCALE
 
          ELSE IF ( N == 28  ) THEN
 
@@ -343,10 +354,10 @@
             ! Production of oxidized POPBCPO from rxn with NO3 (clf, 6/28/11)
             !-----------------------------------------------------------
             CATEGORY          = 'PG-PP-$'
-            UNIT              = 'kg'
+            UNIT              = 'kg/s'
             LMAX              = LD53 
             NN                = N-16
-            ARRAY(:,:,1:LMAX) = AD53_POPP_BCPO_NO3(:,:,1:LMAX)    
+            ARRAY(:,:,1:LMAX) = AD53_POPP_BCPO_NO3(:,:,1:LMAX) / SCALE
 
          ELSE IF ( N == 29  ) THEN
 
@@ -354,10 +365,10 @@
             ! Production of oxidized POPBCPI from rxn with NO3 (clf, 6/28/11)
             !-----------------------------------------------------------
             CATEGORY          = 'PG-PP-$'
-            UNIT              = 'kg'
+            UNIT              = 'kg/s'
             LMAX              = LD53 
             NN                = N-16
-            ARRAY(:,:,1:LMAX) = AD53_POPP_BCPI_NO3(:,:,1:LMAX)
+            ARRAY(:,:,1:LMAX) = AD53_POPP_BCPI_NO3(:,:,1:LMAX) / SCALE
   
          ELSE
 
@@ -373,6 +384,7 @@
      &               IIPAR,     JJPAR,     LMAX,     IFIRST,     
      &               JFIRST,    LFIRST,    ARRAY(:,:,1:LMAX) )
       ENDDO
+#endif
 
       END SUBROUTINE WRITE_DIAG53
 !EOC
@@ -410,6 +422,7 @@
       !=================================================================
       ! INIT_DIAG53 begins here!
       !=================================================================
+#if defined( BPCH_DIAG )
 
       ! Exit if ND53 is turned off
       IF ( ND53 == 0 ) THEN
@@ -462,6 +475,7 @@
     
       ! Zero arrays
       CALL ZERO_DIAG53
+#endif
 
       END SUBROUTINE INIT_DIAG53
 !EOC
@@ -488,6 +502,7 @@
       !=================================================================
       ! CLEANUP_DIAG53 begins here!
       !=================================================================
+#if defined( BPCH_DIAG )
       IF (ALLOCATED(AD53_PG_OC_NEG    )) DEALLOCATE(AD53_PG_OC_NEG    ) 
       IF (ALLOCATED(AD53_PG_OC_POS    )) DEALLOCATE(AD53_PG_OC_POS    )
       IF (ALLOCATED(AD53_PG_BC_NEG    )) DEALLOCATE(AD53_PG_BC_NEG    )
@@ -501,6 +516,7 @@
       IF (ALLOCATED(AD53_POPP_OCPI_NO3)) DEALLOCATE(AD53_POPP_OCPI_NO3)
       IF (ALLOCATED(AD53_POPP_BCPO_NO3)) DEALLOCATE(AD53_POPP_BCPO_NO3)
       IF (ALLOCATED(AD53_POPP_BCPI_NO3)) DEALLOCATE(AD53_POPP_BCPI_NO3)
+#endif
 
       END SUBROUTINE CLEANUP_DIAG53
 !EOC

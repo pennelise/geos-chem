@@ -64,7 +64,6 @@ MODULE Tendencies_Mod
 ! !USES:
 !
   USE ErrCode_Mod
-  USE Error_Mod,          ONLY : Error_Stop
   USE HCO_Error_Mod
   USE HCO_Diagn_Mod
   USE Input_Opt_Mod,      ONLY : OptInput
@@ -608,6 +607,7 @@ CONTAINS
 !  14 Jul 2015 - C. Keller   - Initial version 
 !  26 Oct 2015 - C. Keller   - Update for linked list 
 !  19 Jul 2016 - R. Yantosca - Don't nullify local pointers in declarations
+!  29 Dec 2017 - C. Keller   - Don't use HEMCO diagnostics in ESMF env.
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -624,15 +624,17 @@ CONTAINS
 
     ! Strings
     CHARACTER(LEN=63)        :: DiagnName
-    CHARACTER(LEN=255)       :: MSG
-    CHARACTER(LEN=255)       :: LOC = 'Tend_Add (tendencies_mod.F)' 
+    CHARACTER(LEN=255)       :: ErrMsg
+    CHARACTER(LEN=255)       :: ThisLoc 
     
     !=======================================================================
     ! Tend_Add begins here!
     !=======================================================================
 
     ! Assume successful return
-    RC = GC_SUCCESS
+    RC      = GC_SUCCESS
+    ErrMsg  = ''
+    ThisLoc = '- > at Tend_Add (in module GeosCore/tendencies_mod.F90)' 
 
     ! Initialize
     ThisTend => NULL()
@@ -663,8 +665,8 @@ CONTAINS
 
     ! Species ID must not exceed # of tendency species
     IF ( SpcID > nSpc ) THEN
-       WRITE(MSG,*) 'Species ID exceeds number of tendency species: ', SpcID, ' > ', nSpc
-       CALL ERROR_STOP( MSG, LOC ) 
+       WRITE(ErrMsg,*) 'Species ID exceeds number of tendency species: ', SpcID, ' > ', nSpc
+       CALL GC_Error( ErrMsg, RC, ThisLoc )
        RETURN
     ENDIF 
  
@@ -677,14 +679,15 @@ CONTAINS
 
     ! Make sure array is allocated
     IF ( .NOT. ASSOCIATED(ThisTend%Tendency(SpcID)%Arr) ) THEN
-       ALLOCATE(ThisTend%Tendency(SpcID)%Arr(IIPAR,JJPAR,LLPAR),STAT=AS)
-       IF ( AS /= 0 ) THEN
-          MSG = 'Tendency allocation error: ' // TRIM(DiagnName)
-          CALL ERROR_STOP( MSG, LOC ) 
+       ALLOCATE(ThisTend%Tendency(SpcID)%Arr(IIPAR,JJPAR,LLPAR),STAT=RC)
+       IF ( RC /= 0 ) THEN
+          ErrMsg = 'Tendency allocation error: ' // TRIM(DiagnName)
+          CALL GC_Error( ErrMsg, RC, ThisLoc )
           RETURN
        ENDIF
     ENDIF
 
+#if !defined(ESMF_) && defined( MODEL_GEOS )
     ! Get diagnostic parameters from the Input_Opt object
     Collection = Input_Opt%DIAG_COLLECTION
 
@@ -706,9 +709,11 @@ CONTAINS
                        RC        = RC )
    
     IF ( RC /= HCO_SUCCESS ) THEN
-       MSG = 'Cannot create diagnostics: ' // TRIM(DiagnName)
-       CALL ERROR_STOP( MSG, LOC ) 
+       ErrMsg = 'Cannot create diagnostics: ' // TRIM(DiagnName)
+       CALL GC_Error( ErrMsg, RC, ThisLoc ) 
+       RETURN
     ENDIF
+#endif
 
     ! Initialize
     ThisTend => NULL()
@@ -757,6 +762,8 @@ CONTAINS
 !  22 Jun 2016 - M. Yannetti - Replace TCVV with species db MW and phys constant
 !  19 Jul 2016 - R. Yantosca - Don't nullify local pointers in declarations
 !  19 Jul 2016 - R. Yantosca - Now use State_Chm%Species
+!  17 Oct 2017 - C. Keller   - Stage2 now updates internal array to tendency
+!                              array (instead of resetting it to zero).
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -876,6 +883,7 @@ CONTAINS
 !  22 Jun 2016 - M. Yannetti - Replace TCVV with species db MW and phys constant
 !  19 Jul 2016 - R. Yantosca - Don't nullify local pointers in declarations
 !  19 Jul 2016 - R. Yantosca - Now use State_Chm%Species
+!  29 Dec 2017 - C. Keller   - Don't use HEMCO diagnostics in ESMF env.
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -898,15 +906,17 @@ CONTAINS
     ! Strings
     CHARACTER(LEN=63)        :: DiagnName
     CHARACTER(LEN=63)        :: OrigUnit 
-    CHARACTER(LEN=255)       :: MSG
-    CHARACTER(LEN=255)       :: LOC = 'TEND_STAGE2 (tendencies_mod.F)' 
+    CHARACTER(LEN=255)       :: ErrMsg
+    CHARACTER(LEN=255)       :: ThisLoc 
   
     !=======================================================================
     ! TEND_STAGE2 begins here!
     !=======================================================================
 
     ! Assume successful return
-    RC = GC_SUCCESS
+    RC      = GC_SUCCESS
+    ErrMsg  = ''
+    ThisLoc = ' -> at TEND_STAGE2 (in module GeosCore/tendencies_mod.F90)' 
 
     ! Initialize
     Ptr3d    => NULL()
@@ -966,19 +976,22 @@ CONTAINS
           Tend = ( TMP - Ptr3D ) / REAL(DT,f4)
        ENDIF
 
+#if !defined( ESMF_ )
        ! Update diagnostics array
        CALL Diagn_Update( am_I_Root, HcoState, cName=DiagnName, &
                Array3D=Tend, COL=Input_Opt%DIAG_COLLECTION, RC=RC )
                           
        IF ( RC /= HCO_SUCCESS ) THEN 
-          WRITE(MSG,*) 'Error in updating diagnostics with ID ', cID
-          CALL ERROR_STOP ( MSG, LOC )
-          RC = GC_FAILURE
+          WRITE(ErrMsg,*) 'Error in updating diagnostics with ID ', cID
+          CALL GC_Error( ErrMsg, RC, ThisLoc )
           RETURN
        ENDIF
+#endif
 
-       ! Reset values 
-       Ptr3D = 0.0_fp
+       !! Reset values 
+       !Ptr3D = 0.0_fp
+       ! Update values in the internal array to current tendency
+       Ptr3D =  Tend
        Ptr3D => NULL()
 
     ENDDO !I

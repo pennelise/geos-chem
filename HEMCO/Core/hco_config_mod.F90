@@ -57,6 +57,7 @@ MODULE HCO_Config_Mod
   PUBLIC  :: Config_ReadFile
   PUBLIC  :: Config_GetnSpecies
   PUBLIC  :: Config_GetSpecNames
+  PUBLIC  :: ConfigInit 
 !
 ! !PRIVATE:
 !
@@ -74,8 +75,9 @@ MODULE HCO_Config_Mod
   PRIVATE :: BracketCheck 
   PRIVATE :: AddZeroScal 
   PRIVATE :: AddShadowFields
-  PRIVATE :: ConfigInit 
   PRIVATE :: ParseEmisL 
+  PRIVATE :: CheckForDuplicateName 
+  PRIVATE :: Hco_GetTagInfo
 !
 ! !REVISION HISTORY:
 !  18 Jun 2013 - C. Keller   -  Initialization
@@ -83,6 +85,11 @@ MODULE HCO_Config_Mod
 !  08 Jul 2014 - R. Yantosca - Cosmetic changes in ProTeX headers
 !  15 Feb 2015 - C. Keller   - Added BracketCheck, AddZeroScal, AddShadowFields
 !  15 Feb 2016 - C. Keller   - Update to v2.0: ConfigList now sits in HcoConfig 
+!  23 Oct 2018 - M. Sulprizio- Make routine ConfigInit public to allow for
+!                              initialization of HcoConfig%ModelSpc from the
+!                              external model. Also add routine Hco_GetTagInfo
+!                              to get information for wildcard strings (e.g.
+!                              ?ALL?) used in HEMCO_Config.rc.
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -172,12 +179,12 @@ CONTAINS
     RC  = HCO_SUCCESS
     LOC = 'Config_ReadFile (hco_config_mod.F90)'
 
-    ! Eventually initialize config obj
+    ! Initialize config object if not already initialized
     IF ( .NOT. ASSOCIATED(HcoConfig) ) THEN
-       CALL ConfigInit( HcoConfig )
+       CALL ConfigInit( HcoConfig, RC )
        HcoConfig%ConfigFileName =  TRIM(ConfigFile)   
     ENDIF
-
+    
     ! Leave here if configuration file is already read 
     IF ( HcoConfig%ConfigFileRead ) THEN
        RETURN
@@ -486,6 +493,7 @@ CONTAINS
 !
 ! !USES:
 !
+    USE CHARPAK_MOD,      ONLY : StrSplit
     USE HCO_EXTLIST_MOD,  ONLY : ExtNrInUse, HCO_GetOpt
     USE HCO_TIDX_Mod,     ONLY : HCO_ExtractTime
     USE HCO_FILEDATA_Mod, ONLY : FileData_Init
@@ -519,6 +527,16 @@ CONTAINS
 !  06 Oct 2015 - C. Keller - Added cycle flags 'EF' and 'RF' (fields must be 
 !                            found).
 !  26 Oct 2016 - R. Yantosca - Don't nullify local ptrs in declaration stmts
+!  20 Jul 2018 - C. Keller   - Return error if duplicate container name
+!  05 Oct 2018 - R. Yantosca - Cycle flag "E" now will read the target file
+!                              only once (e.g. use for restart files).
+!                              Cycle flag "EC" will now continously attempt
+!                              to read/query from the target file.
+!  23 Oct 2018 - M. Sulprizio- Add option to use wildcard (e.g. ?ALL?) in
+!                              variable name to simplify reading all species
+!                              concentration fields from the GEOS-Chem restart
+!                              file, but may be expanded for other purposes
+!  02 Nov 2018 - M. Sulprizio- Add cycle flag "CS" to skip fields not found
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -536,7 +554,11 @@ CONTAINS
     INTEGER                   :: nCat
     INTEGER                   :: Cats(CatMax)
     INTEGER                   :: STRLEN
+    INTEGER                   :: levScal1
+    INTEGER                   :: levScal2
+    INTEGER                   :: nTags
     LOGICAL                   :: SKIP
+    LOGICAL                   :: Found
     CHARACTER(LEN= 63)        :: cName
     CHARACTER(LEN=255)        :: srcFile
     CHARACTER(LEN= 50)        :: srcVar
@@ -551,9 +573,15 @@ CONTAINS
     CHARACTER(LEN=255)        :: Char2
     CHARACTER(LEN=255)        :: LOC, MSG 
     CHARACTER(LEN=255)        :: LINE
+    CHARACTER(LEN=255)        :: tagId
+    CHARACTER(LEN=255)        :: tagName
+    CHARACTER(LEN=255)        :: tagcName
+    CHARACTER(LEN=255)        :: ItemPrefix
+    CHARACTER(LEN=255)        :: ErrMsg
 
     ! Arrays
     INTEGER                   :: SplitInts(255)
+    CHARACTER(LEN=255)        :: SubStrs(255)
 
     ! Pointers
     TYPE(ListCont), POINTER   :: Lct
@@ -700,254 +728,567 @@ CONTAINS
        ! Create and fill list container and add to ConfigList 
        !==============================================================
 
-       ! Add blank list container to ConfigList list. The container 
-       ! is placed at the beginning of the list.
-       CALL ConfigList_AddCont ( Lct, HcoConfig%ConfigList )
+       ! Test if wildcard is present
+       IF ( INDEX( srcVar, '?' ) > 0 ) THEN
 
-       ! -------------------------------------------------------------
-       ! Fill data container. 
-       ! -------------------------------------------------------------
+          ! Split the name to get wildcard and string prior to wildcard
+          CALL StrSplit( srcVar, '?', SubStrs, N )
+          tagId = SubStrs(N-1)
+          ItemPrefix = SubStrs(1)
 
-       ! Attributes used by all data types: data type number and 
-       ! container name.
-       Lct%Dct%DctType      = DctType
-       Lct%Dct%cName        = ADJUSTL(cName)
+          ! Get number of tags for this wildcard
+          CALL Hco_GetTagInfo( am_I_Root, tagId, HcoConfig, &
+                               Found, RC, nTags=nTags )
 
-       ! Base container specific attributes
-       IF ( DctType == HCO_DCTTYPE_BASE ) THEN       
+          ! Add each tagged name as a separate item in the collection
+          DO N = 1, nTags
+             ! Construct the item name
+             tagcName = ''
+
+             ! Get tag, if any
+             CALL Hco_GetTagInfo( am_I_Root, tagId, HcoConfig, &
+                                  Found, RC, N=N,   tagName=tagName )
+             IF ( RC /= HCO_SUCCESS ) THEN
+                ErrMsg = 'Error retrieving tag name for' //            &
+                         ' wildcard ' // TRIM(tagId)
+                CALL HCO_Error( HcoConfig%Err, ErrMsg, RC )
+                RETURN
+             ENDIF
+
+             ! Append the tag name to the output name
+             srcVar   = TRIM( ItemPrefix ) // TRIM( tagName )
+             tagcName = TRIM( cName      ) // TRIM( tagName )
+             ! Do not overwrite species name for now. Use HEMCO wildcard
+             ! to read all external model species.
+             !spcName  = TRIM( tagName    )
+
+             ! -------------------------------------------------------------
+             ! Fill data container
+             ! -------------------------------------------------------------
+
+             ! Add blank list container to ConfigList list. The container 
+             ! is placed at the beginning of the list.
+             CALL ConfigList_AddCont ( Lct, HcoConfig%ConfigList )
+
+             ! Check if name exists already
+             CALL CheckForDuplicateName( HcoConfig, tagcName, RC )
+             IF ( RC /= HCO_SUCCESS ) RETURN
+
+             ! Attributes used by all data types: data type number and 
+             ! container name.
+             Lct%Dct%DctType      = DctType
+             Lct%Dct%cName        = ADJUSTL(tagcName)
   
-          ! Set species name, extension number, emission category, 
-          ! hierarchy
-          Lct%Dct%SpcName       = ADJUSTL(SpcName)
-          Lct%Dct%Hier          = Int2
-          Lct%Dct%ExtNr         = Int3
+             ! Set species name, extension number, emission category, 
+             ! hierarchy
+             Lct%Dct%SpcName       = ADJUSTL(SpcName)
+             Lct%Dct%Hier          = Int2
+             Lct%Dct%ExtNr         = Int3
 
-          ! Extract category from character 2. This can be up to 
-          ! CatMax integers, or empty. 
-          CALL HCO_CharSplit( Char2, Separator, Wildcard, Cats, nCat, RC ) 
-          IF ( RC /= HCO_SUCCESS ) RETURN
-          IF ( nCat == 0 ) THEN
-             Lct%Dct%Cat = -999
-          ELSE
-             Lct%Dct%Cat = Cats(1)
-          ENDIF
+             ! Extract category from character 2. This can be up to 
+             ! CatMax integers, or empty. 
+             CALL HCO_CharSplit( Char2, Separator, Wildcard, Cats, nCat, RC )
+             IF ( RC /= HCO_SUCCESS ) RETURN
+             IF ( nCat == 0 ) THEN
+                Lct%Dct%Cat = -999
+             ELSE
+                Lct%Dct%Cat = Cats(1)
+             ENDIF
 
-          ! Set scale factor IDs into Scal_cID. These values will be
-          ! replaced lateron with the container IDs (in register_base)!
-          CALL HCO_CharSplit( Char1, Separator, Wildcard, &
-                              SplitInts, nScl, RC )
-          IF ( RC /= HCO_SUCCESS ) RETURN
-          IF ( nScl > 0 ) THEN
-             ALLOCATE ( Lct%Dct%Scal_cID(nScl) )
-             Lct%Dct%Scal_cID(1:nScl) = SplitInts(1:nScl)
-             Lct%Dct%nScalID          = nScl                
-          ENDIF
+             ! Set scale factor IDs into Scal_cID. These values will be
+             ! replaced lateron with the container IDs (in register_base)!
+             CALL HCO_CharSplit( Char1, Separator, Wildcard, &
+                                 SplitInts, nScl, RC )
+             IF ( RC /= HCO_SUCCESS ) RETURN
+             IF ( nScl > 0 ) THEN
+                ALLOCATE ( Lct%Dct%Scal_cID(nScl) )
+                Lct%Dct%Scal_cID(1:nScl) = SplitInts(1:nScl)
+                Lct%Dct%nScalID          = nScl                
+             ENDIF
 
-          ! Register species name. A list of all species names can be
-          ! returned to the atmospheric model to match HEMCO species 
-          ! with model species (see Config\_GetSpecNames). 
-          CALL SpecName_Register ( HcoConfig, ADJUSTL(SpcName), RC )
-          IF ( RC /= HCO_SUCCESS ) RETURN
-    
-       ! Scale factor & mask specific attributes
-       ELSE IF ( DctType == HCO_DCTTYPE_SCAL .OR. &
-                 DctType == HCO_DCTTYPE_MASK       ) THEN
-            
-          ! Set scale factor ID and data operator
-          Lct%Dct%ScalID = Int1 
-          Lct%Dct%Oper   = Int2
+             ! Register species name. A list of all species names can be
+             ! returned to the atmospheric model to match HEMCO species 
+             ! with model species (see Config\_GetSpecNames). 
+             CALL SpecName_Register ( HcoConfig, ADJUSTL(SpcName), RC )
+             IF ( RC /= HCO_SUCCESS ) RETURN
 
-          ! Make sure that negative scale factors are always read
-          IF ( Lct%Dct%ScalID < 0 ) THEN
-             CALL ScalID2List( HcoConfig%ScalIDList, Lct%Dct%ScalID, RC )
-             IF ( RC /= HCO_SUCCESS ) RETURN 
-          ENDIF
+             ! -------------------------------------------------------------
+             ! Create and fill file data object. Use previous file data
+             ! object if filename is undefined. Do not yet update the 
+             ! DoShare and DtaHome flags of the data file object and data 
+             ! container, respectively, since we still don't know which
+             ! data containers will be effectively used for emission 
+             ! calculation (containers may be dropped lateron because the
+             ! emission category / hierarchy is too low, species is not 
+             ! used, etc.). The DoShare and DtaHome flags will be set the
+             ! first time that data is read (in hco_readlist_mod.F90).
+             ! Here, we only set the DtaHome flag to -1000 instead of the
+             ! default value of -999 to be able to identify data objects 
+             ! used by multiple containers.
+             ! -------------------------------------------------------------
+             IF ( TRIM(srcFile) == '-' ) THEN
+                IF ( .NOT. ASSOCIATED(Dta) ) THEN
+                   MSG = 'Cannot use previous data container: '//TRIM(tagcName)
+                   CALL HCO_ERROR ( HcoConfig%Err, MSG, RC, THISLOC=LOC )
+                   RETURN
+                ENDIF
+                Lct%Dct%DtaHome = Lct%Dct%DtaHome - 1
+             ELSE
+                Dta => NULL()
+                CALL FileData_Init ( Dta )
+      
+                ! Set source file name. Check if the read file name starts 
+                ! with the configuration file token '$CFDIR', in which case
+                ! we replace this value with the passed CFDIR value.
+                STRLEN = LEN(srcFile)
+                IF ( STRLEN > 6 ) THEN
+                   IF ( srcFile(1:6) == '$CFDIR' ) THEN
+                      srcFile = TRIM(CFDIR) // TRIM(srcFile(7:STRLEN))
+                   ENDIF
+                ENDIF
+                Dta%ncFile    = srcFile
+      
+                ! Set source variable and original data unit.
+                Dta%ncPara    = ADJUSTL(srcVar)
+                Dta%OrigUnit  = ADJUStL(srcUnit)
 
+                ! If the parameter ncPara is not defined, attempt to read data
+                ! directly from configuration file instead of netCDF.
+                ! These data are always assumed to be in local time. Gridded 
+                ! data read from netCDF is always in UTC, except for weekdaily
+                ! data that is treated in local time. The corresponding 
+                ! IsLocTime flag is updated when reading the data (see 
+                ! hcoio_dataread_mod.F90).
+                IF ( TRIM(Dta%ncPara) == '-' ) THEN
+                   Dta%ncRead    = .FALSE.
+                   Dta%IsLocTime = .TRUE.
+                ENDIF
+      
+                ! Extract information from time stamp character and pass values 
+                ! to the corresponding container variables. If no time string is
+                ! defined, keep default values (-1 for all of them)
+                IF ( TRIM(srcTime) /= '-' ) THEN
+                   CALL HCO_ExtractTime( HcoConfig, srcTime, Dta, RC ) 
+                   IF ( RC /= HCO_SUCCESS ) RETURN
+                ENDIF
+      
+                ! In an ESMF environment, the source data will be imported 
+                ! through ExtData by name, hence need to set ncFile equal to
+                ! container name!
+#if defined(ESMF_)
+                IF ( Dta%ncRead ) THEN
+                   Dta%ncFile = ADJUSTL(tagcName)
+                ENDIF
+#endif
+      
+                ! Set time cycling behaviour. Possible values are: 
+                ! - "C"  : cycling --> Default
+                ! - "CS" : cycling, skip if not exist
+                ! - "R"  : range
+                ! - "RF" : range forced (error if not in range)
+                ! - "E"  : exact (read file once)
+                ! - "EF" : exact forced (error if not exist, read/query once)
+                ! - "EC" : exact (read/query continuously, e.g. for ESMF interface)
+                ! - "ECF": exact forced (error if not exist, read/query continuously)
+                ! - "I"  : interpolate 
+                ! - "A"  : average
+                ! - "RA" : range, average outside 
+                Dta%MustFind  = .FALSE.
+                IF ( TRIM(TmCycle) == "R" ) THEN
+                   Dta%CycleFlag = HCO_CFLAG_RANGE
+                ELSEIF ( TRIM(TmCycle) == "RF" ) THEN
+                   Dta%CycleFlag = HCO_CFLAG_RANGE
+                   Dta%MustFind  = .TRUE.
+                ELSEIF ( TRIM(TmCycle) == "E" ) THEN
+                   Dta%CycleFlag = HCO_CFLAG_EXACT
+                   Dta%UpdtFlag  = HCO_UFLAG_ONCE
+                ELSEIF ( TRIM(TmCycle) == "EF" ) THEN
+                   Dta%CycleFlag = HCO_CFLAG_EXACT
+                   Dta%UpdtFlag  = HCO_UFLAG_ONCE
+                   Dta%MustFind  = .TRUE.
+                ELSEIF ( TRIM(TmCycle) == "EC" ) THEN
+                   Dta%CycleFlag = HCO_CFLAG_EXACT
+                ELSEIF ( TRIM(TmCycle) == "ECF" ) THEN
+                   Dta%CycleFlag = HCO_CFLAG_EXACT
+                   Dta%MustFind  = .TRUE.
+                ELSEIF ( TRIM(TmCycle) == "I" ) THEN
+                   Dta%CycleFlag = HCO_CFLAG_INTER
+                ELSEIF ( TRIM(TmCycle) == "C" ) THEN
+                   Dta%CycleFlag = HCO_CFLAG_CYCLE
+                   Dta%MustFind  = .TRUE.
+                ELSEIF ( TRIM(TmCycle) == "CS" ) THEN
+                   Dta%CycleFlag = HCO_CFLAG_CYCLE
+                   Dta%MustFind  = .FALSE.
+                ELSEIF ( TRIM(TmCycle) == "A" ) THEN
+                   Dta%CycleFlag = HCO_CFLAG_AVERG
+                ELSEIF ( TRIM(TmCycle) == "RA" ) THEN
+                   Dta%CycleFlag = HCO_CFLAG_RANGEAVG
+                ELSEIF ( TRIM(TmCycle) == "-" ) THEN
+                   Dta%CycleFlag = HCO_CFLAG_CYCLE
+                ELSE
+                   MSG = 'Invalid time cycling attribute: ' // &
+                         TRIM(TmCycle) // ' - in ' // TRIM(tagcName)
+                   CALL HCO_ERROR ( HcoConfig%Err, MSG, RC, THISLOC=LOC )
+                   RETURN
+                ENDIF
+      
+                ! Set space dimension. This will determine the dimension of the
+                ! data array vector, i.e. 3D or 2D. Different time slices will
+                ! be stored as different vector elements.
+                ! For 3D data, it is now possible to explicitly set the number 
+                ! of vertical levels to be used, as well as the 'reading 
+                ! direction' (up or down). These information is also extracted
+                ! from srcDim and will be stored in variable Dta%Levels.
+                ! (ckeller, 5/20/15)
+                ! ExtractSrcDim now also returns possible scale factors for the
+                ! injection level, which will be stored in container variable
+                ! levScalID1 (bottom level) and levScalID2 (top level).
+                CALL ExtractSrcDim( am_I_Root, HcoConfig, srcDim, Dta, &
+                                    levScal1,  levScal2,  RC ) 
+                IF ( RC /= HCO_SUCCESS ) RETURN
+      
+                ! Set level scale factor index
+                IF ( levScal1 > 0 ) Lct%Dct%levScalID1 = levScal1
+                IF ( levScal2 > 0 ) Lct%Dct%levScalID2 = levScal2
+      
+                ! For scale factors: check if a mask is assigned to this scale
+                ! factor. In this case, pass mask ID to first slot of Scal_cID
+                ! vector. This value will be set to the container ID of the
+                ! corresponding mask field lateron.
+                IF ( DctType == HCO_DCTTYPE_SCAL .AND. Int3 > 0 ) THEN
+                   ALLOCATE ( Lct%Dct%Scal_cID(1) )
+                   Lct%Dct%Scal_cID(1) = Int3
+                   Lct%Dct%nScalID     = 1
+                ENDIF 
+      
+                ! For masks: extract grid box edges. These will be used later 
+                ! on to determine if emissions have to be considered by this
+                ! CPU.
+                IF ( DctType == HCO_DCTTYPE_MASK ) THEN
+                     
+                   ! Extract grid box edges. Need to be four values.
+                   CALL HCO_CharSplit ( Char1, Separator, Wildcard, & 
+                                        SplitInts, N, RC ) 
+                   IF ( RC /= HCO_SUCCESS ) RETURN
+                   IF ( N /= 4 ) THEN
+                      MSG = 'Cannot properly read mask coverage: ' // &
+                           TRIM(Lct%Dct%cName)
+                      CALL HCO_ERROR ( HcoConfig%Err, MSG, RC, THISLOC=LOC )
+                      RETURN
+                   ENDIF
+      
+                   ! Save temporarily in year and month range. Will be
+                   ! reset lateron.
+                   Dta%ncYrs(1) = SplitInts(1)
+                   Dta%ncYrs(2) = SplitInts(2)
+                   Dta%ncMts(1) = SplitInts(3)
+                   Dta%ncMts(2) = SplitInts(4)
+      
+                   ! Make sure that masks are always being read if specified so.
+                   IF ( Char2(1:1) == 'y' .OR. Char2(1:1) == 'Y' ) THEN
+                      CALL ScalID2List( HcoConfig%ScalIDList, Lct%Dct%ScalID, RC )
+                      IF ( RC /= HCO_SUCCESS ) RETURN 
+                   ENDIF
+                ENDIF
+             ENDIF
+
+             ! Connect file data object of this data container.
+             Lct%Dct%Dta => Dta 
+
+             ! Free list container for next cycle
+             Lct => NULL()
+
+          ENDDO
+
+       ! If no wildcard is present in variable name
        ELSE
-          CALL HCO_ERROR ( HcoConfig%Err, 'Invalid data type!', RC, THISLOC=LOC )
-          RETURN
-       ENDIF
 
-       ! -------------------------------------------------------------
-       ! Create and fill file data object. Use previous file data
-       ! object if filename is undefined. Do not yet update the 
-       ! DoShare and DtaHome flags of the data file object and data 
-       ! container, respectively, since we still don't know which
-       ! data containers will be effectively used for emission 
-       ! calculation (containers may be dropped lateron because the
-       ! emission category / hierarchy is too low, species is not 
-       ! used, etc.). The DoShare and DtaHome flags will be set the
-       ! first time that data is read (in hco_readlist_mod.F90).
-       ! Here, we only set the DtaHome flag to -1000 instead of the
-       ! default value of -999 to be able to identify data objects 
-       ! used by multiple containers.
-       ! -------------------------------------------------------------
-       IF ( TRIM(srcFile) == '-' ) THEN
-          IF ( .NOT. ASSOCIATED(Dta) ) THEN
-             MSG = 'Cannot use previous data container: '//TRIM(cName)
-             CALL HCO_ERROR ( HcoConfig%Err, MSG, RC, THISLOC=LOC )
+          ! -------------------------------------------------------------
+          ! Fill data container
+          ! -------------------------------------------------------------
+
+          ! Add blank list container to ConfigList list. The container 
+          ! is placed at the beginning of the list.
+          CALL ConfigList_AddCont ( Lct, HcoConfig%ConfigList )
+
+          ! Check if name exists already
+          CALL CheckForDuplicateName( HcoConfig, cName, RC )
+          IF ( RC /= HCO_SUCCESS ) RETURN
+
+          ! Attributes used by all data types: data type number and 
+          ! container name.
+          Lct%Dct%DctType      = DctType
+          Lct%Dct%cName        = ADJUSTL(cName)
+
+          ! Base container specific attributes
+          IF ( DctType == HCO_DCTTYPE_BASE ) THEN       
+  
+             ! Set species name, extension number, emission category, 
+             ! hierarchy
+             Lct%Dct%SpcName       = ADJUSTL(SpcName)
+             Lct%Dct%Hier          = Int2
+             Lct%Dct%ExtNr         = Int3
+
+             ! Extract category from character 2. This can be up to 
+             ! CatMax integers, or empty. 
+             CALL HCO_CharSplit( Char2, Separator, Wildcard, Cats, nCat, RC ) 
+             IF ( RC /= HCO_SUCCESS ) RETURN
+             IF ( nCat == 0 ) THEN
+                Lct%Dct%Cat = -999
+             ELSE
+                Lct%Dct%Cat = Cats(1)
+             ENDIF
+
+             ! Set scale factor IDs into Scal_cID. These values will be
+             ! replaced lateron with the container IDs (in register_base)!
+             CALL HCO_CharSplit( Char1, Separator, Wildcard, &
+                                 SplitInts, nScl, RC )
+             IF ( RC /= HCO_SUCCESS ) RETURN
+             IF ( nScl > 0 ) THEN
+                ALLOCATE ( Lct%Dct%Scal_cID(nScl) )
+                Lct%Dct%Scal_cID(1:nScl) = SplitInts(1:nScl)
+                Lct%Dct%nScalID          = nScl                
+             ENDIF
+
+             ! Register species name. A list of all species names can be
+             ! returned to the atmospheric model to match HEMCO species 
+             ! with model species (see Config\_GetSpecNames). 
+             CALL SpecName_Register ( HcoConfig, ADJUSTL(SpcName), RC )
+             IF ( RC /= HCO_SUCCESS ) RETURN
+    
+          ! Scale factor & mask specific attributes
+          ELSE IF ( DctType == HCO_DCTTYPE_SCAL .OR. &
+                    DctType == HCO_DCTTYPE_MASK       ) THEN
+            
+             ! Set scale factor ID and data operator
+             Lct%Dct%ScalID = Int1 
+             Lct%Dct%Oper   = Int2
+
+             ! Make sure that negative scale factors are always read
+             IF ( Lct%Dct%ScalID < 0 ) THEN
+                CALL ScalID2List( HcoConfig%ScalIDList, Lct%Dct%ScalID, RC )
+                IF ( RC /= HCO_SUCCESS ) RETURN 
+             ENDIF
+
+          ELSE
+             CALL HCO_ERROR ( HcoConfig%Err, 'Invalid data type!', RC, &
+                              THISLOC=LOC )
              RETURN
           ENDIF
-          Lct%Dct%DtaHome = Lct%Dct%DtaHome - 1
-       ELSE
-          Dta => NULL()
-          CALL FileData_Init ( Dta )
-
-          ! Set source file name. Check if the read file name starts 
-          ! with the configuration file token '$CFDIR', in which case
-          ! we replace this value with the passed CFDIR value.
-          STRLEN = LEN(srcFile)
-          IF ( STRLEN > 6 ) THEN
-             IF ( srcFile(1:6) == '$CFDIR' ) THEN
-                srcFile = TRIM(CFDIR) // TRIM(srcFile(7:STRLEN))
+       
+          ! -------------------------------------------------------------
+          ! Create and fill file data object. Use previous file data
+          ! object if filename is undefined. Do not yet update the 
+          ! DoShare and DtaHome flags of the data file object and data 
+          ! container, respectively, since we still don't know which
+          ! data containers will be effectively used for emission 
+          ! calculation (containers may be dropped lateron because the
+          ! emission category / hierarchy is too low, species is not 
+          ! used, etc.). The DoShare and DtaHome flags will be set the
+          ! first time that data is read (in hco_readlist_mod.F90).
+          ! Here, we only set the DtaHome flag to -1000 instead of the
+          ! default value of -999 to be able to identify data objects 
+          ! used by multiple containers.
+          ! -------------------------------------------------------------
+          IF ( TRIM(srcFile) == '-' ) THEN
+             IF ( .NOT. ASSOCIATED(Dta) ) THEN
+                MSG = 'Cannot use previous data container: '//TRIM(cName)
+                CALL HCO_ERROR ( HcoConfig%Err, MSG, RC, THISLOC=LOC )
+                RETURN
              ENDIF
-          ENDIF
-          Dta%ncFile    = srcFile
+             Lct%Dct%DtaHome = Lct%Dct%DtaHome - 1
+          ELSE
+             Dta => NULL()
+             CALL FileData_Init ( Dta )
 
-          ! Set source variable and original data unit.
-          Dta%ncPara    = ADJUSTL(srcVar)
-          Dta%OrigUnit  = ADJUStL(srcUnit)
+             ! Set source file name. Check if the read file name starts 
+             ! with the configuration file token '$CFDIR', in which case
+             ! we replace this value with the passed CFDIR value.
+             STRLEN = LEN(srcFile)
+             IF ( STRLEN > 6 ) THEN
+                IF ( srcFile(1:6) == '$CFDIR' ) THEN
+                   srcFile = TRIM(CFDIR) // TRIM(srcFile(7:STRLEN))
+                ENDIF
+             ENDIF
+             Dta%ncFile    = srcFile
 
-          ! If the parameter ncPara is not defined, attempt to read data
-          ! directly from configuration file instead of netCDF.
-          ! These data are always assumed to be in local time. Gridded 
-          ! data read from netCDF is always in UTC, except for weekdaily
-          ! data that is treated in local time. The corresponding 
-          ! IsLocTime flag is updated when reading the data (see 
-          ! hcoio_dataread_mod.F90).
-          IF ( TRIM(Dta%ncPara) == '-' ) THEN
-             Dta%ncRead    = .FALSE.
-             Dta%IsLocTime = .TRUE.
-          ENDIF
+             ! Set source variable and original data unit.
+             Dta%ncPara    = ADJUSTL(srcVar)
+             Dta%OrigUnit  = ADJUStL(srcUnit)
 
-          ! Extract information from time stamp character and pass values 
-          ! to the corresponding container variables. If no time string is
-          ! defined, keep default values (-1 for all of them)
-          IF ( TRIM(srcTime) /= '-' ) THEN
-             CALL HCO_ExtractTime( HcoConfig, srcTime, Dta, RC ) 
-             IF ( RC /= HCO_SUCCESS ) RETURN
-          ENDIF
+             ! If the parameter ncPara is not defined, attempt to read data
+             ! directly from configuration file instead of netCDF.
+             ! These data are always assumed to be in local time. Gridded 
+             ! data read from netCDF is always in UTC, except for weekdaily
+             ! data that is treated in local time. The corresponding 
+             ! IsLocTime flag is updated when reading the data (see 
+             ! hcoio_dataread_mod.F90).
+             IF ( TRIM(Dta%ncPara) == '-' ) THEN
+                Dta%ncRead    = .FALSE.
+                Dta%IsLocTime = .TRUE.
+             ENDIF
 
-          ! In an ESMF environment, the source data will be imported 
-          ! through ExtData by name, hence need to set ncFile equal to
-          ! container name!
+             ! Extract information from time stamp character and pass values 
+             ! to the corresponding container variables. If no time string is
+             ! defined, keep default values (-1 for all of them)
+             IF ( TRIM(srcTime) /= '-' ) THEN
+                CALL HCO_ExtractTime( HcoConfig, srcTime, Dta, RC ) 
+                IF ( RC /= HCO_SUCCESS ) RETURN
+             ENDIF
+
+             ! In an ESMF environment, the source data will be imported 
+             ! through ExtData by name, hence need to set ncFile equal to
+             ! container name!
 #if defined(ESMF_)
-          IF ( Dta%ncRead ) THEN
-             Dta%ncFile = ADJUSTL(cName)
-          ENDIF
+             IF ( Dta%ncRead ) THEN
+                Dta%ncFile = ADJUSTL(cName)
+             ENDIF
 #endif
 
-          ! Set time cycling behaviour. Possible values are: 
-          ! - "C" : cycling --> Default
-          ! - "R" : range
-          ! - "RF": range forced (error if not in range)
-          ! - "E" : exact
-          ! - "EF": exact forced (error if not exist)
-          ! - "I" : interpolate 
-          ! - "A" : average
-          ! - "RA": range, average outside 
-          Dta%MustFind  = .FALSE.
-          IF ( TRIM(TmCycle) == "R" ) THEN
-             Dta%CycleFlag = HCO_CFLAG_RANGE
-          ELSEIF ( TRIM(TmCycle) == "RF" ) THEN
-             Dta%CycleFlag = HCO_CFLAG_RANGE
-             Dta%MustFind  = .TRUE.
-          ELSEIF ( TRIM(TmCycle) == "E" ) THEN
-             Dta%CycleFlag = HCO_CFLAG_EXACT
-          ELSEIF ( TRIM(TmCycle) == "EF" ) THEN
-             Dta%CycleFlag = HCO_CFLAG_EXACT
-             Dta%MustFind  = .TRUE.
-          ELSEIF ( TRIM(TmCycle) == "I" ) THEN
-             Dta%CycleFlag = HCO_CFLAG_INTER
-          ELSEIF ( TRIM(TmCycle) == "C" ) THEN
-             Dta%CycleFlag = HCO_CFLAG_CYCLE
-          ELSEIF ( TRIM(TmCycle) == "A" ) THEN
-             Dta%CycleFlag = HCO_CFLAG_AVERG
-          ELSEIF ( TRIM(TmCycle) == "RA" ) THEN
-             Dta%CycleFlag = HCO_CFLAG_RANGEAVG
-          ELSEIF ( TRIM(TmCycle) == "-" ) THEN
-             Dta%CycleFlag = HCO_CFLAG_CYCLE
-          ELSE
-             MSG = 'Invalid time cycling attribute: ' // &
-                   TRIM(TmCycle) // ' - in ' // TRIM(cName)
-             CALL HCO_ERROR ( HcoConfig%Err, MSG, RC, THISLOC=LOC )
-             RETURN
-          ENDIF
-
-          ! Set space dimension. This will determine the dimension of the
-          ! data array vector, i.e. 3D or 2D. Different time slices will
-          ! be stored as different vector elements.
-          ! For 3D data, it is now possible to explicitly set the number 
-          ! of vertical levels to be used, as well as the 'reading 
-          ! direction' (up or down). These information is also extracted
-          ! from srcDim and will be stored in variable Dta%Levels.
-          ! (ckeller, 5/20/15)
-          CALL ExtractSrcDim( am_I_Root, HcoConfig, srcDim, Dta, RC ) 
-          IF ( RC /= HCO_SUCCESS ) RETURN
-
-          ! For scale factors: check if a mask is assigned to this scale
-          ! factor. In this case, pass mask ID to first slot of Scal_cID
-          ! vector. This value will be set to the container ID of the
-          ! corresponding mask field lateron.
-          IF ( DctType == HCO_DCTTYPE_SCAL .AND. Int3 > 0 ) THEN
-             ALLOCATE ( Lct%Dct%Scal_cID(1) )
-             Lct%Dct%Scal_cID(1) = Int3
-             Lct%Dct%nScalID     = 1
-          ENDIF 
-
-          ! For masks: extract grid box edges. These will be used later 
-          ! on to determine if emissions have to be considered by this
-          ! CPU.
-          IF ( DctType == HCO_DCTTYPE_MASK ) THEN
-               
-             ! Extract grid box edges. Need to be four values.
-             CALL HCO_CharSplit ( Char1, Separator, Wildcard, & 
-                                  SplitInts, N, RC ) 
-             IF ( RC /= HCO_SUCCESS ) RETURN
-             IF ( N /= 4 ) THEN
-                MSG = 'Cannot properly read mask coverage: ' // &
-                     TRIM(Lct%Dct%cName)
+             ! Set time cycling behaviour. Possible values are: 
+             ! - "C"  : cycling --> Default
+             ! - "CS" : cycling, skip if not exist
+             ! - "R"  : range
+             ! - "RF" : range forced (error if not in range)
+             ! - "E"  : exact (read file once)
+             ! - "EF" : exact forced (error if not exist, read/query once)
+             ! - "EC" : exact (read/query continuously, e.g. for ESMF interface)
+             ! - "ECF": exact forced (error if not exist, read/query continuously)
+             ! - "I"  : interpolate 
+             ! - "A"  : average
+             ! - "RA" : range, average outside 
+             Dta%MustFind  = .FALSE.
+             IF ( TRIM(TmCycle) == "R" ) THEN
+                Dta%CycleFlag = HCO_CFLAG_RANGE
+             ELSEIF ( TRIM(TmCycle) == "RF" ) THEN
+                Dta%CycleFlag = HCO_CFLAG_RANGE
+                Dta%MustFind  = .TRUE.
+             ELSEIF ( TRIM(TmCycle) == "E" ) THEN
+                Dta%CycleFlag = HCO_CFLAG_EXACT
+                Dta%UpdtFlag  = HCO_UFLAG_ONCE
+             ELSEIF ( TRIM(TmCycle) == "EF" ) THEN
+                Dta%CycleFlag = HCO_CFLAG_EXACT
+                Dta%UpdtFlag  = HCO_UFLAG_ONCE
+                Dta%MustFind  = .TRUE.
+             ELSEIF ( TRIM(TmCycle) == "EC" ) THEN
+                Dta%CycleFlag = HCO_CFLAG_EXACT
+             ELSEIF ( TRIM(TmCycle) == "ECF" ) THEN
+                Dta%CycleFlag = HCO_CFLAG_EXACT
+                Dta%MustFind  = .TRUE.
+             ELSEIF ( TRIM(TmCycle) == "I" ) THEN
+                Dta%CycleFlag = HCO_CFLAG_INTER
+             ELSEIF ( TRIM(TmCycle) == "C" ) THEN
+                Dta%CycleFlag = HCO_CFLAG_CYCLE
+                Dta%MustFind  = .TRUE.
+             ELSEIF ( TRIM(TmCycle) == "CS" ) THEN
+                Dta%CycleFlag = HCO_CFLAG_CYCLE
+                Dta%MustFind  = .FALSE.
+             ELSEIF ( TRIM(TmCycle) == "A" ) THEN
+                Dta%CycleFlag = HCO_CFLAG_AVERG
+             ELSEIF ( TRIM(TmCycle) == "RA" ) THEN
+                Dta%CycleFlag = HCO_CFLAG_RANGEAVG
+             ELSEIF ( TRIM(TmCycle) == "-" ) THEN
+                Dta%CycleFlag = HCO_CFLAG_CYCLE
+             ELSE
+                MSG = 'Invalid time cycling attribute: ' // &
+                      TRIM(TmCycle) // ' - in ' // TRIM(cName)
                 CALL HCO_ERROR ( HcoConfig%Err, MSG, RC, THISLOC=LOC )
                 RETURN
              ENDIF
 
-             ! Save temporarily in year and month range. Will be
-             ! reset lateron.
-             Dta%ncYrs(1) = SplitInts(1)
-             Dta%ncYrs(2) = SplitInts(2)
-             Dta%ncMts(1) = SplitInts(3)
-             Dta%ncMts(2) = SplitInts(4)
+             ! Set space dimension. This will determine the dimension of the
+             ! data array vector, i.e. 3D or 2D. Different time slices will
+             ! be stored as different vector elements.
+             ! For 3D data, it is now possible to explicitly set the number 
+             ! of vertical levels to be used, as well as the 'reading 
+             ! direction' (up or down). These information is also extracted
+             ! from srcDim and will be stored in variable Dta%Levels.
+             ! (ckeller, 5/20/15)
+             ! ExtractSrcDim now also returns possible scale factors for the
+             ! injection level, which will be stored in container variable
+             ! levScalID1 (bottom level) and levScalID2 (top level).
+             CALL ExtractSrcDim( am_I_Root, HcoConfig, srcDim, Dta, &
+                                 levScal1,  levScal2,  RC ) 
+             IF ( RC /= HCO_SUCCESS ) RETURN
 
-             ! Make sure that masks are always being read if specified so.
-             IF ( Char2(1:1) == 'y' .OR. Char2(1:1) == 'Y' ) THEN
-                CALL ScalID2List( HcoConfig%ScalIDList, Lct%Dct%ScalID, RC )
-                IF ( RC /= HCO_SUCCESS ) RETURN 
+             ! Set level scale factor index
+             IF ( levScal1 > 0 ) Lct%Dct%levScalID1 = levScal1
+             IF ( levScal2 > 0 ) Lct%Dct%levScalID2 = levScal2
+
+             ! For scale factors: check if a mask is assigned to this scale
+             ! factor. In this case, pass mask ID to first slot of Scal_cID
+             ! vector. This value will be set to the container ID of the
+             ! corresponding mask field lateron.
+             IF ( DctType == HCO_DCTTYPE_SCAL .AND. Int3 > 0 ) THEN
+                ALLOCATE ( Lct%Dct%Scal_cID(1) )
+                Lct%Dct%Scal_cID(1) = Int3
+                Lct%Dct%nScalID     = 1
+             ENDIF
+
+             ! For masks: extract grid box edges. These will be used later 
+             ! on to determine if emissions have to be considered by this
+             ! CPU.
+             IF ( DctType == HCO_DCTTYPE_MASK ) THEN
+               
+                ! Extract grid box edges. Need to be four values.
+                CALL HCO_CharSplit ( Char1, Separator, Wildcard, & 
+                                     SplitInts, N, RC ) 
+                IF ( RC /= HCO_SUCCESS ) RETURN
+                IF ( N /= 4 ) THEN
+                   MSG = 'Cannot properly read mask coverage: ' // &
+                         TRIM(Lct%Dct%cName)
+                   CALL HCO_ERROR ( HcoConfig%Err, MSG, RC, THISLOC=LOC )
+                   RETURN
+                ENDIF
+
+                ! Save temporarily in year and month range. Will be
+                ! reset lateron.
+                Dta%ncYrs(1) = SplitInts(1)
+                Dta%ncYrs(2) = SplitInts(2)
+                Dta%ncMts(1) = SplitInts(3)
+                Dta%ncMts(2) = SplitInts(4)
+
+                ! Make sure that masks are always being read if specified so.
+                IF ( Char2(1:1) == 'y' .OR. Char2(1:1) == 'Y' ) THEN
+                   CALL ScalID2List( HcoConfig%ScalIDList, Lct%Dct%ScalID, RC )
+                   IF ( RC /= HCO_SUCCESS ) RETURN 
+                ENDIF
              ENDIF
           ENDIF
+
+          ! Connect file data object of this data container.
+          Lct%Dct%Dta => Dta
+
+          ! If a base emission field covers multiple emission categories,
+          ! create a 'shadow' container for each additional category.
+          ! These shadow container have the same information as the main 
+          ! container except that a scale factor of zero will be applied in 
+          ! addition. This makes sure that the inventory cancels out other
+          ! inventories with lower hierarchy for every specified category,
+          ! while emission totals are not changed. All emissions of a base
+          ! field with multiple categories is written into the category
+          ! listed first. 
+          IF ( nCat > 1 ) THEN
+
+             ! nCat cannot exceed CatMax
+             IF ( nCat > CatMax ) THEN
+                MSG = 'Category max exceeded'
+                CALL HCO_ERROR ( HcoConfig%Err, MSG, RC, THISLOC=LOC )
+                RETURN
+             ENDIF
+
+             CALL AddShadowFields( am_I_Root, HcoConfig, Lct, Cats, nCat, RC )
+             IF ( RC /= HCO_SUCCESS ) RETURN
+
+             ! Reset nCat
+             nCat = -1
+          ENDIF
+
+          ! Free list container for next cycle
+          Lct => NULL()
+
        ENDIF
 
-       ! Connect file data object of this data container.
-       Lct%Dct%Dta => Dta
-
-       ! If a base emission field covers multiple emission categories,
-       ! create a 'shadow' container for each additional category.
-       ! These shadow container have the same information as the main 
-       ! container except that a scale factor of zero will be applied in 
-       ! addition. This makes sure that the inventory cancels out other
-       ! inventories with lower hierarchy for every specified category,
-       ! while emission totals are not changed. All emissions of a base
-       ! field with multiple categories is written into the category
-       ! listed first. 
-       IF ( nCat > 1 ) THEN
-          CALL AddShadowFields( am_I_Root, HcoConfig, Lct, Cats, nCat, RC )
-          IF ( RC /= HCO_SUCCESS ) RETURN
-
-          ! Reset nCat
-          nCat = -1
-       ENDIF
-
-       ! Free list container for next cycle
-       Lct => NULL()
     ENDDO
 
     ! Leave w/ success
@@ -2238,7 +2579,6 @@ CONTAINS
        ! structure of the linked list with new containers simply being
        ! added to the end of the list.
        IF ( Lct%Dct%nScalID > 0 ) THEN
-
           CALL ScalID_Register ( Lct%Dct, HcoState%Config, RC )
           IF ( RC /= HCO_SUCCESS ) RETURN
        ENDIF
@@ -3260,6 +3600,22 @@ CONTAINS
 
     ENDDO
 
+    ! Also check for level scale factor IDs
+    IF ( Dct%levScalID1 > 0 ) THEN
+       CALL ScalID2List( HcoConfig%ScalIDList, Dct%levScalID1, RC )
+       IF ( RC /= HCO_SUCCESS ) RETURN
+       CALL Get_cID ( Dct%levScalID1, HcoConfig, cID, RC )
+       IF ( RC /= HCO_SUCCESS ) RETURN
+       Dct%levScalID1 = cID
+    ENDIF
+    IF ( Dct%levScalID2 > 0 ) THEN
+       CALL ScalID2List( HcoConfig%ScalIDList, Dct%levScalID2, RC )
+       IF ( RC /= HCO_SUCCESS ) RETURN
+       CALL Get_cID ( Dct%levScalID2, HcoConfig, cID, RC )
+       IF ( RC /= HCO_SUCCESS ) RETURN
+       Dct%levScalID2 = cID
+    ENDIF
+
     ! Vector Scal_cID of this container now points to cIDs
     Dct%Scal_cID_Set = .TRUE.
 
@@ -3312,7 +3668,7 @@ CONTAINS
     LOGICAL                    :: IsInList
       
     !======================================================================
-    ! ScalID_Register begins here
+    ! ScalID2List begins here
     !======================================================================
 
     ! Initialize
@@ -3823,7 +4179,7 @@ CONTAINS
 !\\
 ! !INTERFACE:
 !
-  SUBROUTINE ExtractSrcDim( am_I_Root, HcoConfig, SrcDim, Dta, RC ) 
+  SUBROUTINE ExtractSrcDim( am_I_Root, HcoConfig, SrcDim, Dta, Lscal1, Lscal2, RC ) 
 !
 ! !INPUT PARAMETERS:
 !
@@ -3831,6 +4187,11 @@ CONTAINS
     TYPE(ConfigObj),  POINTER         :: HcoConfig 
     CHARACTER(LEN=*), INTENT(IN   )   :: SrcDim
     TYPE(FileData),   POINTER         :: Dta
+!
+! !OUTPUT PARAMETERS:
+!
+    INTEGER,          INTENT(  OUT)   :: Lscal1
+    INTEGER,          INTENT(  OUT)   :: Lscal2
 !
 ! !INPUT/OUTPUT PARAMETERS:
 !
@@ -3840,14 +4201,17 @@ CONTAINS
 !  20 May 2015 - C. Keller   - Initial version
 !  22 Jan 2016 - R. Yantosca - Bug fix, removed & in the middle of the line
 !                              since the PGI compiler chokes on it.
+!  26 Jan 2018 - C. Keller   - Add L1 & L2
 !EOP
 !------------------------------------------------------------------------------
 !BOC
 !
 ! !LOCAL VARIABLES:
 !
-    INTEGER            :: i, idx
+    INTEGER            :: i, idx, idx2
     INTEGER            :: strLen
+    INTEGER            :: EmisUnit
+    REAL(hp)           :: EmisL
     CHARACTER(LEN=255) :: str1, str2, tmpstr
     CHARACTER(LEN=255) :: MSG    
     CHARACTER(LEN=255) :: LOC = 'ExtractSrcDim (hco_config_mod.F90)' 
@@ -3859,6 +4223,10 @@ CONTAINS
     MSG = 'Illegal source dimension ' // TRIM(srcDim) // &
           ' for file ' // TRIM(Dta%ncFile) // &
           '. Valid entries are e.g. xy or xyz.'
+
+    ! Init output
+    Lscal1 = -1
+    Lscal2 = -1
 
     ! See if there is an arbitrary additional dimension. This must be added
     ! at the end of the string and be separated by a '+' sign
@@ -3915,13 +4283,23 @@ CONTAINS
           IF ( idx > 0 ) THEN
 
              ! Check for PBL flag. It is possible to emit stuff 
-             ! from the PBL up to e.g. level 30 (xyL=PBL:30) 
-             CALL ParseEmisL( tmpstr(1:(idx-1)), Dta%EmisL1, Dta%EmisL1Unit )
-             CALL ParseEmisL( tmpstr((idx+1):LEN(tmpstr)), Dta%EmisL2, Dta%EmisL2Unit )
+             ! from the PBL up to e.g. level 30 (xyL=PBL:30)
+             ! The call to ParseEmisL now returns three arguments: the emission
+             ! level, the emission unit, and the emission scale factor. Ignore
+             ! emission level and unit if scale factor is given. 
+             CALL ParseEmisL( tmpstr(1:(idx-1)), EmisL, EmisUnit, Lscal1 )
+             Dta%EmisL1     = EmisL
+             Dta%EmisL1Unit = EmisUnit
+             CALL ParseEmisL( tmpstr((idx+1):LEN(tmpstr)), EmisL, EmisUnit, Lscal2 )
+             Dta%EmisL2     = EmisL
+             Dta%EmisL2Unit = EmisUnit
 
           ! if only one level is provided (e.g. xyL=5) 
           ELSE
-             CALL ParseEmisL( tmpstr, Dta%EmisL1, Dta%EmisL1Unit )
+             CALL ParseEmisL( tmpstr, EmisL, EmisUnit, Lscal1 )
+             Dta%EmisL1     = EmisL
+             Dta%EmisL1Unit = EmisUnit
+             Lscal2         = Lscal1
              Dta%EmisL2     = Dta%EmisL1
              Dta%EmisL2Unit = Dta%EmisL1Unit
           ENDIF
@@ -3998,17 +4376,32 @@ CONTAINS
 !\\
 ! !INTERFACE:
 !
-  SUBROUTINE ConfigInit ( HcoConfig )
+  SUBROUTINE ConfigInit ( HcoConfig, RC, nModelSpecies )
+!
+! !INPUT PARAMETERS:
+!
+    INTEGER, INTENT(IN), OPTIONAL  :: nModelSpecies  ! # model species
 !
 ! !INPUT/OUTPUT PARAMETERS:
 !
-    TYPE(ConfigObj), POINTER :: HcoConfig
+    TYPE(ConfigObj), POINTER       :: HcoConfig
+    INTEGER,         INTENT(INOUT) :: RC             ! Success/fail
 !
 ! !REVISION HISTORY:
 !  16 Feb 2016 - C. Keller: Initialization (update)
+!  23 Oct 2018 - M. Sulprizio- Add nModelSpecies to represent all species from
+!                              external model (i.e. advected+chemical species)
 !EOP
 !------------------------------------------------------------------------------
 !BOC
+!
+! !LOCAL VARIABLES:
+!
+    INTEGER            :: I, AS
+
+    !=====================================================================
+    ! ConfigInit begins here!
+    !=====================================================================
 
     ALLOCATE(HcoConfig)
     HcoConfig%ConfigFileName = ''
@@ -4019,6 +4412,29 @@ CONTAINS
     HcoConfig%SpecNameList   => NULL()
     HcoConfig%ExtList        => NULL()
     HcoConfig%Err            => NULL()
+
+    IF ( PRESENT( nModelSpecies ) ) THEN
+
+       ! Initialize vector w/ species information
+       HcoConfig%nModelSpc = nModelSpecies
+       IF ( nModelSpecies > 0 ) THEN
+          ALLOCATE ( HcoConfig%ModelSpc( nModelSpecies ), STAT=AS )
+          IF ( AS /= 0 ) THEN
+             CALL HCO_ERROR( HcoConfig%Err, 'ModelSpecies', RC )
+             RETURN
+          ENDIF
+
+          ! Initalize species information. The effective values for species
+          ! names, model IDs, etc. are set in the HEMCO-model interface 
+          ! routine. 
+          DO I = 1, nModelSpecies
+             HcoConfig%ModelSpc(I)%HcoID      = I
+             HcoConfig%ModelSpc(I)%ModID      = -1
+             HcoConfig%ModelSpc(I)%SpcName    = ''
+          ENDDO
+       ENDIF
+
+    ENDIF
 
   END SUBROUTINE ConfigInit 
 !EOC
@@ -4034,7 +4450,7 @@ CONTAINS
 !\\
 ! !INTERFACE:
 !
-  SUBROUTINE ParseEmisL ( str, EmisL, EmisUnit ) 
+  SUBROUTINE ParseEmisL ( str, EmisL, EmisUnit, ScalID ) 
 !
 ! !INPUT PARAMETERS:
 !
@@ -4044,6 +4460,7 @@ CONTAINS
 !
     REAL(hp),          INTENT(OUT) :: EmisL 
     INTEGER,           INTENT(OUT) :: EmisUnit
+    INTEGER,           INTENT(OUT) :: ScalID   
 !
 ! !REVISION HISTORY:
 !  09 May 2016 - C. Keller: Intial version. 
@@ -4053,7 +4470,7 @@ CONTAINS
 !
 ! !LOCAL VARIABLES:
 !
-    INTEGER  :: idx
+    INTEGER  :: nchar, idx
 
     !======================================================================
     ! ParseEmisL begins here! 
@@ -4061,21 +4478,235 @@ CONTAINS
 
     ! Init
     EmisUnit = HCO_EMISL_LEV
+    ScalID   = -1
 
     IF ( TRIM(str) == 'PBL' ) THEN
       EmisL    = 0.0_hp
       EmisUnit = HCO_EMISL_PBL
     ELSE
+       ! extract scale factor if string starts with 'SCAL' or 'scal'
+       nchar = LEN(str)
+       IF ( nchar > 4 ) THEN
+          IF ( str(1:4)=='SCAL' .OR. str(1:4)=='scal' ) THEN
+             READ(str(5:nchar),*) ScalID
+             EmisUnit = -1 
+             EmisL    = -1.0
+          ENDIF
+       ENDIF
+
        ! check for elevation unit flag (e.g. 1000m)
-       idx = INDEX(TRIM(str),'m')
-       IF ( idx > 0 ) THEN
-          READ(str(1:(idx-1)),*) EmisL
-          EmisUnit = HCO_EMISL_M
-       ELSE
-          READ(str,*) EmisL
+       IF ( ScalID < 0 ) THEN
+          idx = INDEX(TRIM(str),'m')
+          IF ( idx > 0 ) THEN
+             READ(str(1:(idx-1)),*) EmisL
+             EmisUnit = HCO_EMISL_M
+          ELSE
+             READ(str,*) EmisL
+          ENDIF
        ENDIF
     ENDIF
 
   END SUBROUTINE ParseEmisL
+!EOC
+!------------------------------------------------------------------------------
+!                  Harvard-NASA Emissions Component (HEMCO)                   !
+!------------------------------------------------------------------------------
+!BOP
+!
+! !IROUTINE: CheckForDuplicateName
+!
+! !DESCRIPTION: Subroutine CheckForDuplicateName checks if there is a
+! container in the container linked list that has the same name as the
+! name given as input argument. 
+!\\
+!\\
+! !INTERFACE:
+!
+  Subroutine CheckForDuplicateName( HcoConfig, cName, RC )
+!
+! !INPUT ARGUMENT:
+!
+    TYPE(ConfigObj) , POINTER    :: HcoConfig  ! HEMCO config obj
+    CHARACTER(LEN=*), INTENT(IN) :: cName
+!
+! !OUTPUT ARGUMENT: 
+!
+    INTEGER, INTENT(INOUT)  :: RC
+!
+! !REVISION HISTORY:
+!  20 Jul 2018 - C. Keller: Initial version 
+!EOP
+!------------------------------------------------------------------------------
+!BOC
+!
+! !LOCAL VARIABLES:
+!
+    TYPE(ListCont), POINTER :: ThisLct => NULL()
+    LOGICAL                 :: Duplicate
+    CHARACTER(LEN=255)      :: tmpName, MSG
+
+    !======================================================================
+    ! CheckForDuplicateName begins here! 
+    !======================================================================
+
+    ! Init 
+    RC = HCO_SUCCESS
+    Duplicate = .FALSE.
+
+    ! Pass name to clear spaces
+    tmpName = ADJUSTL(cName)
+
+    ! Walk through list and check for duplicate. Exit if found 
+    ThisLct => HcoConfig%ConfigList
+    DO WHILE ( ASSOCIATED ( ThisLct ) )
+
+       ! Skip if data container not defined
+       IF ( .NOT. ASSOCIATED(ThisLct%Dct) ) THEN
+          ThisLct => ThisLct%NextCont
+          CYCLE
+       ENDIF
+
+       ! Check if this container has desired scalID
+       IF ( TRIM(ThisLct%Dct%cName) == TRIM(tmpName) ) THEN
+          Duplicate = .TRUE.
+          EXIT
+       ENDIF
+
+       ! Move to next container 
+       ThisLct => ThisLct%NextCont
+    ENDDO
+
+    IF ( Duplicate ) THEN
+       MSG = 'Error: HEMCO field already exists:'//TRIM(cName)
+       CALL HCO_ERROR ( HcoConfig%Err, MSG, RC )
+       RETURN
+    ENDIF
+
+  END SUBROUTINE CheckForDuplicateName
+  !EOC
+!------------------------------------------------------------------------------
+!                  GEOS-Chem Global Chemical Transport Model                  !
+!------------------------------------------------------------------------------
+!BOP
+!
+! !IROUTINE: Hco_GetTagInfo
+!
+! !DESCRIPTION: Subroutine HCO\_GETTAGINFO retrieves basic information about 
+! tags given a wildcard string.
+!\\
+!\\
+! !INTERFACE:
+!
+  SUBROUTINE Hco_GetTagInfo( am_I_Root, tagID, HcoConfig, Found, &
+                             RC,        N,     tagName,  nTags            )
+!
+! !USES:
+!
+!
+! !INPUT PARAMETERS:
+! 
+    LOGICAL,            INTENT(IN)  :: am_I_Root   ! Is this the root CPU?
+    CHARACTER(LEN=*),   INTENT(IN)  :: tagID       ! ID of tag (e.g. wildcard)
+    TYPE(ConfigObj),    POINTER     :: HcoConfig   ! HEMCO Config object 
+    INTEGER,            OPTIONAL    :: N           ! index (1 to # tags)
+!
+! !OUTPUT PARAMETERS:
+!
+    LOGICAL,            INTENT(OUT) :: Found       ! Item found?
+    INTEGER,            INTENT(OUT) :: RC          ! Return code
+    CHARACTER(LEN=255), OPTIONAL    :: tagName     ! tag name for index N 
+    INTEGER,            OPTIONAL    :: nTags       ! # tags
+!
+! !REMARKS:
+!
+! !REVISION HISTORY: 
+!  23 Oct 2018 - M. Sulprizio- Initial version based on routine Get_TagInfo in
+!                              GEOS-Chem's Headers/state_diag_mod.F90    
+!EOP
+!------------------------------------------------------------------------------
+!BOC
+!
+! !LOCAL VARIABLES:
+!
+    ! Scalars
+    INTEGER            :: D,         numTags
+    LOGICAL            :: isNumTags, isTagName, isN
+
+    ! Strings
+    CHARACTER(LEN=255) :: ErrMsg,    ThisLoc,   Nstr
+
+    !=======================================================================
+    ! Hco_GetTagInfo begins here
+    !=======================================================================
+    
+    ! Initialize
+    ErrMsg     = ''
+    Found      = .TRUE.
+    numTags    = 0
+    
+    ! Optional arguments present?
+    isN        = PRESENT( N       )
+    isTagName  = PRESENT( TagName )
+    isNumTags  = PRESENT( nTags   )
+
+    ! Exit with error if getting tag name but index not specified
+    IF ( isTagName .AND. .NOT. isN ) THEN
+       ErrMsg = 'Index must be specified if retrieving an individual tag name'
+       CALL HCO_ERROR( HcoConfig%Err, ErrMsg, RC )
+       RETURN
+    ENDIF
+
+    !=======================================================================
+    ! Get number of tags
+    !=======================================================================
+    SELECT CASE( TRIM( tagId ) )
+       CASE( 'ALL'     )
+          numTags = HcoConfig%nModelSpc
+       CASE DEFAULT
+          FOUND = .FALSE.
+          ErrMsg = 'Handling of tagId ' // TRIM(tagId) // &
+                   ' is not implemented for getting number of tags'
+          CALL HCO_Error( HcoConfig%Err, ErrMsg, RC )
+          RETURN
+    END SELECT
+
+    !=======================================================================
+    ! Sanity checks -- exit under certain conditions
+    !=======================================================================
+
+    ! If not getting tag name then set nTags and exit
+    IF ( .NOT. isTagName ) THEN 
+       nTags = numTags
+       RETURN
+    ENDIF
+
+    ! Exit with error if index exceeds number of tags for this wildcard
+    IF ( isTagName .AND. .NOT. isN ) THEN
+       ErrMsg = 'Index must be greater than total number of tags for wildcard' &
+                // TRIM(tagId)
+       CALL HCO_Error( HcoConfig%Err, ErrMsg, RC )
+       RETURN
+    ENDIF
+
+    !=======================================================================
+    ! Get mapping index
+    !=======================================================================
+    SELECT CASE( TRIM( tagID ) )
+       CASE( 'ALL', 'ADV' )
+          D = N
+       CASE DEFAULT
+          FOUND = .FALSE.
+          ErrMsg = 'Handling of tagId ' // TRIM( tagId ) // &
+                   ' is not implemented for getting tag name'
+          CALL HCO_Error( HcoConfig%Err, ErrMsg, RC )
+          RETURN
+    END SELECT
+
+    !=======================================================================
+    ! Return the tag name
+    !=======================================================================
+    tagName = HcoConfig%ModelSpc(D)%SpcName
+
+  END SUBROUTINE Hco_GetTagInfo
 !EOC
 END MODULE HCO_Config_Mod

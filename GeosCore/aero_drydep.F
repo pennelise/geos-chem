@@ -15,15 +15,12 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE AERO_DRYDEP( am_I_Root, Input_Opt, 
-     &                        State_Met, State_Chm, RC )
+      SUBROUTINE AERO_DRYDEP( am_I_Root, Input_Opt,  State_Met,
+     &                        State_Chm, State_Diag, RC )
 !
 ! !USES:
 !
-      USE CMN_DIAG_MOD
       USE CMN_SIZE_MOD
-      USE CHEMGRID_MOD,       ONLY : ITS_IN_THE_NOCHEMGRID
-      USE DIAG_MOD,           ONLY : AD44
       USE DRYDEP_MOD,         ONLY : DEPSAV
       USE DUST_MOD,           ONLY : SETTLEDUST   
       USE ErrCode_Mod
@@ -31,13 +28,19 @@
       USE GC_GRID_MOD,        ONLY : GET_AREA_CM2
       USE Input_Opt_Mod,      ONLY : OptInput
       USE PhysConstants,      ONLY : g0
+      USE PhysConstants,      ONLY : AVO
       USE PBL_MIX_MOD,        ONLY : GET_FRAC_UNDER_PBLTOP
       USE PRECISION_MOD
       USE State_Chm_Mod,      ONLY : ChmState
       USE State_Chm_Mod,      ONLY : Ind_
+      USE State_Diag_Mod,     ONLY : DgnState
       USE State_Met_Mod,      ONLY : MetState
       USE TIME_MOD,           ONLY : GET_TS_CHEM
       USE TOMAS_MOD
+#if defined( BPCH_DIAG )
+      USE CMN_DIAG_MOD
+      USE DIAG_MOD,           ONLY : AD44
+#endif
 
       IMPLICIT NONE
 !
@@ -50,6 +53,7 @@
 ! !INPUT/OUTPUT PARAMETERS:
 !
       TYPE(ChmState), INTENT(INOUT) :: State_Chm   ! Chemistry State object
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag  ! Diagnostics State object
 !
 ! !OUTPUT PARAMETERS:
 !
@@ -80,6 +84,8 @@
 !  30 Jun 2016 - R. Yantosca - Remove instances of STT.  Now get the advected
 !                              species ID from State_Chm%Map_Advect.
 !  29 Nov 2016 - R. Yantosca - grid_mod.F90 is now gc_grid_mod.F90
+!  04 Jan 2018 - M. Sulprizio- Now accept State_Diag as an argument
+!  21 Sep 2018 - P.F. Liu    - Fix the bug in unit conversion
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -147,7 +153,7 @@
       ENDIF
 
       ! DTCHEM is the chemistry timestep in seconds
-      DTCHEM    = GET_TS_CHEM() * 60d0
+      DTCHEM    = GET_TS_CHEM()
 
       ! Get logical values from Input_Opt
       LPRT      = ( Input_Opt%LPRT .and. am_I_Root )
@@ -394,8 +400,8 @@ cdbg  print *, dryd(:)
 
       ! Dust gravitational settling 
       IF ( .not. DOSETTLING ) THEN
-         CALL SETTLEDUST( am_I_Root, Input_Opt,
-     &                    State_Met, State_Chm, RC )
+         CALL SETTLEDUST( am_I_Root, Input_Opt,  State_Met,
+     &                    State_Chm, State_Diag, RC )
       ENDIF
 
 
@@ -434,7 +440,7 @@ cdbg  print *, dryd(:)
          flux   = 0d0
 
          ! Skip non-chemsitry boxes
-         IF (ITS_IN_THE_NOCHEMGRID( I, J, L, State_Met ) ) CYCLE
+         IF ( .not. State_Met%InChemGrid(I,J,L) ) CYCLE
 
          ! Save the initial 30-bin number and icomp-1 mass component
          DO JC = 1, ICOMP-IDIAG+1
@@ -487,8 +493,8 @@ c     &           print *,'JC=',JC,'BIN=',BIN,'ID=',ID,'RKT',RKT
                ! Convert from [kg/timestep] to [molec/cm2/s] 
                ! Store in AD44
                FLUX = X0(BIN,JC) - X
-               FLUX = FLUX * State_Chm%SpcData(ID)%Info%emMW_g * 
-     &                1.e-3_fp / AREA_CM2 / DTCHEM
+               FLUX = FLUX / (State_Chm%SpcData(ID)%Info%emMW_g * 
+     &                1.e-3_fp) / AREA_CM2 / DTCHEM * AVO
 
                IF ( JC == 1 ) THEN 
                   AD44(I,J,DRYD(BIN),1) = AD44(I,J,DRYD(BIN),1)+ FLUX   
@@ -542,8 +548,8 @@ c     &           AD44(I,J,nDryDep+BIN+(JC-2)*IBINS,1)
             ! Convert from [kg/timestep] to [molec/cm2/s] 
             ! Store in AD44
             FLUX = Y0 - Y
-            FLUX = FLUX * State_Chm%SpcData(id_H2SO4)%Info%emMW_g *
-     &             1.e-3_fp / AREA_CM2 / DTCHEM
+            FLUX = FLUX / (State_Chm%SpcData(id_H2SO4)%Info%emMW_g *
+     &             1.e-3_fp) / AREA_CM2 / DTCHEM * AVO
 
             AD44(I,J,H2SO4ID,1) = AD44(I,J,H2SO4ID,1) + FLUX   
 

@@ -339,6 +339,9 @@ CONTAINS
 !  10 Apr 2015 - C. Keller   - Now create diagnostics based on entries 
 !                              in the HEMCO diagnostics definition file.
 !  06 Nov 2015 - C. Keller   - Added OutTimeStamp.
+!  01 Nov 2017 - E. Lundgren - Change default OutTimeStamp from end to start
+!                              for diagnostics collection
+!  29 Dec 2017 - C. Keller   - Added datetime tokens to file prefixes. 
 !EOP
 !-----------------------------------------------------------------------
 !BOC
@@ -373,7 +376,11 @@ CONTAINS
                      OptValChar=DiagnPrefix, FOUND=FOUND, RC=RC )
     IF ( RC /= HCO_SUCCESS ) RETURN
     IF ( .NOT. FOUND ) THEN
-       DiagnPrefix = 'HEMCO_Diagnostics'
+#if defined( MODEL_GEOS )
+       DiagnPrefix = 'HEMCO_Diagnostics.$YYYY$MM$DD$HH$MN.nc'
+#else
+       DiagnPrefix = 'HEMCO_diagnostics'
+#endif
     ENDIF
 
     ! Output time stamp location
@@ -381,7 +388,7 @@ CONTAINS
                      OptValChar=OutTimeStampChar, FOUND=FOUND, RC=RC )
     IF ( RC /= HCO_SUCCESS ) RETURN
     IF ( .NOT. FOUND ) THEN
-       OutTimeStamp = HcoDiagnEnd
+       OutTimeStamp = HcoDiagnStart
     ELSE
        CALL TRANLC( OutTimeStampChar )
        IF (     TRIM(OutTimeStampChar) == 'start' ) THEN
@@ -395,9 +402,9 @@ CONTAINS
 
        ELSE
           WRITE(MSG,*) 'Unrecognized output time stamp location: ', &
-             TRIM(OutTimeStampChar), ' - will use default (end)'
+             TRIM(OutTimeStampChar), ' - will use default (start)'
           CALL HCO_WARNING(HcoState%Config%Err,MSG,RC,THISLOC=LOC,WARNLEV=1)
-          OutTimeStamp = HcoDiagnEnd
+          OutTimeStamp = HcoDiagnStart
        ENDIF 
     ENDIF
 
@@ -429,6 +436,11 @@ CONTAINS
     deltaYMD = 99999999
     deltaHMS = 999999
 #endif
+#if defined( MODEL_GEOS )
+    DiagnPrefix = 'HEMCO_restart.$YYYY$MM$DD$HH$MN.nc'
+#else
+    DiagnPrefix = 'HEMCO_restart'
+#endif
     CALL DiagnCollection_Create( am_I_Root, HcoState%Diagn,                &
                                  NX           = HcoState%NX,               &
                                  NY           = HcoState%NY,               &
@@ -436,7 +448,7 @@ CONTAINS
                                  TS           = HcoState%TS_EMIS,          &
                                  AM2          = HcoState%Grid%AREA_M2%Val, &
                                  COL          = CollectionID,              & 
-                                 PREFIX       = 'HEMCO_restart',           &
+                                 PREFIX       = TRIM(DiagnPrefix),         &
                                  deltaYMD     = deltaYMD,                  & 
                                  deltaHMS     = deltaHMS,                  & 
                                  OutTimeStamp = HcoDiagnEnd,               & 
@@ -457,6 +469,11 @@ CONTAINS
     deltaYMD = -1
     deltaHMS = -1
 #endif
+#if defined( MODEL_GEOS )
+    DiagnPrefix = 'HEMCO_manual.$YYYY$MM$DD$HH$MN.nc'
+#else
+    DiagnPrefix = 'HEMCO_manual'
+#endif
     CALL DiagnCollection_Create( am_I_Root, HcoState%Diagn,             &
                                  NX        = HcoState%NX,               &
                                  NY        = HcoState%NY,               &
@@ -464,7 +481,7 @@ CONTAINS
                                  TS        = HcoState%TS_EMIS,          &
                                  AM2       = HcoState%Grid%AREA_M2%Val, &
                                  COL       = CollectionID,              & 
-                                 PREFIX    = 'HEMCO_manual',            &
+                                 PREFIX    = TRIM(DiagnPrefix),         &
                                  deltaYMD  = deltaYMD,                  & 
                                  deltaHMS  = deltaHMS,                  & 
                                  RC        = RC                          )

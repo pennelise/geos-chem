@@ -65,11 +65,28 @@
 !  (1) The stratospheric O3 species must be species #2.  This is due to how
 !       the Linoz stratospheric O3 chemistry scheme is written.  We have
 !       accordingly reorganized the species numbers below.
+!                                                                             .
 !  (2) The name "tagged_ox_mod.F" is historical.  The Ox species in GEOS-Chem 
 !       has now been replaced with O3.  O3 usually makes up about 95% of Ox.
 !       The nomenclature "tagged Ox" is interchangeable with "tagged O3".
 !       As of Aug 2016, most uses of "tagged Ox" have been replaced with
 !       "tagged O3".
+!                                                                             .
+!  (3) If using all of the tagged O3 species, note that that the sum of
+!       production of species #2 - #12 sums together to equal the production
+!       of species #1.  In other words:
+!                                                                             .
+!         PP(I,J,L,1) will equal SUM( PP(I,J,L,2:12) )
+!                                                                             .
+!       ALSO NOTE: The O3USA species is defined to include all of the
+!       O3 produced over the US (at all levels).  Therefore, it should
+!       be treated separately from species 2 - 12.
+!                                                                             .
+!  (4) When starting a long tagged O3 simulation, we recommend that you use
+!      a restart file where all species concentrations are set to zero.
+!      Then spin up for as many years as it takes to get into steady-state.
+!      This will ensure that the sum of tagged O3 species (#2  - #12) will 
+!      equal the total O3 species (#1).
 !
 ! !REVISION HISTORY:
 !  20 Aug 2003 - A. Fiore    - Initial version  
@@ -128,6 +145,7 @@
 
       ! Species ID flags
       INTEGER                      :: id_O3Strat
+
 !
 ! !DEFINED PARAMETERS:
 ! 
@@ -174,13 +192,14 @@
 !
 ! !USES:
 !
-      USE CHEMGRID_MOD,       ONLY : ITS_IN_THE_TROP
-      USE CMN_DIAG_MOD             ! ND44, ND65, LD65
       USE CMN_SIZE_MOD             ! Size parameters
       USE GC_GRID_MOD,        ONLY : GET_XMID,  GET_YMID
       USE PhysConstants            ! SCALE_HEIGHT
       USE State_Met_Mod,      ONLY : MetState
       USE TIME_MOD,           ONLY : GET_TS_CHEM
+#if defined( BPCH_DIAG )
+      USE CMN_DIAG_MOD             ! ND44, ND65, LD65
+#endif
 !
 ! !INPUT PARAMETERS: 
 !
@@ -241,7 +260,7 @@
       PP(I,J,L,:) = 0e+0_fp
       
       ! IS TROP is TRUE if we are in the troposphere
-      ITS_IN_TROP = ITS_IN_THE_TROP( I, J, L, State_Met )
+      ITS_IN_TROP = State_Met%InTroposphere(I,J,L)
       
       ! Skip stratospheric boxes
       IF ( .not. ITS_IN_TROP ) RETURN
@@ -284,6 +303,16 @@
 
       !=================================================================
       ! Assign P(O3) to tagged species by geographic/altitude regions
+      !
+      ! NOTE: If using all of the tagged O3 species, note that the
+      ! sum of production of species #2 - #12 sums together to equal
+      ! the production of species #1.  In other words:
+      !
+      !    PP(I,J,L,1) will equal SUM( PP(I,J,L,2:12) )
+      !
+      ! ALSO NOTE: The O3USA species is defined to include all of the
+      ! O3 produced over the US (at all levels).  Therefore, it should
+      ! be treated separately from species #2 - #12.
       !=================================================================
 
       ! Grid box volume [cm3]
@@ -291,7 +320,7 @@
 
       ! P(O3) [kg]
       ! P24H is in kg/m3 per emission time step (ckeller, 9/17/2014).
-      PPROD = P24H(I,J,L) * BOXVL * ( GET_TS_CHEM()*60e+0_fp/TS_EMIS )
+      PPROD = P24H(I,J,L) * BOXVL * ( GET_TS_CHEM()/TS_EMIS )
 
       !-----------------------
       ! #1: Total P(O3)
@@ -380,24 +409,25 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE CHEM_TAGGED_O3( am_I_Root, Input_Opt,
-     &                           State_Met, State_Chm, RC )
+      SUBROUTINE CHEM_TAGGED_O3( am_I_Root, Input_Opt,  State_Met,
+     &                           State_Chm, State_Diag, RC         )
 !
 ! !USES:
 !
-      USE CHEMGRID_MOD,       ONLY : ITS_IN_THE_TROP
-      USE CMN_DIAG_MOD
       USE CMN_SIZE_MOD
-      USE DIAG_MOD,           ONLY : AD65
       USE ErrCode_Mod
-      USE ERROR_MOD,          ONLY : ERROR_STOP
       USE ERROR_MOD,          ONLY : GEOS_CHEM_STOP
       USE HCO_EMISLIST_MOD,   ONLY : HCO_GetPtr
       USE HCO_INTERFACE_MOD,  ONLY : HcoState
       USE Input_Opt_Mod,      ONLY : OptInput
       USE State_Chm_Mod,      ONLY : ChmState
+      USE State_Diag_Mod,     ONLY : DgnState
       USE State_Met_Mod,      ONLY : MetState
       USE TIME_MOD,           ONLY : GET_TS_CHEM
+#if defined( BPCH_DIAG )
+      USE CMN_DIAG_MOD
+      USE DIAG_MOD,           ONLY : AD65
+#endif
 
       IMPLICIT NONE
 !
@@ -410,6 +440,7 @@
 ! !INPUT/OUTPUT PARAMETERS:
 !
       TYPE(ChmState), INTENT(INOUT) :: State_Chm   ! Chemistry State object
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag  ! Diagnostics State object
 !
 ! !OUTPUT PARAMETERS:
 !
@@ -457,6 +488,7 @@
 !  29 Apr 2016 - R. Yantosca - Don't initialize pointers in declaration stmts
 !  30 Jun 2016 - R. Yantosca - Remove instances of STT.  Now get the advected
 !                              species ID from State_Chm%Map_Advect.
+!  03 Nov 2017 - R. Yantosca - Now accept State_Diag as an argument
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -477,14 +509,17 @@
       REAL(fp),        POINTER :: Spc(:,:,:,:)
 
       ! Strings
-      CHARACTER(LEN=255) :: LOC = 'CHEM_TAGGED_O3 (tagged_o3_mod.F)'
+      CHARACTER(LEN=255) :: ErrMsg
+      CHARACTER(LEN=255) :: ThisLoc
 
       !=================================================================
       ! CHEM_TAGGED_O3 begins here!
       !=================================================================
 
-      ! Assume success
+      ! Initialize
       RC        =  GC_SUCCESS
+      ErrMsg    = ''
+      ThisLoc   = ' -> at CHEM_TAGGED_O3 (in GeosCore/tagged_o3_mod.F)'
 
       ! Number of advected species
       nAdvect   =  State_Chm%nAdvect
@@ -493,7 +528,12 @@
       Spc       => State_Chm%Species   ! Points to chemical species [kg]
 
       ! Chemistry timestep [s]
-      DTCHEM    =  GET_TS_CHEM() * 60e+0_fp
+      DTCHEM    =  GET_TS_CHEM()
+
+      ! Zero diagnostic archival arrays to make sure that we don't have any
+      ! leftover values from the last timestep near the top of the chemgrid
+      IF ( State_Diag%Archive_Loss ) State_Diag%Loss = 0.0_f4
+      IF ( State_Diag%Archive_Prod ) State_Diag%Prod = 0.0_f4
 
       !=================================================================
       ! Get production and loss frequencies from HEMCO. The target
@@ -507,18 +547,28 @@
       !=================================================================
       IF ( FIRST ) THEN
 
-         IF ( .NOT. ASSOCIATED(HcoState) ) 
-     &      CALL ERROR_STOP ( 'Cannot get HcoState', LOC )
+         ! Make sure the HEMCO State object has been first allocated
+         IF ( .NOT. ASSOCIATED(HcoState) ) THEN
+            ErrMsg = 'The HcoState object is not allocated!'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
 
          ! Get pointer to O3 production
-         CALL HCO_GetPtr ( am_I_Root, HcoState, 'O3_PROD', P24H, RC )
-         IF ( RC /= GC_SUCCESS ) 
-     &      CALL ERROR_STOP ( 'Cannot get pointer to O3_PROD', LOC )
+         CALL HCO_GetPtr( am_I_Root, HcoState, 'O3_PROD', P24H, RC )
+         IF ( RC /= GC_SUCCESS ) THEN
+            ErrMsg = 'Cannot get pointer to O3_PROD!'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
 
          ! Get pointer to O3 loss
-         CALL HCO_GetPtr ( am_I_Root, HcoState, 'O3_LOSS', L24H, RC )
-         IF ( RC /= GC_SUCCESS ) 
-     &      CALL ERROR_STOP ( 'Cannot get pointer to O3_LOSS', LOC )
+         CALL HCO_GetPtr( am_I_Root, HcoState, 'O3_LOSS', L24H, RC )
+         IF ( RC /= GC_SUCCESS ) THEN
+            ErrMsg = 'Cannot get pointer to O3_LOSS!'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
 
          ! Get emissions timestep (seconds)
          TS_EMIS = HcoState%TS_EMIS
@@ -577,14 +627,17 @@
             ENDIF
             
             ! L(O3) is now in [1/m3] (ckeller, 9/17/2014)
-            IF ( ITS_IN_THE_TROP( I, J, L, State_Met ) ) THEN
+            IF ( State_Met%InTroposphere(I,J,L) ) THEN
                LL = Spc(I,J,L,N) * L24H(I,J,L) * BOXVL * DT
             ELSE
                LL = 0.0e+0_fp
             ENDIF 
 
+#if defined( BPCH_DIAG )
             !===========================================================
-            ! ND65 diagnostic: Chemical prod/loss [kg/s]
+            ! ND65 (bpch) diagnostic
+            !
+            ! Chemical production and loss of tagged O3 species
             !===========================================================
             IF ( ND65 > 0 ) THEN
 
@@ -600,6 +653,29 @@
                AD65(I,J,L,nAdvect+N) = AD65(I,J,L,nAdvect+N) + PL
 
             ENDIF
+#endif
+
+#if defined( NC_DIAG )
+            !===========================================================
+            ! HISTORY (aka netCDF diagnostics)
+            !
+            ! Chemical production and loss of tagged O3 species
+            !===========================================================
+
+            ! Production of tagged O3 species [kg/s]
+            IF ( State_Diag%Archive_Prod ) THEN
+               IF ( PP(I,J,L,N) > 0e+0_fp ) THEN
+                  State_Diag%Prod(I,J,L,N) = P24H(I,J,L) 
+     &                                     * BOXVL / TS_EMIS
+               ENDIF
+            ENDIF
+
+            ! Loss of tagged O3 species [kg/s]
+            IF ( State_Diag%Archive_Loss ) THEN
+               State_Diag%Loss(I,J,L,N) = Spc(I,J,L,N) * L24H(I,J,L) 
+     &                                  * BOXVL        / TS_EMIS
+            ENDIF
+#endif
 
             !===========================================================
             ! Apply chemical P(O3) - L(O3) to each tagged species
@@ -629,24 +705,25 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE INIT_TAGGED_O3( am_I_Root, Input_Opt, State_Chm, RC )
+      SUBROUTINE INIT_TAGGED_O3( am_I_Root, Input_Opt, 
+     &                           State_Chm, State_Diag, RC )
 !
 ! !USES:
 !
       USE CMN_DIAG_MOD
       USE CMN_SIZE_MOD
       USE ErrCode_Mod
-      USE ERROR_MOD,          ONLY : ALLOC_ERR
-      USE ERROR_MOD,          ONLY : ERROR_STOP
-      USE Input_Opt_Mod,      ONLY : OptInput
-      USE State_Chm_Mod,      ONLY : ChmState
-      USE State_Chm_Mod,      ONLY : Ind_
+      USE Input_Opt_Mod,  ONLY : OptInput
+      USE State_Chm_Mod,  ONLY : ChmState
+      USE State_Chm_Mod,  ONLY : Ind_
+      USE State_Diag_Mod, ONLY : DgnState
 !
 ! !INPUT PARAMETERS:
 !
       LOGICAL,        INTENT(IN)  :: am_I_Root   ! Are we on the root CPU?
       TYPE(OptInput), INTENT(IN)  :: Input_Opt   ! Input Options object
       TYPE(ChmState), INTENT(IN)  :: State_Chm   ! Chemistry State object
+      TYPE(DgnState), INTENT(IN)  :: State_Diag  ! Diagnostics State object
 !
 ! !OUTPUT PARAMETERS:
 !
@@ -666,35 +743,42 @@
 !  20 Jun 2016 - R. Yantosca - Now define species ID's in the init phase
 !  20 Jun 2016 - R. Yantosca - Add check to prevent array OOB errors
 !  21 Jun 2016 - R. Yantosca - Rename IDTO3Strt to id_O3Strat
+!  05 Dec 2017 - R. Yantosca - Now accept State_Diag as an argument
 !EOP
 !------------------------------------------------------------------------------
 !BOC
 !
 ! !LOCAL VARIABLES:
 !
-      INTEGER :: AS
+      ! Strings
+      CHARACTER(LEN=255) :: ErrMsg, ThisLoc
 
       !=================================================================
       ! INIT_TAGGED_O3 begins here
       !=================================================================
 
       ! Assume success
-      RC = GC_SUCCESS
+      RC      = GC_SUCCESS
+      ErrMsg  = ''
+      ThisLoc = 
+     &     ' -> at Init_Tagged_O3 (in module GeosCore/tagged_o3_mod.F)'
 
       ! Define species ID flag
       id_O3Strat = Ind_('O3Strat')
 
       ! Add error check to make sure O3Strt is defined (bmy, 6/20/16)
       IF ( id_O3Strat <= 0 ) THEN
-         CALL ERROR_STOP( 'O3Strat is an undefined species!', 
-     &                    'INIT_TAGGED_O3 (tagged_o3_mod.f)' )
+         ErrMsg = 'O3Strat is an undefined species!'
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
       ENDIF
 
 
       ! Safety valve
       IF ( State_Chm%nAdvect > N_TAGGED ) THEN
-         CALL ERROR_STOP( 'nAdvected is too large for Tagged O3!', 
-     &                    'INIT_TAGGED_O3 (tagged_o3_mod.f)' )
+         ErrMsg = 'State_Chm%nAdvect is too large for Tagged O3!'
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
       ENDIF
 
       END SUBROUTINE INIT_TAGGED_O3

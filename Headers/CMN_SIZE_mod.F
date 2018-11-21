@@ -325,7 +325,11 @@
 #endif
       REAL(fpp),  PARAMETER :: PTOP       = 0.01e+0_fpp
 
+      ! This #endif below is to close (metfield,grid) choices 
+      ! that specified by many #elif statements above
 #endif
+
+      ! This #endif below is to distinguish between classic and HP
 #endif
 
       !-----------------------------------------------------------------
@@ -362,9 +366,6 @@
 #endif
       INTEGER,    PARAMETER :: NPOLY    = 20
 
-      ! LLCONVM - Max number of layers for convection
-      INTEGER               :: LLCONVM
-
       ! MAXFAM -- Max number of families for prod and loss output
       INTEGER,    PARAMETER :: MAXFAM = 40
 
@@ -373,9 +374,6 @@
       ! MAXMEM also increased from 10 to 20 by FP
       ! MAXMEM increased from 20 to 22 for bromine (jpp, mpayer, 12/28/11)
       INTEGER,    PARAMETER :: MAXMEM = 22
-
-      ! MAXPASV -- Max number of passive spcies (ewl, 7/14/17) 
-      INTEGER,    PARAMETER :: MAXPASV = 20
 
       ! MAXPL increased from 100 to 500 and moved from diag_pl_mod
       ! to here by FP (hotp 7/31/09)
@@ -388,14 +386,11 @@
       INTEGER,    PARAMETER :: NRHAER = 5
 
       ! NSTRATAER -- Number of stratospheric aerosols (SDE 04/17/13)
-#if defined( UCX )
       INTEGER,    PARAMETER :: NSTRATAER = 2
-#else
-      INTEGER,    PARAMETER :: NSTRATAER = 0
-#endif
 
       ! NAER -- number of other aerosol categories (rvm, bmy, 2/27/02)
-      INTEGER,    PARAMETER :: NAER = NRHAER + NSTRATAER
+      ! Now set in Init_CMN_SIZE below (mps, 1/3/18)
+      INTEGER               :: NAER
 
       ! NRH -- number of relative humidity bins (rvm, bmy, 2/27/02)
       INTEGER,    PARAMETER :: NRH = 5
@@ -422,6 +417,11 @@
       ! NDSTBIN -- number of dust size bins for transport (tdf, bmy, 3/31/04)
       INTEGER,    PARAMETER :: NDSTBIN   = 4
 #endif
+
+      ! NJDAY is the array that is used to determine when it is time
+      ! to end a GEOS-Chem run.  Moved this here from CMN_DIAG_mod.F,
+      ! so that we can phase that module out. (bmy, 1/16/18)
+      INTEGER               :: NJDAY(366)
 !
 ! !REMARKS:
 !  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -521,6 +521,7 @@
 !                              compatible with the FlexChem implementation
 !  16 Mar 2017 - R. Yantosca - Remove obsolete NNPAR parameter
 !  24 Aug 2017 - M. Sulprizio- Remove support for GCAP, GEOS-4, GEOS-5 and MERRA
+!  16 Jan 2018 - R. Yantosca - Moved NJDAY here from obsolete CMN_DIAG_mod.F
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -539,7 +540,7 @@
 !\\
 ! !INTERFACE:
 
-      SUBROUTINE Init_CMN_SIZE( am_I_Root,      RC,                    
+      SUBROUTINE Init_CMN_SIZE( am_I_Root,      Input_Opt,     RC,
      &                          value_I_LO,     value_J_LO,
      &                          value_I_HI,     value_J_HI,
      &                          value_IM,       value_JM,  
@@ -550,22 +551,24 @@
 ! !USES:
 !
       USE ErrCode_Mod
+      USE Input_Opt_Mod, ONLY : OptInput
 !
 ! !INPUT PARAMETERS: 
 ! 
-      LOGICAL, INTENT(IN)  :: am_I_Root        ! Are we on the root CPU?
-      INTEGER, OPTIONAL    :: value_I_LO       ! Lower lon index on this CPU
-      INTEGER, OPTIONAL    :: value_J_LO       ! Lower lat index on this CPU
-      INTEGER, OPTIONAL    :: value_I_HI       ! Upper lon index on this CPU
-      INTEGER, OPTIONAL    :: value_J_HI       ! Upper lat index on this CPU
-      INTEGER, OPTIONAL    :: value_IM         ! # of lons   on this CPU
-      INTEGER, OPTIONAL    :: value_JM         ! # of lats   on this CPU
-      INTEGER, OPTIONAL    :: value_LM         ! # of levels on this CPU
-      INTEGER, OPTIONAL    :: value_IM_WORLD   ! # of lons in the global grid
-      INTEGER, OPTIONAL    :: value_JM_WORLD   ! # of lats in the global grid
-      INTEGER, OPTIONAL    :: value_LM_WORLD   ! # of levs in the global grid
-      INTEGER, OPTIONAL    :: value_LLTROP     ! # of levs in troposphere
-      INTEGER, OPTIONAL    :: value_LLSTRAT    ! # of levs in stratosphere
+      LOGICAL,        INTENT(IN) :: am_I_Root  ! Are we on the root CPU?
+      TYPE(OptInput), INTENT(IN) :: Input_Opt  ! Input Options object
+      INTEGER,        OPTIONAL   :: value_I_LO    ! Lower lon index on this CPU
+      INTEGER,        OPTIONAL   :: value_J_LO    ! Lower lat index on this CPU
+      INTEGER,        OPTIONAL   :: value_I_HI    ! Upper lon index on this CPU
+      INTEGER,        OPTIONAL   :: value_J_HI    ! Upper lat index on this CPU
+      INTEGER,        OPTIONAL   :: value_IM      ! # of lons   on this CPU
+      INTEGER,        OPTIONAL   :: value_JM      ! # of lats   on this CPU
+      INTEGER,        OPTIONAL   :: value_LM      ! # of levels on this CPU
+      INTEGER,        OPTIONAL   :: value_IM_WORLD! # of lons in the global grid
+      INTEGER,        OPTIONAL   :: value_JM_WORLD! # of lats in the global grid
+      INTEGER,        OPTIONAL   :: value_LM_WORLD! # of levs in the global grid
+      INTEGER,        OPTIONAL   :: value_LLTROP  ! # of levs in troposphere
+      INTEGER,        OPTIONAL   :: value_LLSTRAT ! # of levs in stratosphere
 !
 ! !OUTPUT PARAMETERS:
 !
@@ -579,6 +582,8 @@
 !                              arguments to carry values from ESMF environment
 !  03 Dec 2012 - R. Yantosca - Now allocate DLON, DLAT arrays here.
 !  04 Aug 2015 - C. Keller   - Added value_LLTROP and value_LLSTRAT. 
+!  03 Jan 2018 - M. Sulprizio- Replace UCX CPP switch with Input_Opt%LUCX
+!  05 Jul 2018 - H. Lin      - Initialize DLAT to 0 (previously missing)
 !EOP
 !------------------------------------------------------------------------------
 !BOC      
@@ -642,13 +647,13 @@
          LLSTRAT = 59
       ENDIF
 
-#if defined( UCX )
-      LLCHEM     = LLSTRAT
-      LLCHEM_FIX = LLSTRAT
-#else
-      LLCHEM     = LLTROP
-      LLCHEM_FIX = LLTROP_FIX
-#endif
+      IF ( Input_Opt%LUCX ) THEN
+         LLCHEM     = LLSTRAT
+         LLCHEM_FIX = LLSTRAT
+      ELSE
+         LLCHEM     = LLTROP
+         LLCHEM_FIX = LLTROP_FIX
+      ENDIF
 
       ! For GEOS-Chem HP, the DISIZE and DJSIZE variables can just be set 
       ! to dummy variables.  These are not used in the ESMF environment.
@@ -693,13 +698,13 @@
                                     !  need to reset them here.
 #endif
 
-#if defined( UCX )
-      LLCHEM     = LLSTRAT
-      LLCHEM_FIX = LLSTRAT
-#else
-      LLCHEM     = LLTROP
-      LLCHEM_FIX = LLTROP_FIX
-#endif
+      IF ( Input_Opt%LUCX ) THEN
+         LLCHEM     = LLSTRAT
+         LLCHEM_FIX = LLSTRAT
+      ELSE
+         LLCHEM     = LLTROP
+         LLCHEM_FIX = LLTROP_FIX
+      ENDIF
 
       !=================================================================
       ! In the traditional GEOS-Chem, we use the OpenMP (or loop-level)
@@ -716,9 +721,17 @@
 
 #endif   
 
+      !=================================================================
       ! Set values for former variables declared as parameters
-      LLCONVM = LLPAR - 1
+      !=================================================================
 
+      ! Number of aerosol categories
+      IF ( Input_Opt%LUCX ) THEN
+         ! UCX-based mechanisms include stratospheric aerosols
+         NAER = NRHAER + NSTRATAER
+      ELSE
+         NAER = NRHAER
+      ENDIF
 
       !================================================================
       ! Allocate arrays here
@@ -732,7 +745,7 @@
       ! Delta-latitudes [degrees]
       ALLOCATE( DLAT( IIPAR, JJPAR, LLPAR ), STAT=RC )
       IF ( RC /= GC_SUCCESS ) RETURN
-      DLON = 0e+0_fpp
+      DLAT = 0e+0_fpp
 
       ! Return w/ success
       RC = GC_SUCCESS

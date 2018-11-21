@@ -129,7 +129,9 @@
 !                              diag_pl_mod.F and rename to H2SO4_RATE to avoid
 !                              confusion with local variables
 !  24 Aug 2017 - M. Sulprizio- Remove SGCTSCALE definitions for obsolete grids
-
+!  07 Feb 2018 - P.F. Liu    - Modified INODENS subroutione to improve
+!                              numerical stability
+!  19 Apr 2018 - P.F. Liu    - Bug fixes to avoid negative H2SO4RATE
 !******************************************************************************
 !
       USE PRECISION_MOD    ! For GEOS-Chem Precision (fp)
@@ -201,7 +203,9 @@
                 
       INTEGER :: xSOA = 1  !Switch for xSOA. If set to one, emit 100 
                              ! Tg/yr SOA correlated with anrtho CO 
-                             ! (JKodros 6/3/15)               
+                             ! (JKodros 6/3/15)
+                             ! switch to 0 for anthro-free
+                             ! runs (Pengfei Liu 4/18/2018)              
       INTEGER :: lowRH = 1 !This is to match AW more with AERONET (JKODROS 6/15)
 
       REAL(fp), ALLOCATABLE :: H2SO4_RATE(:,:,:) ! H2SO4 prod rate [kg s-1]
@@ -331,37 +335,58 @@
       CONTAINS
 
 !------------------------------------------------------------------------------
-
-      SUBROUTINE DO_TOMAS( am_I_Root, Input_Opt, 
-     &                     State_Met, State_Chm, RC )
+!                  GEOS-Chem Global Chemical Transport Model                  !
+!------------------------------------------------------------------------------
+!BOP
 !
-!******************************************************************************
-!  Subroutine DO_TOMAS is the driver subroutine that calls the appropriate
-!  aerosol microphysics and dry deposition subroutines. (win, 7/23/07)
+! !IROUTINE: do_tomas
 !
-!  NOTES: 
+! !DESCRIPTION: Subroutine DO\_TOMAS is the driver subroutine that calls the
+!  appropriate aerosol microphysics and dry deposition subroutines. (win,
+!  7/23/07)
+!\\
+!\\
+! !INTERFACE:
+!
+      SUBROUTINE DO_TOMAS( am_I_Root, Input_Opt,  State_Met,
+     &                     State_Chm, State_Diag, RC )
+!
+! !USES:
+!
+      USE ErrCode_Mod
+      USE ERROR_MOD
+      USE Input_Opt_Mod,      ONLY : OptInput
+      USE State_Chm_Mod,      ONLY : ChmState
+      USE State_Diag_Mod,     ONLY : DgnState
+      USE State_Met_Mod,      ONLY : MetState
+!
+! !INPUT PARAMETERS:
+!
+      LOGICAL,        INTENT(IN)    :: am_I_Root   ! Are we on the root CPU?
+      TYPE(OptInput), INTENT(IN)    :: Input_Opt   ! Input Options object
+      TYPE(MetState), INTENT(IN)    :: State_Met   ! Meteorology State object
+!
+! !INPUT/OUTPUT PARAMETERS:
+!
+      TYPE(ChmState), INTENT(INOUT) :: State_Chm   ! Chemistry State object
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag  ! Diagnostics State object
+!
+! !OUTPUT PARAMETERS:
+!
+      INTEGER,        INTENT(OUT)   :: RC          ! Success or failure?
+! 
+! !REVISION HISTORY:
 !  26 Apr 2013 - R. Yantosca - Remove LTOMAS flag, that is now obsolete.
 !  31 May 2013 - R. Yantosca - Now pass State_Chm object via the arg list
 !  31 May 2013 - R. Yantosca - Remove LDRYD; replace w/ Input_Opt%LDRYD
 !  31 May 2013 - R. Yantosca - Pass State_Chm to AEROPHYS, AERO_DRYDEP
 !  30 Jun 2016 - R. Yantosca - Remove instances of STT.  Now get the advected
 !                              species ID from State_Chm%Map_Advect.
-!******************************************************************************
-!
-      ! References to F90 modules
-      USE ErrCode_Mod
-      USE ERROR_MOD
-      USE Input_Opt_Mod,      ONLY : OptInput
-      USE State_Chm_Mod,      ONLY : ChmState
-      USE State_Met_Mod,      ONLY : MetState
-
-      ! Arguments
-      LOGICAL,        INTENT(IN)    :: am_I_Root   ! Are we on the root CPU?
-      TYPE(OptInput), INTENT(IN)    :: Input_Opt   ! Input Options object
-      TYPE(MetState), INTENT(IN)    :: State_Met   ! Meteorology State object
-      TYPE(ChmState), INTENT(INOUT) :: State_Chm   ! Chemistry State object
-      INTEGER,        INTENT(OUT)   :: RC          ! Success or failure?
-
+!  04 Jan 2018 - M. Sulprizio- Now accept State_Diag as an argument; Add ProTeX
+!                              headers
+!EOP
+!------------------------------------------------------------------------------
+!BOC
 !
 ! !LOCAL VARIABLES:
 !
@@ -398,8 +423,8 @@
 
       ! Do dry deposition
       IF ( Input_Opt%LDRYD ) THEN
-         CALL AERO_DRYDEP
-     &        ( am_I_Root, Input_Opt, State_Met, State_Chm,RC )
+         CALL AERO_DRYDEP( am_I_Root, Input_Opt,  State_Met,
+     &                     State_Chm, State_Diag, RC )
       ENDIF
 
 ! not in kg
@@ -412,7 +437,7 @@
      &              'Before exiting DO_TOMAS', RC )
 
       END SUBROUTINE DO_TOMAS
-
+!EOC
 !------------------------------------------------------------------------------
 
       SUBROUTINE AEROPHYS( am_I_Root, Input_Opt, 
@@ -448,10 +473,11 @@
 !******************************************************************************
 !
       ! References to F90 modules
-      USE CHEMGRID_MOD,       ONLY : ITS_IN_THE_NOCHEMGRID
-      USE CMN_DIAG_MOD             ! ND60, ND61,  LD61
       USE CMN_SIZE_MOD             ! Size parameters
+#if defined( BPCH_DIAG )
+      USE CMN_DIAG_MOD             ! ND60, ND61,  LD61
       USE DIAG_MOD,           ONLY : AD61,  AD61_INST
+#endif
       USE ErrCode_Mod
       USE ERROR_MOD
       USE Input_Opt_Mod,      ONLY : OptInput
@@ -642,12 +668,14 @@
       DO J = 1, JJPAR
       DO L = 1, LLPAR
 
+#if defined( BPCH_DIAG )
          ! Reset the AD61_INST array used for tracking instantaneous 
          ! certain rates.  As of now, tracking nucleation (win, 10/7/08)
          AD61_INST(I,J,L,:) = 0e0
+#endif
 
          ! Skip non-chemgrid boxes
-         IF ( ITS_IN_THE_NOCHEMGRID( I, J, L, State_Met ) ) CYCLE
+         IF ( .not. State_Met%InChemGrid(I,J,L) ) CYCLE
 
 !vbn         write(890,89)I,J,L,Spc(i,j,l,id_H2SO4)
 
@@ -736,12 +764,16 @@
          !GC(SRTSO4) = Spc(I,J,L,id_H2SO4)
 
          H2SO4rate_o = H2SO4_RATE(I,J,L)  ! [kg s-1]
-
-!         if (printdebug) then
-!          IF ( I == iob .and. J == job .and. L == lob ) THEN
-!             Print*, 'Debug TOMAS: H2SO4RATE =', H2SO4rate_o
-!          ENDIF
-!         ENDIF
+         ! Pengfei Liu add 2018/04/18, debug
+         IF ( H2SO4rate_o .lt. 0.e0 ) THEN
+            Print*, 'Debug TOMAS: H2SO4RATE = ', H2SO4rate_o, 'I = ', I,
+     &    'J = ', J, 'L = ', L
+            H2SO4rate_o = 0.e+0_fp
+         ENDIF
+         ! 
+         IF ( I == 10 .and. J == 10 .and. L == 10 ) THEN
+            Print*, 'Debug TOMAS: H2SO4RATE =', H2SO4rate_o
+         ENDIF
 
                                 ! nitrogen and sulfur mass checks
                                 ! get the total mass of N
@@ -786,9 +818,11 @@
          ENDIF
 
          MPNUM = 5    
+#if defined( BPCH_DIAG )
          IF ( ND60 > 0 ) THEN
             CALL AERODIAG( MPNUM, I, J, L, Nk, Nkd, Mk, Mkd, BOXVOL )
          ENDIF
+#endif
 
 !         IF ( printdebug.and.i==iob .and. j==job .and. l==lob ) THEN
 !            CALL DEBUGPRINT( Nk, Mk, I, J, L,
@@ -887,14 +921,18 @@
             ENDDO
 
             MPNUM = 3
+#if defined( BPCH_DIAG )
             IF ( ND60 > 0 ) THEN
                CALL AERODIAG( MPNUM, I, J, L, Nk, Nkd, Mk, Mkd, BOXVOL )
             ENDIF
+#endif
 
             MPNUM = 7
+#if defined( BPCH_DIAG )
             IF ( ND61 > 0 )  THEN
                CALL AERODIAG( MPNUM, I, J, L, Nk, Nkd, Mk, Mkd, BOXVOL )
             ENDIF
+#endif
 
             IF ( printdebug.and.i==iob .and. j==job .and. l==lob )  THEN
                CALL DEBUGPRINT( Nk, Mk, I, J, L,'After nucleation' )
@@ -911,9 +949,11 @@
             Gc(srtso4)=Gcout(srtso4)
 
             MPNUM = 1
+#if defined( BPCH_DIAG )
             IF ( ND60 > 0 ) THEN
                CALL AERODIAG( MPNUM, I, J, L, Nk, Nkd, Mk, Mkd, BOXVOL )
             ENDIF
+#endif
 
             IF ( printdebug.and.i==iob .and. j==job .and. l==lob ) THEN
                CALL DEBUGPRINT( Nk, Mk, I, J, L,'After condensation' )
@@ -923,6 +963,7 @@
             nucrate1(j,l)=nucrate1(j,l)+fn1
             
             ! Write nucleation rate to diagnostric ND61 (win, 10/6/08)
+#if defined( BPCH_DIAG )
             IF ( ND61 > 0 ) THEN
                IF ( L <= LD61 ) 
      &              AD61(I,J,L,2) = AD61(I,J,L,2) + fn
@@ -931,6 +972,7 @@
                AD61_INST(I,J,L,2) = fn
                
             ENDIF
+#endif
                
 
             DO N = 1, IBINS
@@ -972,9 +1014,11 @@
          ENDIF
 
          MPNUM = 5    
+#if defined( BPCH_DIAG )
          IF ( ND60 > 0 ) THEN
             CALL AERODIAG( MPNUM, I, J, L, Nk, Nkd, Mk, Mkd, BOXVOL )
          ENDIF
+#endif
 
          !-----------------------------
          ! Coagulation 
@@ -996,9 +1040,11 @@
 !     &       CALL DEBUGPRINT( Nk, Mk, I, J, L,'After coagulation' )
 
             MPNUM = 2
+#if defined( BPCH_DIAG )
             IF ( ND60 > 0 ) THEN 
                CALL AERODIAG( MPNUM, I, J, L, Nk, Nkd, Mk, Mkd, BOXVOL )
             ENDIF
+#endif
 
          !Fix any inconsistency after coagulation (win, 4/18/06)
          CALL STORENM(Nk, Nkd, Mk, Mkd, Gc, Gcd) 
@@ -1021,9 +1067,11 @@
             ENDIF
 
             MPNUM = 5
+#if defined( BPCH_DIAG )
             IF ( ND60 > 0 ) THEN
                CALL AERODIAG( MPNUM, I, J, L, Nk, Nkd, Mk, Mkd, BOXVOL )
             ENDIF
+#endif
          ENDIF  ! Coagulation
 
 
@@ -1061,9 +1109,11 @@
 
          ! Accumulate changes by mnfix to diagnostic (win, 9/8/05)
          MPNUM = 5
+#if defined( BPCH_DIAG )
          IF ( ND60 > 0 ) THEN
             CALL AERODIAG( MPNUM, I, J, L, Nk, Nkd, Mk, Mkd, BOXVOL )
          ENDIF
+#endif
 
          ! Swap Nk, Mk, and Gc arrays back to Spc
          DO N = 1, IBINS
@@ -2847,9 +2897,9 @@
       fn1 = 0.e+0_fp
       rnuc = 0.e+0_fp
       gtime = 0.e+0_fp
-
-!     if requirements for nucleation are met, call nucleation subroutines
-!     and get the nucleation rate and critical cluster size
+      nuc_bin = 1 ! added by Pengfei Liu,initialize  nuc_bin value
+C     if requirements for nucleation are met, call nucleation subroutines
+C     and get the nucleation rate and critical cluster size
       if (h2so4.gt.1.e+4_fp) then
          if (nh3ppt.gt.0.1.and.tern_nuc.eq.1) then
             call napa_nucl(TEMPTMS,RHTOMAS,h2so4,nh3ppt,fn,rnuc) !ternary nuc
@@ -3531,9 +3581,10 @@
 !*****************************************************************************
 !
       ! References to F90 modules
+#if defined( BPCH_DIAG )
       USE CMN_DIAG_MOD             ! ND60
+#endif
       USE CMN_SIZE_MOD             ! Size parameters
-      USE CHEMGRID_MOD,       ONLY : ITS_IN_THE_NOCHEMGRID
       USE ErrCode_Mod
       USE ERROR_MOD
       USE Input_Opt_Mod,      ONLY : OptInput          
@@ -3653,8 +3704,10 @@
      &                   'Beginning AQOXID after MNFIX' )
       ENDIF
       MPNUM = 5
+#if defined( BPCH_DIAG )
       IF ( ND60 > 0 ) 
      &      CALL AERODIAG( MPNUM, I, J, L, Nk, Nkd, Mk, Mkd, BOXVOL )
+#endif
          CALL STORENM(Nk, Nkd, Mk, Mkd, Gc, Gcd) 
 
 !debug      IF ( I == 46 .AND. J == 59 .AND. L == 9) 
@@ -3697,7 +3750,7 @@
 !     &              MK(K,SRTSO4),MK(K,SRTH2O)
 !            ENDDO
             IF ( MOXID > 5e+0_fp .and.
-     &           ITS_IN_THE_NOCHEMGRID( I, J, L, State_Met ) ) THEN
+     &           ( .not. State_Met%InChemGrid(I,J,L) ) ) THEN
                CALL ERROR_STOP( 'Too few number for condensing mass',
      &                          'AQOXID:1'                           )
             ELSE
@@ -3784,8 +3837,10 @@
 
       ! Save changes to diagnostic
       MPNUM = 4
+#if defined( BPCH_DIAG )
       IF ( ND60 > 0 ) 
      &      CALL AERODIAG( MPNUM, I, J, L, Nk, Nkd, Mk, Mkd, BOXVOL )
+#endif
 
       ! Fix any inconsistencies in M/N distribution 
       CALL STORENM(Nk, Nkd, Mk, Mkd, Gc, Gcd) 
@@ -3799,8 +3854,10 @@
      &                   'End of AQOXID after MNFIX' )
       ENDIF
       MPNUM = 5
+#if defined( BPCH_DIAG )
       IF ( ND60 > 0 ) 
      &      CALL AERODIAG( MPNUM, I, J, L, Nk, Nkd, Mk, Mkd, BOXVOL )
+#endif
 
       ! Swap Nk and Mk arrays back to Spc 
       DO K = 1, IBINS
@@ -3861,7 +3918,9 @@
 !******************************************************************************
 !
       ! Reference to F90 modules
+#if defined( BPCH_DIAG )
       USE CMN_DIAG_MOD
+#endif
       USE CMN_SIZE_MOD
       USE ErrCode_Mod
       USE ERROR_MOD
@@ -4085,8 +4144,10 @@
 
       ! Save changes to diagnostic
       MPNUM = 6
+#if defined( BPCH_DIAG )
       IF ( ND60 > 0 ) 
      &      CALL AERODIAG( MPNUM, I, J, L, Nk, Nkd, Mk, Mkd, BOXVOL )
+#endif
 
 
       ! Fix any inconsistencies in M/N distribution
@@ -5980,11 +6041,13 @@
 !*****************************************************************************
 !
       ! References to F90 modules
-      USE CMN_DIAG_MOD      ! ND60
       USE CMN_SIZE_MOD      ! Size parameters
+#if defined( BPCH_DIAG )
+      USE CMN_DIAG_MOD      ! ND60
       USE DIAG_MOD,    ONLY :  AD60_COND, AD60_COAG, AD60_NUCL
       USE DIAG_MOD,    ONLY :  AD60_AQOX, AD60_ERROR, AD60_SOA
       USE DIAG_MOD,    ONLY :  AD61,      AD61_INST  
+#endif
       USE ERROR_MOD,   ONLY :  IT_IS_NAN
       USE TIME_MOD,    ONLY : GET_TS_CHEM
 
@@ -6008,6 +6071,7 @@
       !=================================================================
       ! AERODIAG begins here!
       !=================================================================
+#if defined( BPCH_DIAG )
 
       ! PTYPE = 7 is for ND61  --- NOW use for Nucleation at species NK1 
       !  Note: This is created to look at 3-D rate for a selected process
@@ -6016,7 +6080,7 @@
       !        in all (I,J,L), thus this is created. (win, 5/21/08)
       IF ( PTYPE == 7 ) THEN 
          IF ( L <= LD61 ) THEN
-            DTCHEM = GET_TS_CHEM() * 60e+0_fp   ! chemistry time step in sec
+            DTCHEM = GET_TS_CHEM() ! chemistry time step in sec
             AD61(I,J,L,1) = AD61(I,J,L,1)  + 
      &           ( NK(1) - NKD(1) )/ DTCHEM / BOXVOL  ! no./cm3/sec
             AD61_INST(I,J,L,1) =  ( NK(1) - NKD(1) ) /DTCHEM / BOXVOL ! no./cm3/sec
@@ -6157,6 +6221,8 @@
       ENDIF
 
       ENDIF ! If (PTYPE == 7)
+
+#endif
 
       ! Return to calling subroutine
       END SUBROUTINE AERODIAG
@@ -7182,7 +7248,9 @@
 !
       ! References to F90 modules
       USE CMN_SIZE_MOD             ! Size parameters
+#if defined( BPCH_DIAG )
       USE CMN_DIAG_MOD             ! ND60
+#endif
       USE ErrCode_Mod
       USE ERROR_MOD
       USE Input_Opt_Mod,      ONLY : OptInput
@@ -7323,9 +7391,10 @@
          
          ! Save the error fixing to diagnostic AERO-FIX
          MPNUM = 5
+#if defined( BPCH_DIAG )
          IF ( ND60 > 0 )
      &      CALL AERODIAG( MPNUM, I, J, L, Nk, Nkd, Mk, Mkd, BOXVOL )
-         
+#endif       
 
          ! Swap Nk and Mk arrays back to Spc 
          DO K = 1, IBINS
@@ -8463,15 +8532,25 @@
 !      nh4temp=mnh4
 !      h2otemp=mh2o
 !      nacltemp=mnacl
+
+! [Pengfei Liu, avoid equality test with floating-point real numbers
       
       !<step4.7> if the aerosol mass is zero - then just return the 
       !typical density = 1500 kg/m3 (win, 1/4/06)
-      if (mso4 .eq. 0.e+0_fp .and. mno3 .eq.0.e+0_fp 
-     &     .and. mnh4.eq.0.e+0_fp 
-     &     .and. mnacl .eq. 0.e+0_fp ) then
-         VALUE = 1500.e+0_fp !kg/m3
-         goto 10
+!      if (mso4 .eq. 0.e+0_fp .and. mno3 .eq.0.e+0_fp 
+!     &     .and. mnh4.eq.0.e+0_fp 
+!     &     .and. mnacl .eq. 0.e+0_fp ) then
+!         VALUE = 1500.e+0_fp !kg/m3
+!         goto 10
+!      endif
+
+      if ((mso4+mno3+mnh4+mnacl) .gt. 0.e+0_fp) then
+        CONTINUE
+      else
+        VALUE = 1500.e+0_fp !kg/m3
+        RETURN
       endif
+! Pengfei Liu, 2018/02/07]
 
 ! Calculate mole fractions
       mtot = mso4+mno3+mnh4+mnacl+mh2o
@@ -8548,16 +8627,41 @@
       xnacl=nnacl*mwnacl/mtot*100.e+0_fp
       xtot=xan+xs0+xs1+xs2+xnacl
 
+! [Pengfei Liu, fix the polynomial issue
+
       !Calculate binary mixture densities (Tang, eqn 9)
-      dan=0.9971e+0_fp +4.05e-3_fp*xtot +9.0e-6_fp*xtot**2.e+0_fp
-      ds0=0.9971e+0_fp +7.367e-3_fp*xtot -4.934d-5*xtot**2.e+0_fp 
-     &     +1.754e-6_fp*xtot**3.e+0_fp - 1.104d-8*xtot**4.e+0_fp
-      ds1=0.9971e+0_fp +5.87e-3_fp*xtot -1.89e-6_fp*xtot**2.e+0_fp 
-     &     +1.763e-7_fp*xtot**3.e+0_fp
-      ds2=0.9971e+0_fp +5.92e-3_fp*xtot -5.036e-6_fp*xtot**2.e+0_fp 
-     &     +1.024d-8*xtot**3.e+0_fp
-      dss=0.9971e+0_fp +7.41e-3_fp*xtot -3.741d-5*xtot**2.e+0_fp 
-     &     +2.252e-6_fp*xtot**3.e+0_fp   -2.06d-8*xtot**4.e+0_fp
+!      dan=0.9971e+0_fp +4.05e-3_fp*xtot +9.0e-6_fp*xtot**2.e+0_fp
+!      ds0=0.9971e+0_fp +7.367e-3_fp*xtot -4.934d-5*xtot**2.e+0_fp 
+!     &     +1.754e-6_fp*xtot**3.e+0_fp - 1.104d-8*xtot**4.e+0_fp
+!      ds1=0.9971e+0_fp +5.87e-3_fp*xtot -1.89e-6_fp*xtot**2.e+0_fp 
+!     &     +1.763e-7_fp*xtot**3.e+0_fp
+!      ds2=0.9971e+0_fp +5.92e-3_fp*xtot -5.036e-6_fp*xtot**2.e+0_fp 
+!     &     +1.024d-8*xtot**3.e+0_fp
+!      dss=0.9971e+0_fp +7.41e-3_fp*xtot -3.741d-5*xtot**2.e+0_fp 
+!     &     +2.252e-6_fp*xtot**3.e+0_fp   -2.06d-8*xtot**4.e+0_fp
+
+      dan=0.9971e+0_fp + xtot * (4.05e-3_fp + 9.0e-6_fp * xtot)
+      ds0=0.9971e+0_fp 
+     &   +xtot*(7.367e-3_fp
+     &   +xtot*(-4.934d-5
+     &   +xtot*(1.754e-6_fp
+     &   +xtot*(-1.104d-8  ))))
+      ds1=0.9971e+0_fp 
+     &   +xtot*(5.87e-3_fp 
+     &   +xtot*(-1.89e-6_fp
+     &   +xtot*(1.763e-7_fp )))
+      ds2=0.9971e+0_fp 
+     &   +xtot*(5.92e-3_fp
+     &   +xtot*(-5.036e-6_fp
+     &   +xtot*(1.024d-8    )))
+
+      dss=0.9971e+0_fp 
+     &   +xtot*(7.41e-3_fp
+     &   +xtot*(-3.741d-5
+     &   +xtot*(2.252e-6_fp
+     &   +xtot*(-2.06d-8     ))))
+
+! Pengfei Liu, 2018/02/07]
 
       !Convert x's (weight percent of solutes) to fraction of dry solute (scale to 1)
       xtot=xan+xs0+xs1+xs2+xnacl
@@ -8568,7 +8672,7 @@
       xnacl=xnacl/xtot
 
       !Calculate mixture density
-      d=1./(xan/dan+xs0/ds0+xs1/ds1+xs2/ds2+xnacl/dss)  !Tang, eq. 10
+      d=1.e+0_fp/(xan/dan+xs0/ds0+xs1/ds1+xs2/ds2+xnacl/dss)  !Tang, eq. 10
 
       if ((d .gt. 2.e+0_fp) .or. (d .lt. 0.997e+0_fp)) then
          write(*,*) 'ERROR in aerodens'
@@ -8727,7 +8831,9 @@
 !                              derived type object
 !*****************************************************************************
 
+#if defined( BPCH_DIAG )
       USE CMN_DIAG_MOD             ! ND60
+#endif
       USE CMN_SIZE_MOD             ! Size parameters
       USE ErrCode_Mod
       USE ERROR_MOD

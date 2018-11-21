@@ -20,12 +20,6 @@
       IMPLICIT NONE
       PRIVATE
 !
-! !PUBLIC DATA MEMBERS:
-!
-      ! Save H2O2 and SO2 [v/v] for sulfate chemistry
-      REAL(fp), PUBLIC, ALLOCATABLE, TARGET :: H2O2s(:,:,:)
-      REAL(fp), PUBLIC, ALLOCATABLE, TARGET :: SO2s(:,:,:)
-!
 ! !PUBLIC MEMBER FUNCTIONS:
 !
       PUBLIC  :: CLEANUP_WETSCAV
@@ -172,6 +166,9 @@
 !  24 Aug 2017 - M. Sulprizio- Remove support for GCAP, GEOS-4, GEOS-5 and MERRA
 !                              and rename routine WETDEP_MERRA to WETDEP (the
 !                              old WETDEP routine for GEOS-5 met was removed)
+!  13 Nov 2017 - R. Yantosca - Added arrays for State_Diag diagnostics
+!  11 Oct 2018 - M. Sulprizio- Move H2O2s and SO2s to State_Chm and rename as
+!                              H2O2AfterChem and SO2AfterChem
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -235,22 +232,27 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE DO_WETDEP( am_I_Root, Input_Opt,
-     &                      State_Met, State_Chm, RC )
+      SUBROUTINE DO_WETDEP( am_I_Root, Input_Opt,  State_Met,
+     &                      State_Chm, State_Diag, RC         )
 !
 ! !USES:
 !
       USE CMN_SIZE_MOD
+#if defined( NC_DIAG )
+      USE Diagnostics_Mod, ONLY : Compute_Budget_Diagnostics
+      USE Diagnostics_Mod, ONLY : Compute_Column_Mass
+#endif
       USE ErrCode_Mod
-      USE ERROR_MOD 
-      USE Input_Opt_Mod,      ONLY : OptInput
+      USE Error_Mod,       ONLY : Debug_MSG
+      USE Input_Opt_Mod,   ONLY : OptInput
       USE PhysConstants
-      USE State_Chm_Mod,      ONLY : ChmState
-      USE State_Met_Mod,      ONLY : MetState
+      USE State_Chm_Mod,   ONLY : ChmState
+      USE State_Diag_Mod,  ONLY : DgnState
+      USE State_Met_Mod,   ONLY : MetState
 #if defined( USE_TEND )
       USE TENDENCIES_MOD
 #endif
-      USE TIME_MOD,           ONLY : GET_TS_DYN
+      USE TIME_MOD,       ONLY : GET_TS_DYN
       USE UnitConv_Mod
 !
 ! !INPUT PARAMETERS:
@@ -262,6 +264,7 @@
 ! !INPUT/OUTPUT PARAMETERS:
 !
       TYPE(ChmState), INTENT(INOUT) :: State_Chm   ! Chemistry State object
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag  ! Diagnostics State object
 !
 ! !OUTPUT PARAMETERS:
 !
@@ -283,22 +286,35 @@
 !  12 Aug 2015 - R. Yantosca - Add support for MERRA2 meteorology
 !  29 Apr 2016 - R. Yantosca - Don't initialize pointers in declaration stmts
 !  19 Jul 2016 - R. Yantosca - Now bracket tendency calls with #ifdef USE_TEND
+!  09 Nov 2017 - R. Yantosca - Now accept State_Diag as an argument
+!  09 Nov 2017 - R. Yantosca - Return error condition to calling program
+!  27 Aug 2018 - E. Lundgren - Implement budget diagnostics
 !EOP
 !------------------------------------------------------------------------------
 !BOC
 !
 ! !LOCAL VARIABLES:
 !
-      ! For fields from Input_Opt
-      LOGICAL  :: doPrt
-      REAL(fp) :: DT_TEND
+      ! Scalars
+      LOGICAL                 :: doPrt
+      INTEGER                 :: I, J, L
+      REAL(fp)                :: DT_TEND
+
+      ! Strings
+      CHARACTER(LEN=255)      :: ErrMsg, ThisLoc
+
+#if defined( NC_DIAG )
+      REAL(fp)                :: DT_Dyn
+#endif
 
       !=================================================================
       ! Initialize
       !=================================================================
 
-      ! Assume success
-      RC                =  GC_SUCCESS
+      ! Initialize
+      RC      = GC_SUCCESS
+      ErrMsg  = ''
+      ThisLoc = ' -> at Do_WetDep (in module GeosCore/wetscav_mod.F)'
 
       ! Copy values from Input_Opt to module shadow variables
       LPRT              = Input_Opt%LPRT
@@ -311,25 +327,99 @@
       ! Only print output on the root CPU
       doPrt = ( LPRT .and. am_I_Root )
 
+#if defined( NC_DIAG )
+      !----------------------------------------------------------
+      ! Wet deposition budget diagnostics - Part 1 of 2
+      !----------------------------------------------------------
+      IF ( State_Diag%Archive_BudgetWetDep ) THEN
+         ! Get initial column masses
+         CALL Compute_Column_Mass( am_I_Root, 
+     &                             Input_Opt, State_Met, State_Chm, 
+     &                             State_Chm%Map_WetDep,        
+     &                             State_Diag%Archive_BudgetWetDepFull, 
+     &                             State_Diag%Archive_BudgetWetDepTrop, 
+     &                             State_Diag%Archive_BudgetWetDepPBL,  
+     &                             State_Diag%BudgetMass1, 
+     &                             RC )
+      ENDIF
+#endif
+
 #if defined( USE_TEND )
       !=================================================================
       ! Archive species concentrations for tendencies (ckeller,7/15/2015)
       !=================================================================
       CALL TEND_STAGE1( am_I_Root, Input_Opt, State_Met, 
-     &                  State_Chm, 'WETD', RC )
+     &                  State_Chm, 'WETD',    RC         )
+
+      ! Trap potential errors
+      IF ( RC /= GC_SUCCESS ) THEN
+         ErrMsg = 'Error encountered in "TEND_STAGE1"!'
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
 #endif
 
       !=================================================================
       ! Only do wet deposition for large-scale + anvil precip
       !=================================================================
 
+#if defined( NC_DIAG )
+      !------------------------------------------
+      ! Zero diagnostic arrays in State_Diag
+      ! at the start of a new wetdep cycle
+      !
+      ! *FracLs diagnostics might need work...
+      !------------------------------------------
+      IF ( State_Diag%Archive_PrecipFracLS ) 
+     &                              State_Diag%PrecipFracLS = 0.0_f4
+      IF ( State_Diag%Archive_RainFracLS   ) 
+     &                              State_Diag%RainFracLS   = 0.0_f4
+      IF ( State_Diag%Archive_WashFracLS   ) 
+     &                              State_Diag%WashFracLS   = 0.0_f4
+      IF ( State_Diag%Archive_WetLossLS    ) 
+     &                              State_Diag%WetLossLS    = 0.0_f4
+#endif
+
+
+      !------------------------------------------
       ! Create precip fields
-      CALL MAKE_QQ( State_Met, LS=.TRUE. )
+      ! (Always assume large-scale precip)
+      !------------------------------------------
+      CALL MAKE_QQ( am_I_Root = am_I_Root,
+     &              State_Met = State_Met,
+     &              LS        =.TRUE.,
+     &              RC        = RC         )
+
+       ! Trap potential errors
+      IF ( RC /= GC_SUCCESS ) THEN
+         ErrMsg = 'Error encountered in "Make_QQ"!'
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+
+      ! Debug print
       IF ( doPrt ) CALL DEBUG_MSG( '### DO_WETDEP: before LS wetdep' )
 
+      !-----------------------------------------
       ! Do wet deposition
-      CALL WETDEP( am_I_Root, Input_Opt, State_Met, 
-     &             State_Chm, RC, LS=.TRUE. )
+      ! (Always assume large-scale precip)
+      !-----------------------------------------
+      CALL WETDEP( am_I_Root  = am_I_Root,
+     &             Input_Opt  = Input_Opt, 
+     &             State_Met  = State_Met,
+     &             State_Chm  = State_Chm,
+     &             State_Diag = State_Diag,
+     &             LS         = .TRUE.,
+     &             RC         = RC          )
+
+      ! Trap potential errors
+      IF ( RC /= GC_SUCCESS ) THEN
+         ErrMsg = 'Error encountered in "Wetdep"!'
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+
+      ! Debug print
       IF ( doPrt ) CALL DEBUG_MSG( '### DO_WETDEP: after LS wetdep' )
 
 #if defined( USE_TEND )
@@ -337,9 +427,51 @@
       ! Calculate tendencies and write to diagnostics 
       ! (ckeller,7/15/2015)
       !=================================================================
-      DT_TEND = GET_TS_DYN() * 60.0_fp
+      DT_TEND = GET_TS_DYN()
       CALL TEND_STAGE2( am_I_Root, Input_Opt, State_Met, 
-     &                  State_Chm, 'WETD', DT_TEND, RC )
+     &                  State_Chm, 'WETD',    DT_TEND,   RC )
+
+      ! Trap potential errors
+      IF ( RC /= GC_SUCCESS ) THEN
+         ErrMsg = 'Error encountered in "TEND_STAGE1"!'
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+#endif
+
+#if defined( NC_DIAG )
+      !----------------------------------------------------------
+      ! Wet deposition budget diagnostics - Part 2 of 2
+      !----------------------------------------------------------
+      IF ( State_Diag%Archive_BudgetWetDep ) THEN
+         ! Get final masses and compute diagnostics
+         CALL Compute_Column_Mass( am_I_Root, 
+     &                          Input_Opt, State_Met, State_Chm, 
+     &                          State_Chm%Map_WetDep,        
+     &                          State_Diag%Archive_BudgetWetDepFull, 
+     &                          State_Diag%Archive_BudgetWetDepTrop, 
+     &                          State_Diag%Archive_BudgetWetDepPBL,  
+     &                          State_Diag%BudgetMass2, 
+     &                          RC ) 
+         DT_Dyn = Get_Ts_Dyn()
+         CALL Compute_Budget_Diagnostics( am_I_Root, 
+     &                          State_Chm%Map_WetDep,
+     &                          DT_Dyn,                                
+     &                          State_Diag%Archive_BudgetWetDepFull, 
+     &                          State_Diag%Archive_BudgetWetDepTrop, 
+     &                          State_Diag%Archive_BudgetWetDepPBL,  
+     &                          State_Diag%BudgetWetDepFull,         
+     &                          State_Diag%BudgetWetDepTrop,         
+     &                          State_Diag%BudgetWetDepPBL,          
+     &                          State_Diag%BudgetMass1,          
+     &                          State_Diag%BudgetMass2,          
+     &                          RC )
+         IF ( RC /= GC_SUCCESS ) THEN
+            ErrMsg = 'Wetdep budget diagnostics error 2'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
+      ENDIF
 #endif
 
       END SUBROUTINE DO_WETDEP
@@ -357,19 +489,24 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE MAKE_QQ( State_Met, LS )
+      SUBROUTINE MAKE_QQ( am_I_Root, State_Met, LS, RC )
 !
 ! !USES:
 !
-      USE CMN_SIZE_MOD
-      USE ERROR_MOD,          ONLY : ALLOC_ERR
-      USE State_Met_Mod,      ONLY : MetState
+      USE CMN_SIZE_mod
+      USE ErrCode_Mod
+      USE State_Met_Mod, ONLY : MetState
 !
 ! !INPUT PARAMETERS: 
 !
-      LOGICAL,        INTENT(IN) :: LS         ! =T, denotes large scale precip
+      LOGICAL,        INTENT(IN)  :: am_I_Root ! Are we on the root CPU
+      TYPE(MetState), INTENT(IN)  :: State_Met ! Meteorology State object
+      LOGICAL,        INTENT(IN)  :: LS        ! =T, denotes large scale precip
                                                ! =F, denotes convective precip
-      TYPE(MetState), INTENT(IN) :: State_Met  ! Meteorology State object
+!
+! !OUTPUT PARAMETERS:
+!
+      INTEGER,        INTENT(OUT) :: RC        ! Success or failure
 ! 
 ! !REMARKS:
 !  Construct QQ and PDOWN directly from met fields.
@@ -408,6 +545,11 @@
 !                                                                             .
 !  = [ (PFILSAN/1000) * 100 ] + [ (PFILSAN/1000) * 100]
 !
+!
+! !REMARKS:
+!  The PFILSAN and PFLLSAN fields are defined on level edges.
+!  Therefore, we must use L+1 to index them.
+!
 ! !REVISION HISTORY: 
 !  29 Feb 2000 - H. Liu, R. Yantosca - Initial version
 !  (1 ) Now we partition MOISTQ into large-scale and convective parts, using
@@ -442,77 +584,46 @@
 !                              since AIRDEN is now dry air density and MAIRDEN
 !                              is moist air density, needed for use with MOISTQ
 !  12 Aug 2015 - R. Yantosca - Add support for MERRA2 meteorology
+!  09 Nov 2017 - R. Yantosca - Move allocations to INIT_WETSCAV
 !EOP
 !------------------------------------------------------------------------------
 !BOC
 !
 ! !LOCAL VARIABLES:
 !
-      INTEGER :: I, J, L, AS
-      REAL(fp)  :: PTEMP, FRAC
-      LOGICAL :: FIRST = .TRUE.
-
-      !=================================================================
-      ! MAKE_QQ begins here!
-      !=================================================================
-      IF ( FIRST ) THEN
-
-         ! Allocate PDOWN on first call
-         ALLOCATE( PDOWN( LLPAR, IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'PDOWN' )
-         PDOWN = 0e+0_fp
-      
-         ! Allocate QQ on first call
-         ALLOCATE( QQ( LLPAR, IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'QQ' )
-         QQ = 0e+0_fp
-
-         ! Allocate REEVAP on first call
-         ALLOCATE( REEVAP( LLPAR, IIPAR, JJPAR ), STAT=AS )
-         IF ( AS /= 0 ) CALL ALLOC_ERR( 'REEVAP' )
-         REEVAP = 0d0
-
-         ! Reset flag
-         FIRST = .FALSE.
-      ENDIF
+      INTEGER :: I, J, L
 
       !=================================================================
       ! Loop over surface grid boxes
       !=================================================================
 
+      ! Initialize
+      RC = GC_SUCCESS
+
 !$OMP PARALLEL DO
 !$OMP+DEFAULT( SHARED )
-!$OMP+PRIVATE( I, J, FRAC, L, PTEMP )
-!$OMP+SCHEDULE( DYNAMIC )
+!$OMP+PRIVATE( I, J, L )
       DO J = 1, JJPAR
       DO I = 1, IIPAR
+      DO L = 1, LLPAR
 
-         !==============================================================
-         ! The PFILSAN and PFLLSAN fields are defined on level edges.
-         ! Therefore, we must use L+1 to index them.
-         !==============================================================
+         ! Rate of new precipitation formation in grid box (I,J,L)
+         ! [cm3 H2O/cm3 air/s]
+         QQ(L,I,J)     = ( State_Met%DQRLSAN(I,J,L)                 )
+     &                 * ( State_Met%MAIRDEN(I,J,L)     / 1000.0_fp )
 
-         ! Loop over vertical levels
-         DO L = 1, LLPAR
-
-            ! Rate of new precipitation formation in grid box (I,J,L)
-            ! [cm3 H2O/cm3 air/s]
-            QQ(L,I,J)    = ( State_Met%DQRLSAN(I,J,L)          )
-     &                   * ( State_Met%MAIRDEN(I,J,L)  / 1000e+0_fp )
-
-            ! Rate of re-evaporation in grid box (I,J,L)
-            ! [cm3 H2O/cm3 air/s]
-            REEVAP(L,I,J)= ( State_Met%REEVAPLS(I,J,L)          )
-     &                   * ( State_Met%AIRDEN(I,J,L)  / 1000e+0_fp )
+         ! Rate of re-evaporation in grid box (I,J,L)
+         ! [cm3 H2O/cm3 air/s]
+         REEVAP(L,I,J) = ( State_Met%REEVAPLS(I,J,L)                )
+     &                 * ( State_Met%AIRDEN(I,J,L)      / 1000.0_fp )
 
 
             ! Column precipitation [cm3 H2O/cm2 air/s]
-            PDOWN(L,I,J) = ( ( State_Met%PFLLSAN(I,J,L+1) / 1000e+0_fp )
-     &                   + ( State_Met%PFILSAN(I,J,L+1) /  917e+0_fp ) )
-     &                   * 100e+0_fp
+         PDOWN(L,I,J)  = ( ( State_Met%PFLLSAN(I,J,L+1) / 1000.0_fp )
+     &                 +   ( State_Met%PFILSAN(I,J,L+1) /  917.0_fp ) )
+     &                 * 100.0_fp
 
-         ENDDO
-
+      ENDDO
       ENDDO  
       ENDDO
 !$OMP END PARALLEL DO
@@ -805,6 +916,8 @@
       REAL(fp),      POINTER   :: p_CLDICE
       REAL(fp),      POINTER   :: p_CLDLIQ
       REAL(fp),      POINTER   :: p_T
+      REAL(fp),      POINTER   :: H2O2s(:,:,:)
+      REAL(fp),      POINTER   :: SO2s(:,:,:)
 
       ! Objects
       TYPE(Species), POINTER   :: SpcInfo
@@ -827,8 +940,8 @@
       p_CLDICE   => NULL()
       p_CLDLIQ   => NULL()
       p_T        => NULL()
-
-      ! Get information for this species from the species database
+      H2O2s      => State_Chm%H2O2AfterChem
+      SO2s       => State_Chm%SO2AfterChem
       SpcInfo    => State_Chm%SpcData(N)%Info
 
       ! ISOL is the wetdep ID (will be -999 if not a wetdep species)
@@ -852,7 +965,7 @@
       IF ( SpcInfo%WD_Is_SO2 ) THEN
 
          ! Compute fraction of SO2 scavenged
-         CALL F_AEROSOL( KC, KcScale, State_Met, F )
+         CALL F_AEROSOL( KC, KcScale, State_Met, Input_Opt, F )
 
          !--------------------------------------------------------------
          ! Coupled full chemistry/aerosol simulation:
@@ -936,7 +1049,7 @@
 
             ! Compute F, the fraction of scavenged H2O2.
             ! (Eq. 2, Jacob et al, 2000)
-            F(I,J,L) = GET_F( State_Met, I, J, L, Ki )
+            F(I,J,L) = GET_F( State_Met, Input_Opt, I, J, L, Ki )
 
          ENDDO
          ENDDO
@@ -952,7 +1065,7 @@
          ! Get the fraction of species scavenged in updrafts
          ! NOTE: The surface layer F(:,:,1) will be returned
          ! as zero, to shut off scavenging at the surface
-         CALL F_AEROSOL( KC, KcScale, State_Met, F )
+         CALL F_AEROSOL( KC, KcScale, State_Met, Input_Opt, F )
 
          ! Adjust F for size-resolved aerosol (multiply by XFRAC)
          DO L = 2, LLPAR
@@ -977,7 +1090,7 @@
          ! Get the fraction of species scavenged in updrafts
          ! NOTE: The surface layer F(:,:,1) will be returned
          ! as zero, to shut off scavenging at the surface
-         CALL F_AEROSOL( KC, KcScale, State_Met, F )
+         CALL F_AEROSOL( KC, KcScale, State_Met, Input_Opt, F )
 
          ! Adjust F for size-resolved aerosol number
          ! (multiply by XFRAC * SOLFRAC)
@@ -1003,7 +1116,7 @@
          ! Get the fraction of species scavenged in updrafts
          ! NOTE: The surface layer F(:,:,1) will be returned
          ! as zero, to shut off scavenging at the surface
-         CALL F_AEROSOL( KC, KcScale, State_Met, F )
+         CALL F_AEROSOL( KC, KcScale, State_Met, Input_Opt, F )
 
          ! Multiply by the aerosol scavenging efficiency
          ! For most species this is 1.0
@@ -1019,6 +1132,8 @@
       p_CLDICE  => NULL()
       p_CLDLIQ  => NULL()
       p_T       => NULL()
+      H2O2s     => NULL()
+      SO2s      => NULL()
       SpcInfo   => NULL()
 
       END SUBROUTINE COMPUTE_F
@@ -1144,12 +1259,14 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE F_AEROSOL( KC, KcScale, State_Met, F )
+      SUBROUTINE F_AEROSOL( KC, KcScale, State_Met, Input_Opt, F )
 !
 ! !USES:
 !
       USE CMN_SIZE_MOD
       USE State_Met_Mod,      ONLY: MetState
+      USE Input_Opt_Mod,      ONLY: OptInput
+!
 !
 ! !INPUT PARAMETERS: 
 !
@@ -1160,6 +1277,7 @@
                                                           !  for 3 temperature
                                                           !  regimes
       TYPE(MetState), INTENT(IN)  :: State_Met            ! Meteorology State
+      TYPE(OptInput), INTENT(IN)  :: Input_Opt            ! Input Options object
 !
 ! !OUTPUT PARAMETERS:
 !
@@ -1224,7 +1342,7 @@
 
          ! (Eq. 2, Jacob et al, 2000, with K = Kc)
          ! Kc now has been scaled for impaction scavenging (bmy, 9/24/15)
-         F(I,J,L) = GET_F( State_Met, I, J, L, Scaled_KC )
+         F(I,J,L) = GET_F( State_Met, Input_Opt, I, J, L, Scaled_KC )
             
       ENDDO
       ENDDO
@@ -1245,18 +1363,18 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE RAINOUT( I,         J,         L,        N,         
-     &                    K_RAIN,    DT,        F,        RAINFRAC,
-     &                    Input_Opt, State_Met, State_Chm           )
+      SUBROUTINE RAINOUT( I,         J,         L,         N,
+     &                    K_RAIN,    DT,        F,         RAINFRAC,
+     &                    Input_Opt, State_Met, State_Chm, RC        )
 !
 ! !USES:
 !
       USE CMN_Size_Mod
-      USE Error_Mod,          ONLY : Error_Stop
-      USE Input_Opt_Mod,      ONLY : OptInput
-      USE Species_Mod,        ONLY : Species
-      USE State_Chm_Mod,      ONLY : ChmState
-      USE State_Met_Mod,      ONLY : MetState
+      USE ErrCode_Mod
+      USE Input_Opt_Mod, ONLY : OptInput
+      USE Species_Mod,   ONLY : Species
+      USE State_Chm_Mod, ONLY : ChmState
+      USE State_Met_Mod, ONLY : MetState
 !
 ! !INPUT PARAMETERS: 
 !
@@ -1274,11 +1392,13 @@
 ! !INPUT/OUTPUT PARAMETERS:
 !
       TYPE(ChmState), INTENT(IN)  :: State_Chm  ! Chemistry State object
+
 !
 ! !OUTPUT PARAMETERS:
 !
       REAL(fp),       INTENT(OUT) :: RAINFRAC   ! Fraction of species lost 
                                                 !  to rainout [unitless]
+      INTEGER,        INTENT(OUT) :: RC         ! Success or failure?
 ! 
 ! !REVISION HISTORY: 
 !  28 Feb 2000 - R. Yantosca - Initial version
@@ -1342,8 +1462,7 @@
 !  16 Oct 2015 - E. Lundgren - Use ThisSpc%WD_Is_H2SO4 to treat H2SO4 as
 !                              aerosol for wetdep (for microphysics)
 !  01 Jul 2016 - R. Yantosca - Now rename species DB object ThisSpc to SpcInfo
-!   7 Jul 2016 - R. Yantosca - Now remove pointer threadprivate declarations
-
+!  07 Jul 2016 - R. Yantosca - Now remove pointer threadprivate declarations
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -1358,6 +1477,8 @@
       REAL(fp),      POINTER :: p_CLDICE
       REAL(fp),      POINTER :: p_CLDLIQ
       REAL(fp),      POINTER :: p_T
+      REAL(fp),      POINTER :: H2O2s(:,:,:)
+      REAL(fp),      POINTER :: SO2s(:,:,:)
 
       ! Objects
       TYPE(Species), POINTER :: SpcInfo
@@ -1369,11 +1490,16 @@
       ! to Eq. 10 of Jacob et al 2000.  Call function GET_RAINFRAC.
       !==================================================================
 
+      ! Initialize
+      RC       =  GC_SUCCESS
+
       ! Set pointers
       p_C_H2O  => C_H2O(I,J,L)
       p_CLDICE => CLDICE(I,J,L)
       p_CLDLIQ => CLDLIQ(I,J,L)
       p_T      => State_Met%T(I,J,L)
+      H2O2s    => State_Chm%H2O2AfterChem
+      SO2s     => State_Chm%SO2AfterChem
       SpcInfo  => State_Chm%SpcData(N)%Info
 
       !=================================================================
@@ -1452,6 +1578,8 @@
       p_CLDICE => NULL()
       p_CLDLIQ => NULL()
       p_T      => NULL()
+      H2O2s   => NULL()
+      SO2s    => NULL()
       SpcInfo  => NULL()
 
       END SUBROUTINE RAINOUT
@@ -1579,22 +1707,23 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE WASHOUT( am_I_Root, I, J, L,  N,  BXHEIGHT, TK,   PP, 
-     &                    DT, F, H2O2s, SO2s, WASHFRAC, KIN,
-     &                    Input_Opt, State_Met, State_Chm, RC )
+      SUBROUTINE WASHOUT( am_I_Root, I,        J,         L,  
+     &                    N,         BXHEIGHT, TK,        PP, 
+     &                    DT,        F,        H2O2s,     SO2s, 
+     &                    WASHFRAC,  KIN,      Input_Opt, State_Met, 
+     &                    State_Chm, RC                              )
 !
 ! !USES:
 !
       USE CMN_SIZE_MOD
       USE ErrCode_Mod
-      USE ERROR_MOD,          ONLY : ERROR_STOP
-      USE Input_Opt_Mod,      ONLY : OptInput
-      USE Species_Mod,        ONLY : Species
-      USE State_Chm_Mod,      ONLY : ChmState
-      USE State_Met_Mod,      ONLY : MetState
+      USE Input_Opt_Mod, ONLY : OptInput
+      USE Species_Mod,   ONLY : Species
+      USE State_Chm_Mod, ONLY : ChmState
+      USE State_Met_Mod, ONLY : MetState
 #if defined( TOMAS )
       USE ERROR_MOD
-      USE TOMAS_MOD,          ONLY : IBINS,    ICOMP
+      USE TOMAS_MOD,     ONLY : IBINS,    ICOMP
       USE UnitConv_Mod
 #endif
 !
@@ -1710,6 +1839,7 @@
 !                              for wetdep, and consolidate ifelse blocks
 !  27 Jul 2016 - E. Lundgren - Now expect dry mixing ratio not total
 !  22 Dec 2016 - R. Yantosca - Bug fix: K0, CR, pKa have to be REAL(f8)
+!  09 Nov 2017 - R. Yantosca - Return error condition to calling program
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -1724,6 +1854,9 @@
       REAL(fp)               :: L2G, DZ, SO2LOSS
       REAL(f8)               :: K0,  CR, pKa
 
+      ! Strings
+      CHARACTER(LEN=255)     :: ErrMsg, ThisLoc
+
       ! Pointers
       TYPE(Species), POINTER :: SpcInfo
 
@@ -1735,16 +1868,22 @@
       ! washout according to Jacob et al 2000
       !=================================================================
 
-      ! Assume success
-      RC      =  GC_SUCCESS
+      ! Initialize
+      RC      = GC_SUCCESS
+      ErrMsg  = ''
+      ThisLoc = ' -> at Washout (in module GeosCore/wetscav_mod.F)'
 
 #if defined( TOMAS )
+      !-----------------------------------------------------------------
+      ! TOMAS MICROPHYSICS ONLY 
+      !
       ! Convert species concentration units to [kg] if not already
       ! since TOMAS functions and routines expect [kg]. Units are
       ! kg/kg total air if WASHOUT is called from convection and are
       ! kg/m2 is called from DO_WASHOUT_ONLY. Since WASHOUT is called
       ! within an (I,J,L) loop, only convert units for a single grid
       ! box. Otherwise, run will take too long (ewl, 9/22/15)
+      !-----------------------------------------------------------------
       UNITCHANGE_KGKG = .FALSE.
       UNITCHANGE_KGM2 = .FALSE.
 
@@ -1752,17 +1891,34 @@
          UNITCHANGE_KGKG = .TRUE.
          CALL ConvertBox_KgKgDry_to_Kg( am_I_Root, I, J, L,  
      &                                  State_Met, State_Chm, RC )
-      !============================================================
+
+         ! Trap potential errors
+         IF ( RC /= GC_SUCCESS ) THEN
+            ErrMsg = 'Error encountered in "ConvertBox_KgKgDry_to_Kg"!'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
 
       ELSE IF ( TRIM( State_Chm%Spc_Units ) .eq. 'kg/m2' ) THEN
          UNITCHANGE_KGM2 = .TRUE.
          CALL ConvertBox_Kgm2_to_Kg( am_I_Root, I, J, L, 
      &                               State_Met, State_Chm, RC )
+
+         ! Trap potential errors
+         IF ( RC /= GC_SUCCESS ) THEN
+            ErrMsg = 'Error encountered in "ConvertBox_KgM2_to_Kg"!'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
+
       ELSE
-         CALL ERROR_STOP('Incorrect initial species units:' // 
-     &                   State_Chm%Spc_Units, 
-     &                   'Routine WASHOUT in wetscav_mod')
+
+         ! Exit if units are not as expected
+         ErrMsg = 'Incorrect initial species units:' // 
+     &             TRIM( State_Chm%Spc_Units )
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
          RETURN
+
       ENDIF
 #endif
 
@@ -1825,12 +1981,12 @@
       ! All other species
       !=================================================================
 
-      !--------------------------------------------------------------
+      !-----------------------------------------------------------------
       ! Washout for gas-phase species 
       ! (except H2SO4, NO3, and SO2, which scavenge like aerosols; 
       ! NO3 and SO2 are handled above and H2SO4 is handled in TOMAS 
       ! block further below)
-      !--------------------------------------------------------------
+      !-----------------------------------------------------------------
       ELSE IF ( SpcInfo%Is_Gas .and.
      &        ( .not. SpcInfo%WD_Is_H2SO4 ) ) THEN
 
@@ -1846,11 +2002,11 @@
          CALL WASHFRAC_LIQ_GAS( K0, CR, pKa, PP,       DT,
      &                          F,  DZ, TK,  WASHFRAC, KIN )
 
-      !-----------------------------------------------------------
+      !-----------------------------------------------------------------
       ! Washout for size-resolved aerosol species or
       ! size-resolved aerosol number (e.g. from TOMAS)
       ! NOTE: treat H2SO4 as an aerosol for wetdep in TOMAS
-      !-----------------------------------------------------------
+      !-----------------------------------------------------------------
       ELSE IF ( SpcInfo%MP_SizeResAer .or. SpcInfo%MP_SizeResNum ) THEN
 
 #if defined( TOMAS )
@@ -1862,9 +2018,9 @@
      &                             State_Met, State_Chm, WASHFRAC, RC )
 #endif
 
-      !-----------------------------------------------------------
+      !-----------------------------------------------------------------
       ! Washout for coarse aerosol species (Reff >= 1um)
-      !-----------------------------------------------------------
+      !-----------------------------------------------------------------
       ELSE IF ( SpcInfo%WD_CoarseAer ) THEN
          
          ! Washout is a kinetic process
@@ -1873,9 +2029,9 @@
          ! Compute washout fraction
          WASHFRAC = WASHFRAC_COARSE_AEROSOL( DT, F, PP, TK)
 
-      !-----------------------------------------------------------
+      !-----------------------------------------------------------------
       ! Washout for fine-aerosol species (Reff < 1um)
-      !-----------------------------------------------------------
+      !-----------------------------------------------------------------
       ELSE
 
          ! Washout is a kinetic process
@@ -1887,25 +2043,42 @@
       ENDIF
 
 #if defined( TOMAS )
+      !-----------------------------------------------------------------
+      ! TOMAS MICROPHYSICS ONLY 
       ! Convert State_Chm%Species units back to original units 
       ! if conversion occurred at start of WASHOUT (ewl, 5/12/15)
+      !-----------------------------------------------------------------
       IF ( UNITCHANGE_KGKG ) THEN
-
          CALL ConvertBox_Kg_to_KgKgDry( am_I_Root, I, J, L, 
      &                                  State_Met, State_Chm, RC )
+
+         ! Trap potential errors
+         IF ( RC /= GC_SUCCESS ) THEN
+            ErrMsg = 'Error encountered in "ConvertBox_Kg_to_KgKgDry"!'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
 
       ELSE IF ( UNITCHANGE_KGM2 ) THEN
          CALL ConvertBox_Kg_to_Kgm2( am_I_Root, I, J, L,
      &                               State_Met, State_Chm, RC )
+
+         ! Trap potential errors
+         IF ( RC /= GC_SUCCESS ) THEN
+            ErrMsg = 'Error encountered in "ConvertBox_Kg_to_KgM2"!'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
+
       ENDIF
 
       ! Check that species units are as expected (ewl, 9/29/15)
       IF ( TRIM( State_Chm%Spc_Units ) /= 'kg/kg dry' .AND.
      &     TRIM( State_Chm%Spc_Units ) /= 'kg/m2' ) THEN
-         CALL ERROR_STOP('Incorrect final species units:' // 
-     &                    State_Chm%Spc_Units,  
-
-     &                   'Routine WASHOUT in wetscav_mod')
+         ErrMsg = 'Incorrect final species units:' // 
+     &             TRIM( State_Chm%Spc_Units )
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
       ENDIF
 #endif
 
@@ -2411,36 +2584,40 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE WETDEP( am_I_Root, Input_Opt, State_Met, 
-     &                   State_Chm, RC, LS )
+      SUBROUTINE WETDEP( am_I_Root, Input_Opt,  State_Met,
+     &                   State_Chm, State_Diag, LS,        RC )
 !
 ! !USES:
 !
       USE CMN_SIZE_MOD
+#if defined( BPCH_DIAG )
       USE CMN_DIAG_MOD
-      USE DEPO_MERCURY_MOD,   ONLY : ADD_Hg2_WD
-      USE DEPO_MERCURY_MOD,   ONLY : ADD_HgP_WD
-      USE DEPO_MERCURY_MOD,   ONLY : ADD_Hg2_SNOWPACK
+#endif
+      USE DEPO_MERCURY_MOD, ONLY : ADD_Hg2_WD
+      USE DEPO_MERCURY_MOD, ONLY : ADD_HgP_WD
+      USE DEPO_MERCURY_MOD, ONLY : ADD_Hg2_SNOWPACK
       USE ErrCode_Mod
       USE ERROR_MOD
-      USE Input_Opt_Mod,      ONLY : OptInput
-      USE State_Chm_Mod,      ONLY : ChmState
-      USE State_Met_Mod,      ONLY : MetState
-      USE TIME_MOD,           ONLY : GET_TS_DYN
-      USE Species_Mod,        ONLY : Species
-      USE UnitConv_Mod,       ONLY : Convert_Spc_Units
+      USE Input_Opt_Mod,    ONLY : OptInput
+      USE State_Chm_Mod,    ONLY : ChmState
+      USE State_Diag_Mod,   ONLY : DgnState
+      USE State_Met_Mod,    ONLY : MetState
+      USE TIME_MOD,         ONLY : GET_TS_DYN
+      USE Species_Mod,      ONLY : Species
+      USE UnitConv_Mod,     ONLY : Convert_Spc_Units
 !
 ! !INPUT PARAMETERS: 
 !
-      LOGICAL,        INTENT(IN)    :: am_I_Root  ! Are we on the root CPU?
-      LOGICAL,        INTENT(IN)    :: LS         ! =T for large-scale precip
-                                                  ! =F for convective precip
-      TYPE(OptInput), INTENT(IN)    :: Input_Opt  ! Input options
-      TYPE(MetState), INTENT(IN)    :: State_Met  ! Meteorology State object
+      LOGICAL,        INTENT(IN)    :: am_I_Root   ! Are we on the root CPU?
+      LOGICAL,        INTENT(IN)    :: LS          ! =T for large-scale precip
+                                                   ! =F for convective precip
+      TYPE(OptInput), INTENT(IN)    :: Input_Opt   ! Input options
+      TYPE(MetState), INTENT(IN)    :: State_Met   ! Meteorology State object
 !
 ! !INPUT/OUTPUT PARAMETERS: 
 !
-      TYPE(ChmState), INTENT(INOUT) :: State_Chm  ! Chemistry State object
+      TYPE(ChmState), INTENT(INOUT) :: State_Chm   ! Chemistry State object
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag  ! Diagnostics State object
 !
 ! !OUTPUT PARAMETERS:
 !
@@ -2549,7 +2726,7 @@
 !  ========   
 !  Washout occurs when we have evaporation (or no precipitation at all) at 
 !  grid box (I,J,L), but have rain coming down from grid box (I,J,L+1).
-!
+!                                                                             .
 ! !REVISION HISTORY: 
 !  20 Sep 2010 - R. Yantosca - Initial version, based on WETDEP
 !  28 Sep 2010 - H. Amos     - Now define Q, QDOWN directly from MERRA met
@@ -2581,19 +2758,23 @@
 !  17 Mar 2017 - R. Yantosca - Replace NSOL with State_Chm%nWetDep
 !  24 Aug 2017 - M. Sulprizio- Rename routine from WETDEP_MERRA to WETDEP
 !  28 Sep 2017 - E. Lundgren - Simplify unit conversions using wrapper routine
+!  09 Nov 2017 - R. Yantosca - Now accept State_Diag as an argument
+!  09 Nov 2017 - R. Yantosca - Return error condition to calling program
 !EOP
 !------------------------------------------------------------------------------
 !BOC
 !
 ! !LOCAL VARIABLES:
 !
-      ! Scalars
+      ! SAVEd Scalars
       LOGICAL, SAVE          :: FIRST = .TRUE.
+
+      ! Scalars
       LOGICAL                :: IS_Hg
       LOGICAL                :: KIN
       LOGICAL                :: IS_RAINOUT, IS_WASHOUT, IS_BOTH
       INTEGER                :: I,     IDX,    J,         L
-      INTEGER                :: N,     NW,     Hg_Cat
+      INTEGER                :: N,     NW,     Hg_Cat,    EC
       REAL(fp)               :: Q,     QDOWN,  DT,        DT_OVER_TAU
       REAL(fp)               :: K,     K_MIN,  K_RAIN,    RAINFRAC
       REAL(fp)               :: F,     FTOP,   F_PRIME,   WASHFRAC
@@ -2611,7 +2792,7 @@
      &                               LLPAR,IIPAR,JJPAR)
  
       ! Strings
-      CHARACTER(LEN=255)     :: ERRMSG
+      CHARACTER(LEN=255)     :: ErrMsg, ErrorMsg, ThisLoc
 
       ! Pointers
       TYPE(Species), POINTER :: SpcInfo
@@ -2619,6 +2800,11 @@
       !=================================================================
       ! (1)  I n i t i a l i z e   V a r i a b l e s
       !=================================================================
+
+      ! Initialize
+      RC        = GC_SUCCESS
+      ErrorMsg  = ''
+      ThisLoc   = ' -> at WetDep (in module GeosCore/wetscav_mod.F)'
 
       ! Is this a mercury simulation?
       IS_Hg = ITS_A_MERCURY_SIM
@@ -2631,17 +2817,26 @@
       CALL Convert_Spc_Units( am_I_Root, Input_Opt, State_Met, 
      &                        State_Chm, 'kg/m2', RC, 
      &                        OrigUnit=OrigUnit )
+
+      ! Trap potential errors
       IF ( RC /= GC_SUCCESS ) THEN
-         CALL GC_Error('Unit conversion error', RC, 
-     &                 'Start of WETDEP in wetscav_mod.F')
+         ErrorMsg = 'Unit conversion error at start of WETDEP!'
+         CALL GC_Error( ErrorMsg, RC, ThisLoc )
          RETURN
       ENDIF  
 
       ! Dynamic timestep [s]
-      DT  = GET_TS_DYN() * 60e+0_fp
+      DT  = GET_TS_DYN()
       
       ! Select index for diagnostic arrays -- will archive either
       ! large-scale or convective rainout/washout fractions
+      !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+      !%%%% NOTE: FOR GEOS-FP AND MERRA-2, WE ALWAYS ASSUME THAT   %%%%%
+      !%%%% WETDEP OPERATES ONLY ON LARGE-SCALE PRECIP.  THUS, LS  %%%%%
+      !%%%% IS ALWAYS SET TO "TRUE" IN THE CALLING ROUTINE, AND    %%%%%
+      !%%%% IDX WILL ALWAYS BE 1 HERE AND IN SUBSEQUENT ROUTINES.  %%%%%  
+      !%%%% (bmy, 11/13/17)                                        %%%%%
+      !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
       IF ( LS ) THEN
          IDX = 1
       ELSE
@@ -2672,10 +2867,14 @@
 !$OMP+PRIVATE( NW,          ERRMSG,     F,           F_PRIME    )
 !$OMP+PRIVATE( F_RAINOUT,   F_WASHOUT,  K_RAIN,      Q          )       
 !$OMP+PRIVATE( QDOWN,       IS_RAINOUT, IS_WASHOUT,  N          ) 
-!$OMP+PRIVATE( DEP_HG,      SpcInfo,    Hg_Cat                  )
+!$OMP+PRIVATE( DEP_HG,      SpcInfo,    Hg_Cat,      EC         )
 !$OMP+SCHEDULE( DYNAMIC )   
       DO J = 1, JJPAR
       DO I = 1, IIPAR
+
+         ! Initialize PRIVATE error-handling variables
+         EC        = GC_SUCCESS
+         ErrorMsg  = ''
 
          ! Don't do wetdep in nested-grid buffer zone (lzh, 4/1/15)
          IF ( Input_Opt%ITS_A_NESTED_GRID ) THEN
@@ -2734,11 +2933,29 @@
             ! Only compute rainout if F > 0. 
             ! This helps to eliminate unnecessary CPU cycles.
             IF ( F > 0e+0_fp ) THEN 
-               CALL DO_RAINOUT_ONLY( am_I_Root, LS,        I, J, L,         
-     &                               IDX,       ERRMSG,    F,    
-     &                               K_RAIN,    DT,        DSpc,   
-     &                               Input_Opt, State_Met, State_Chm,   
-     &                               RC                              )
+               CALL DO_RAINOUT_ONLY( am_I_Root  = am_I_Root,
+     &                               LS         = LS,
+     &                               I          = I, 
+     &                               J          = J,
+     &                               L          = L,
+     &                               IDX        = IDX,        
+     &                               ERRMSG     = ERRMSG,
+     &                               F_RAINOUT  = F,
+     &                               K_RAIN     = K_RAIN,     
+     &                               DT         = DT,
+     &                               DSpc       = DSpc,
+     &                               Input_Opt  = Input_Opt,
+     &                               State_Met  = State_Met,
+     &                               State_Chm  = State_Chm,
+     &                               State_Diag = State_Diag, 
+     &                               RC         = EC          )
+
+               ! Trap potential errors
+               IF ( EC /= GC_SUCCESS ) THEN
+                  RC       = EC
+                  ErrorMsg = 
+     &               'Error encountered in "Do_Rainout_Only (3)"!'
+               ENDIF
             ENDIF
 
             ! Save FTOP for the next lower level 
@@ -2858,11 +3075,30 @@
                ERRMSG = 'RAINOUT'
 
                ! Do rainout if we meet the above criteria
-               CALL DO_RAINOUT_ONLY( am_I_Root, LS,        I, J, L,         
-     &                               IDX,       ERRMSG,    F_RAINOUT, 
-     &                               K_RAIN,    DT,        DSpc,   
-     &                               Input_Opt, State_Met, State_Chm,   
-     &                               RC                              )
+               CALL DO_RAINOUT_ONLY( am_I_Root  = am_I_Root,
+     &                               LS         = LS,
+     &                               I          = I, 
+     &                               J          = J,
+     &                               L          = L,
+     &                               IDX        = IDX,        
+     &                               ERRMSG     = ERRMSG,
+     &                               F_RAINOUT  = F_RAINOUT,
+     &                               K_RAIN     = K_RAIN,     
+     &                               DT         = DT,
+     &                               DSpc       = DSpc,
+     &                               Input_Opt  = Input_Opt,
+     &                               State_Met  = State_Met,
+     &                               State_Chm  = State_Chm,
+     &                               State_Diag = State_Diag, 
+     &                               RC         = EC          )
+
+               ! Trap potential errors
+               IF ( EC /= GC_SUCCESS ) THEN
+                  RC     = EC
+                  ErrorMsg = 
+     &               'Error encountered in "Do_Rainout_Only (4)!'
+               ENDIF
+
             ENDIF  
 
             IF ( IS_WASHOUT ) THEN 
@@ -2875,13 +3111,32 @@
                ERRMSG = 'WASHOUT'
 
                ! Do the washout
-               CALL DO_WASHOUT_ONLY( am_I_Root, LS,        I, J, L,    
-     &                               IDX,       ERRMSG,    QDOWN,     
-     &                               Q,         F_WASHOUT, F_RAINOUT, 
-     &                               DT,        PDOWN,     DSpc,      
-     &                               Input_Opt, State_Met, State_Chm, 
-     &                               RC                              )
+               CALL DO_WASHOUT_ONLY( am_I_Root  = am_I_Root, 
+     &                               LS         = LS,        
+     &                               I          = I,
+     &                               J          = J,         
+     &                               L          = L,         
+     &                               IDX        = IDX,
+     &                               ERRMSG     = ERRMSG,    
+     &                               QDOWN      = QDOWN,     
+     &                               Q          = Q,
+     &                               F_WASHOUT  = F_WASHOUT, 
+     &                               F_RAINOUT  = F_RAINOUT,
+     &                               DT         = DT,
+     &                               PDOWN      = PDOWN,     
+     &                               DSpc       = DSpc,      
+     &                               Input_Opt  = Input_Opt,  
+     &                               State_Met  = State_Met,
+     &                               State_Chm  = State_Chm,
+     &                               State_Diag = State_Diag,
+     &                               RC         = EC          )
 
+               ! Trap potential errors
+               IF ( EC /= GC_SUCCESS ) THEN
+                  RC       = EC
+                  ErrorMsg = 
+     &               'Error encountered in "Do_Washout_Only (4)!'
+               ENDIF
             ENDIF
 
             !===========================================================
@@ -2908,10 +3163,27 @@
                ERRMSG = 'RESUSPENSION in middle levels'
 
                ! Re-evaporate all of the rain
-               CALL DO_COMPLETE_REEVAP( am_I_Root, LS,        I, J, L,         
-     &                                  IDX,       ERRMSG,    DT,
-     &                                  DSpc,      Input_Opt, State_Met, 
-     &                                  State_Chm, RC       )
+               CALL DO_COMPLETE_REEVAP( am_I_Root  = am_I_Root,
+     &                                  LS         = LS,       
+     &                                  I          = I, 
+     &                                  J          = J,
+     &                                  L          = L,
+     &                                  IDX        = IDX,       
+     &                                  ERRMSG     = ERRMSG,
+     &                                  DT         = DT,
+     &                                  DSpc       = DSpc,      
+     &                                  Input_Opt  = Input_Opt,
+     &                                  State_Met  = State_Met,
+     &                                  State_Chm  = State_Chm, 
+     &                                  State_Diag = State_Diag,
+     &                                  RC         = EC         )
+
+               ! Trap potential errors
+               IF ( EC /= GC_SUCCESS ) THEN
+                  RC       = EC
+                  ErrorMsg = 
+     &               'Error encountered in "Do_Complete_Reevap" (6)!'
+               ENDIF
             ENDIF 
 
             ! Save FTOP for next level
@@ -2946,12 +3218,29 @@
 
             ! Only compute washout if F > 0.
             IF ( F > 0e+0_fp ) THEN
-               CALL DO_WASHOUT_AT_SFC( am_I_Root, LS,        I, J, L,
-     &                                 IDX,       ERRMSG,    QDOWN,     
-     &                                 F,         DT,        DSpc,      
-     &                                 Input_Opt, State_Met, State_Chm, 
-     &                                 RC                              )
+               CALL DO_WASHOUT_AT_SFC( am_I_Root  = am_I_Root,
+     &                                 LS         = LS,
+     &                                 I          = I,
+     &                                 J          = J,
+     &                                 L          = L,
+     &                                 IDX        = IDX,
+     &                                 ERRMSG     = ERRMSG,
+     &                                 QDOWN      = QDOWN,
+     &                                 F          = F,
+     &                                 DT         = DT,
+     &                                 DSpc       = DSpc,
+     &                                 Input_Opt  = Input_Opt,
+     &                                 State_Met  = State_Met,
+     &                                 State_Chm  = State_Chm, 
+     &                                 State_Diag = State_Diag, 
+     &                                 RC         = EC          )
 
+               ! Trap potential errors
+               IF ( EC /= GC_SUCCESS ) THEN
+                  RC       = EC
+                  ErrorMsg = 
+     &               'Error encountered in "Do_Washout_at_Sfc (7)!'
+               ENDIF
             ENDIF    
          ENDIF
 
@@ -2990,9 +3279,9 @@
                   Hg_Cat = SpcInfo%Hg_Cat
 
                   ! Archive wet-deposited Hg2
-                  CALL ADD_Hg2_WD      ( I, J, Hg_Cat, DEP_HG    )
-                  CALL ADD_Hg2_SNOWPACK( I, J, Hg_Cat, DEP_HG, 
-     &                                                 State_Met )
+                  CALL ADD_Hg2_WD      ( I, J, Hg_Cat,    DEP_HG     )
+                  CALL ADD_Hg2_SNOWPACK( I, J, Hg_Cat,    DEP_HG, 
+     &                              State_Met, State_Chm, State_Diag )
 
                ! Check if it is a HgP tag
                ELSE IF ( SpcInfo%Is_HgP ) THEN
@@ -3001,9 +3290,9 @@
                   Hg_Cat = SpcInfo%Hg_Cat
 
                   ! Archive wet-deposited HgP
-                  CALL ADD_HgP_WD      ( I, J, Hg_Cat, DEP_HG    )
-                  CALL ADD_Hg2_SNOWPACK( I, J, Hg_Cat, DEP_HG, 
-     &                                                 State_Met )
+                  CALL ADD_HgP_WD      ( I, J, Hg_Cat,    DEP_HG     )
+                  CALL ADD_Hg2_SNOWPACK( I, J, Hg_Cat,    DEP_HG, 
+     &                              State_Met, State_Chm, State_Diag )
                   
                ENDIF
 
@@ -3017,12 +3306,20 @@
       ENDDO	
 !$OMP END PARALLEL DO
 
+      ! Exit with error condition 
+      IF ( RC /= GC_SUCCESS ) THEN
+         CALL GC_Error( ErrorMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+
       ! Convert species concentration back to original unit (ewl, 9/8/15)
       CALL Convert_Spc_Units( am_I_Root, Input_Opt, State_Met, 
      &                        State_Chm, OrigUnit,  RC )
+
+      ! Trap potential errors
       IF ( RC /= GC_SUCCESS ) THEN
-         CALL GC_Error('Unit conversion error', RC, 
-     &                 'End of WETDEP in wetscav_mod.F')
+         ErrMsg = 'Unit conversion error at end of WETDEP!'
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
          RETURN
       ENDIF  
 
@@ -3190,32 +3487,37 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE DO_RAINOUT_ONLY( am_I_Root, LS,        I, J, L,
-     &                            IDX,       ERRMSG,    F_RAINOUT, 
-     &                            K_RAIN,    DT,        DSpc,   
-     &                            Input_Opt, State_Met, State_Chm,   
-     &                            RC                              )
+      SUBROUTINE DO_RAINOUT_ONLY( am_I_Root,  LS,        I,
+     &                            J,          L,         IDX,
+     &                            ERRMSG,     F_RAINOUT, K_RAIN,
+     &                            DT,         DSpc,      Input_Opt,  
+     &                            State_Met,  State_Chm, State_Diag,
+     &                            RC                                 )
 !
 ! !USES:
 !
-      USE CMN_DIAG_MOD                                 ! Diagnostic flags
       USE CMN_SIZE_MOD                                 ! Size parameters
-      USE DIAG_MOD,           ONLY : AD16              ! ND16 diag array
-      USE DIAG_MOD,           ONLY : AD17              ! ND17 diag array
 #if defined( BPCH_DIAG )
-      USE DIAG_MOD,           ONLY : AD39              ! ND39 diag array
+      USE CMN_DIAG_MOD                                 ! Diagnostic flags
+      USE DIAG_MOD,       ONLY : AD16                  ! ND16 diag array
+      USE DIAG_MOD,       ONLY : AD17                  ! ND17 diag array
+      USE DIAG_MOD,       ONLY : AD39                  ! ND39 diag array
+      USE DIAG_MOD,       ONLY : CT16                  ! ND16 diag counter
+      USE DIAG_MOD,       ONLY : CT17                  ! ND17 diag counter
 #endif
-      USE DIAG_MOD,           ONLY : CT16              ! ND16 diag counter
-      USE DIAG_MOD,           ONLY : CT17              ! ND17 diag counter
-      USE ERROR_MOD,          ONLY : IT_IS_NAN         ! Test for NaN
-      USE GET_NDEP_MOD,       ONLY : SOIL_WETDEP       ! Wet deposited species
-      USE Input_Opt_Mod,      ONLY : OptInput          ! Input options type
-      USE State_Chm_Mod,      ONLY : ChmState          ! Chemistry State type
-      USE State_Met_Mod,      ONLY : MetState          ! Met State type
+      USE ErrCode_Mod
+      USE ERROR_MOD,      ONLY : IT_IS_NAN             ! Test for NaN
+      USE GET_NDEP_MOD,   ONLY : SOIL_WETDEP           ! Wet deposited species
+      USE Input_Opt_Mod,  ONLY : OptInput              ! Input options type
+      USE State_Chm_Mod,  ONLY : ChmState              ! Chemistry State type
+      USE State_Met_Mod,  ONLY : MetState              ! Met State type
+      USE State_Diag_Mod, ONLY : DgnState
 #if defined( TOMAS )
-      USE TOMAS_MOD,          ONLY : IBINS, ICOMP, AQOXID
-      USE TOMAS_MOD,          ONLY : GETFRACTION
-      USE DIAG_MOD,           ONLY : AD05
+      USE TOMAS_MOD,      ONLY : IBINS, ICOMP, AQOXID
+      USE TOMAS_MOD,      ONLY : GETFRACTION
+#if defined( BPCH_DIAG )
+      USE DIAG_MOD,       ONLY : AD05
+#endif
 #endif
 !
 ! !INPUT PARAMETERS: 
@@ -3233,11 +3535,14 @@
       CHARACTER(LEN=*), INTENT(IN)    :: ERRMSG        ! Error message
       TYPE(OptInput),   INTENT(IN)    :: Input_Opt     ! Input options
       TYPE(MetState),   INTENT(IN)    :: State_Met     ! Met State object
+      
 !
 ! !INPUT/OUTPUT PARAMETERS: 
 !
       REAL(fp),         INTENT(INOUT) :: DSpc(:,:,:,:) ! Accumulator array [kg]
       TYPE(ChmState),   INTENT(INOUT) :: State_Chm     ! Chemistry State object
+      TYPE(DgnState),   INTENT(INOUT) :: State_Diag    ! Diags State object
+!
 ! !OUTPUT PARAMETERS:
 !
       INTEGER,          INTENT(OUT)   :: RC            ! Success or failure?    
@@ -3261,30 +3566,47 @@
 !                              local pointer for STT array [kg/m2] 
 !  30 Jun 2016 - R. Yantosca - Replace STT with Spc and DSTT with DSpc
 !  05 Jul 2016 - R. Yantosca - Now replace IDWETD with State_Chm%Map_WetDep
+!  09 Nov 2017 - R. Yantosca - Now accept State_Diag as an argument
+!  09 Nov 2017 - R. Yantosca - Return error condition to calling program
 !EOP
 !------------------------------------------------------------------------------
 !BOC
 !
 ! !LOCAL VARIABLES:
 !
-      INTEGER           :: N,        NW
-      REAL(fp)          :: RAINFRAC, WETLOSS
+      ! Scalars
+      INTEGER            :: N,        NW
+      REAL(fp)           :: RAINFRAC, WETLOSS
+
+      ! Strings
+      CHARACTER(LEN=255) :: ErrorMsg, ThisLoc
 
       ! Pointers
-      REAL(fp), POINTER :: Spc(:,:,:,:)
+      REAL(fp), POINTER  :: Spc(:,:,:,:)
 
 #if defined( TOMAS )
       ! Scavenging fraction of 30-bin aerosols (win, 7/16/09)
-      REAL(fp)          :: TOM_SC_FRACTION(IBINS)
-      REAL(fp)          :: SOLFRAC, XFRAC
+      REAL(fp)           :: TOM_SC_FRACTION(IBINS)
+      REAL(fp)           :: SOLFRAC, XFRAC
 #endif
 
       !=================================================================
       ! DO_RAINOUT_ONLY begins here!
       !=================================================================
 
+      ! Initialize
+      RC        = GC_SUCCESS
+      ErrorMsg  = ''
+      ThisLoc   = 
+     &   ' -> at DO_RAINOUT_ONLY (in module GeosCore/wetscav_mod.F)'
+
       ! Point to the chemical species array [kg/m2]
       Spc => State_Chm%Species
+
+#if defined( BPCH_DIAG )
+      !-----------------------------------------------------------------
+      ! ND16 (bpch) diagnostic
+      !-----------------------------------------------------------------
 
       ! ND16 diagnostic...save F 
       IF ( ND16 > 0 .and. L <= LD16 ) THEN
@@ -3296,6 +3618,29 @@
       IF ( ND17 > 0 .and. L <= LD17 ) THEN
          CT17(I,J,L,IDX) = CT17(I,J,L,IDX) + 1
       ENDIF
+#endif
+
+#if defined( NC_DIAG )
+      !-----------------------------------------------------------------
+      ! HISTORY (aka netCDF diagnostics)
+      !
+      ! Archive the fraction of the box that is undergoing large-scale 
+      ! precipitation (PrecipFracLs).  This includes contributions
+      ! from both rainout and washout.  Here we add the contribution
+      ! from rainout.
+      !
+      ! NOTE: We always assume large-scale precipitation, because
+      ! the LS flag is always set to TRUE in the calling routine 
+      ! for both GEOS-FP and MERRA-2 meteorology.
+      !-----------------------------------------------------------------
+
+      ! NOTE: This diagnostic may need some work
+      ! Units: [1]
+      IF ( State_Diag%Archive_PrecipFracLS ) THEN
+         State_Diag%PrecipFracLS(I,J,L) = 
+     &   State_Diag%PrecipFracLS(I,J,L) + F_Rainout
+      ENDIF
+#endif
 
       !-----------------------------------------------------------------
       ! Loop over all wet deposition species
@@ -3307,9 +3652,17 @@
                   
          ! Call subroutine RAINOUT to comptue the fraction
          ! of species lost to rainout in grid box (I,J,L) 
-         CALL RAINOUT( I, J, L, N, K_RAIN, DT, F_RAINOUT, RAINFRAC,
-     &                 Input_Opt, State_Met, State_Chm )
+         CALL RAINOUT( I,         J,         L,         N, 
+     &                 K_RAIN,    DT,        F_RAINOUT, RAINFRAC,
+     &                 Input_Opt, State_Met, State_Chm, RC        )
 
+         ! Trap potential errors
+         IF ( RC /= GC_SUCCESS ) THEN
+            Spc    => NULL()
+            ErrorMsg = 'Error encountered in "Rainout"!'
+            CALL GC_Error( ErrorMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
 
 #if defined( TOMAS )
          IF ( id_NK1 > 0 ) THEN
@@ -3356,8 +3709,9 @@
 
          ENDIF
 
+#if defined( BPCH_DIAG )
          !--------------------------------------------------------------
-         ! Archive diagnostics for each species
+         ! ND17 and ND39 (bpch) diagnostics
          !--------------------------------------------------------------
 
          ! ND17 diagnostic...rainout fractions [unitless]
@@ -3366,7 +3720,6 @@
      &           AD17(I,J,L,NW,IDX) + RAINFRAC / F_RAINOUT
          ENDIF
 
-#if defined( BPCH_DIAG )
          ! ND39 diag -- save rainout losses in [kg/s] 
          ! NOTE: eventually change this to kg/m2/s (ewl, 11/16/15)
          ! Add LGTMM in condition for AD39 (ccc, 11/18/09)
@@ -3376,35 +3729,71 @@
          ENDIF
 #endif
 
-         ! Archive wet loss in kg/m2/s
-         IF ( LSOILNOX ) THEN
-            CALL SOIL_WETDEP ( I, J, L, N, WETLOSS / DT )
+#if defined( NC_DIAG )
+         !--------------------------------------------------------------
+         ! HISTORY (aka netCDF diagnostics)
+         !
+         ! (1) Archive the fraction of soluble species lost to rainout
+         !     in large-scale precipitation (RainFracLS)
+         !     
+         ! (2) Archive the amount of soluble species lost to large-
+         !     scale precipitation (WetLossLS).  This includes 
+         !     contributions from rainout, washout, and reevaporation.
+         !     Here we add the component from rainout.
+         !--------------------------------------------------------------
+
+         ! Units: [1]
+         IF ( State_Diag%Archive_RainFracLs .and. 
+     &        F_Rainout > 0.0_fp ) THEN 
+            State_Diag%RainFracLs(I,J,L,NW) = RainFrac / F_Rainout
          ENDIF
 
+         ! Units: [kg/s], but eventually consider changing to [kg/m2/s]
+         IF ( State_Diag%Archive_WetLossLs ) THEN
+            State_Diag%WetLossLs(I,J,L,NW) =
+     &      State_Diag%WetLossLs(I,J,L,NW) + ( WetLoss / DT )
+     &                                     *  State_Met%Area_M2(I,J,1)
+         ENDIF
+#endif
+
+         ! Archive wet loss in kg/m2/s
+         IF ( LSOILNOX ) THEN
+            CALL SOIL_WETDEP ( I, J, L, N, WETLOSS / DT, State_Chm )
+         ENDIF
 
          !--------------------------------------------------------------
          ! Error checks
          !--------------------------------------------------------------
-         IF ( IT_IS_NAN( Spc(I,J,L,N) )   .or.
-     &        Spc(I,J,L,N)   < 0e+0_fp        .or.
-     &        DSpc(NW,L,I,J) < 0e+0_fp      ) THEN
+         IF ( IT_IS_NAN( Spc(I,J,L,N) )  .or.
+     &        Spc(I,J,L,N)   < 0e+0_fp   .or.
+     &        DSpc(NW,L,I,J) < 0e+0_fp        ) THEN
 
-            ! Print error message and stop simulaton
+            ! Print error message
             CALL SAFETY( I, J, L, N, ERRMSG,
-     &                   LS          = LS,             
-     &                   PDOWN       = PDOWN(L,I,J),  
-     &                   QQ          = QQ(L,I,J),      
-     &                   ALPHA       = 0e+0_fp,       
-     &                   ALPHA2      = 0e+0_fp,         
-     &                   RAINFRAC    = RAINFRAC,     
-     &                   WASHFRAC    = 0e+0_fp, 
+     &                   LS          = LS, 
+     &                   PDOWN       = PDOWN(L,I,J),
+     &                   QQ          = QQ(L,I,J),
+     &                   ALPHA       = 0e+0_fp,
+     &                   ALPHA2      = 0e+0_fp,
+     &                   RAINFRAC    = RAINFRAC,
+     &                   WASHFRAC    = 0e+0_fp,
      &                   MASS_WASH   = 0e+0_fp,
      &                   MASS_NOWASH = 0e+0_fp,
      &                   WETLOSS     = WETLOSS,
-     &                   GAINED      = 0e+0_fp,         
-     &                   LOST        = 0e+0_fp,         
-     &                   DSpc        = DSpc(NW,:,I,J), 
-     &                   Spc         = Spc(I,J,:,N)     )
+     &                   GAINED      = 0e+0_fp,
+     &                   LOST        = 0e+0_fp,
+     &                   DSpc        = DSpc(NW,:,I,J),
+     &                   Spc         = Spc(I,J,:,N),
+     &                   RC          = RC              )
+            
+            ! Trap potential errors
+            IF ( RC /= GC_SUCCESS ) THEN
+               Spc      => NULL()
+               ErrorMsg = 'Error encountered in "Safety"!'
+               CALL GC_Error( ErrorMsg, RC, ThisLoc )
+               RETURN
+            ENDIF
+
          ENDIF
       ENDDO
 
@@ -3425,70 +3814,73 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE DO_WASHOUT_ONLY( am_I_Root, LS,        I, J, L, 
-     &                            IDX,       ERRMSG,    QDOWN,   
-     &                            Q,         F_WASHOUT, F_RAINOUT, 
-     &                            DT,        PDOWN,     DSpc,      
-     &                            Input_Opt, State_Met, State_Chm, 
-     &                            RC,        REEVAP               )
+      SUBROUTINE DO_WASHOUT_ONLY( am_I_Root,  LS,        I, J, L,
+     &                            IDX,        ERRMSG,    QDOWN, 
+     &                            Q,          F_WASHOUT, F_RAINOUT,
+     &                            DT,         PDOWN,     DSpc, 
+     &                            Input_Opt,  State_Met, State_Chm,
+     &                            State_Diag, RC,        REEVAP     )
 !
 ! !USES:
 !
-      USE CMN_DIAG_MOD                                 ! Diagnostic flags
       USE CMN_SIZE_MOD                                 ! Size parameters
-      USE DIAG_MOD,           ONLY : AD16              ! ND16 diag array
-      USE DIAG_MOD,           ONLY : AD17              ! ND17 diag array
-      USE DIAG_MOD,           ONLY : AD18              ! ND18 diag array
 #if defined( BPCH_DIAG )
-      USE DIAG_MOD,           ONLY : AD39              ! ND39 diag array
+      USE CMN_DIAG_MOD                                 ! Diagnostic flags
+      USE DIAG_MOD,       ONLY : AD05
+      USE DIAG_MOD,       ONLY : AD16                  ! ND16 diag array
+      USE DIAG_MOD,       ONLY : AD17                  ! ND17 diag array
+      USE DIAG_MOD,       ONLY : AD18                  ! ND18 diag array
+      USE DIAG_MOD,       ONLY : AD39                  ! ND39 diag array
+      USE DIAG_MOD,       ONLY : CT16                  ! ND16 diag counter
+      USE DIAG_MOD,       ONLY : CT17                  ! ND17 diag counter
+      USE DIAG_MOD,       ONLY : CT18                  ! ND18 diag counter
 #endif
-      USE DIAG_MOD,           ONLY : CT16              ! ND16 diag counter
-      USE DIAG_MOD,           ONLY : CT17              ! ND17 diag counter
-      USE DIAG_MOD,           ONLY : CT18              ! ND18 diag counter
-      USE ErrCode_Mod
+      USE ErrCode_Mod                                  
       USE ERROR_MOD
-      USE GET_NDEP_MOD,       ONLY : SOIL_WETDEP       ! Wet deposited species
-      USE Input_Opt_Mod,      ONLY : OptInput          ! Input options
-      USE State_Chm_Mod,      ONLY : ChmState          ! Chemistry State object
-      USE State_Met_Mod,      ONLY : MetState          ! Met State object
-#if defined( TOMAS )
-      USE TOMAS_MOD,          ONLY : IBINS, ICOMP, AQOXID
-      USE DIAG_MOD,           ONLY : AD05
+      USE GET_NDEP_MOD,   ONLY : SOIL_WETDEP           ! Wet deposited species
+      USE Input_Opt_Mod,  ONLY : OptInput              ! Input options
+      USE State_Chm_Mod,  ONLY : ChmState              ! Chemistry State object
+      USE State_Diag_Mod, ONLY : DgnState
+      USE State_Met_Mod,  ONLY : MetState              ! Met State object
+#if defined( TOMAS )      
+      USE TOMAS_MOD,      ONLY : IBINS, ICOMP, AQOXID
 #endif
 !
 ! !INPUT PARAMETERS: 
 !
-      LOGICAL,          INTENT(IN)    :: am_I_Root    ! Are we on the root CPU?  
-      LOGICAL,OPTIONAL, INTENT(IN)    :: REEVAP       ! Do re-evaporation?
-      LOGICAL,          INTENT(IN)    :: LS           ! =T denotes LS precip
-      INTEGER,          INTENT(IN)    :: I            ! Longitude index
-      INTEGER,          INTENT(IN)    :: J            ! Latitude index
-      INTEGER,          INTENT(IN)    :: L            ! Level index
-      INTEGER,          INTENT(IN)    :: IDX          ! ND38 index
-      CHARACTER(LEN=*), INTENT(IN)    :: ERRMSG       ! Error message
-      REAL(fp),         INTENT(IN)    :: QDOWN        ! Precip leaving thru
-                                                      !  bottom of box (I,J,L)
-      REAL(fp),         INTENT(IN)    :: Q            ! Precip forming or
-                                                      ! evaporating 
-                                                      ! in box (I,J,L)
-      REAL(fp),         INTENT(IN)    :: F_WASHOUT    ! Fraction of grid box 
-                                                      !  undergoing washout
-      REAL(fp),         INTENT(IN)    :: F_RAINOUT    ! Fraction of grid box 
-                                                      !  undergoing rainout
-      REAL(fp),         INTENT(IN)    :: DT           ! Rainout timestep [s]
-      REAL(fp),         INTENT(IN)    :: PDOWN(:,:,:) ! Precip 
-      TYPE(OptInput),   INTENT(IN)    :: Input_Opt    ! Input options
-      TYPE(MetState),   INTENT(IN)    :: State_Met    ! Met State object
+      LOGICAL,          INTENT(IN)    :: am_I_Root     ! Are we on root CPU?  
+      LOGICAL,OPTIONAL, INTENT(IN)    :: REEVAP        ! Do re-evaporation?
+      LOGICAL,          INTENT(IN)    :: LS            ! =T denotes LS precip
+      INTEGER,          INTENT(IN)    :: I             ! Longitude index
+      INTEGER,          INTENT(IN)    :: J             ! Latitude index
+      INTEGER,          INTENT(IN)    :: L             ! Level index
+      INTEGER,          INTENT(IN)    :: IDX           ! ND38 index
+      CHARACTER(LEN=*), INTENT(IN)    :: ERRMSG        ! Error message
+      REAL(fp),         INTENT(IN)    :: QDOWN         ! Precip leaving thru
+                                                       !  bottom of box (I,J,L)
+      REAL(fp),         INTENT(IN)    :: Q             ! Precip forming or
+                                                       ! evaporating 
+                                                       ! in box (I,J,L)
+      REAL(fp),         INTENT(IN)    :: F_WASHOUT     ! Fraction of grid box 
+                                                       !  undergoing washout
+      REAL(fp),         INTENT(IN)    :: F_RAINOUT     ! Fraction of grid box 
+                                                       !  undergoing rainout
+      REAL(fp),         INTENT(IN)    :: DT            ! Rainout timestep [s]
+      REAL(fp),         INTENT(IN)    :: PDOWN(:,:,:)  ! Precip 
+      TYPE(OptInput),   INTENT(IN)    :: Input_Opt     ! Input options
+      TYPE(MetState),   INTENT(IN)    :: State_Met     ! Met State object
 !
 ! !INPUT/OUTPUT PARAMETERS: 
 !
       REAL(fp),         INTENT(INOUT) :: DSpc(:,:,:,:) ! Accumulator array 
                                                        ! [kg/m2]
       TYPE(ChmState),   INTENT(INOUT) :: State_Chm     ! Chemistry State object
+      TYPE(DgnState),   INTENT(INOUT) :: State_Diag    ! Diags State object
+
 !
 ! !OUTPUT PARAMETERS:
 !
-      INTEGER,          INTENT(OUT)   :: RC          ! Success or failure?
+      INTEGER,          INTENT(OUT)   :: RC            ! Success or failure?
 ! 
 ! !REMARKS:
 !  A fraction ALPHA of the raindrops falling down from grid 
@@ -3577,17 +3969,23 @@
 !  29 Sep 2015 - E. Lundgren - Now use local pointer for STT array [kg/m2]
 !  30 Jun 2016 - R. Yantosca - Replace STT with Spc and DSTT with DSpc
 !  05 Jul 2016 - R. Yantosca - Replace IDWETD with State_Chm%Map_WetDep
+!  09 Nov 2017 - R. Yantosca - Now accept State_Diag as an argument
+!  09 Nov 2017 - R. Yantosca - Return error condition to calling program
 !EOP
 !------------------------------------------------------------------------------
 !BOC
 !
 ! !LOCAL VARIABLES:
 !
+      ! Scalars
       LOGICAL            :: KIN,       DO_REEVAP
       INTEGER            :: N,         NW
       REAL(fp)           :: ALPHA,     ALPHA2,      GAINED,   LOST
       REAL(fp)           :: MASS_WASH, MASS_NOWASH, WASHFRAC, WETLOSS
       REAL(fp)           :: TK,        TF  
+
+      ! Strings
+      CHARACTER(LEN=255) :: ErrorMsg,  ThisLoc
 
       ! Pointers
       ! We need to define local array to hold species concentraiton values 
@@ -3597,30 +3995,59 @@
 #if defined( TOMAS )
       REAL(fp)           :: REEVAPSO2  !(win, 7/16/09)
       INTEGER            :: KMIN       !(win, 7/16/09)
-      CHARACTER(LEN=255) :: MSG, LOC   !(ewl, 10/1/15)
-
 #endif
 
       !=================================================================
       ! DO_WASHOUT_ONLY begins here!
       !=================================================================
 
-      ! Assume success
-      RC  =  GC_SUCCESS
+      ! Initialize
+      RC        = GC_SUCCESS
+      ErrorMsg  = ''
+      ThisLoc   = 
+     &   ' -> at Do_Washout_Only (in module GeosCore/wetscav_mod.F)'
 
       ! Point to the chemical species array [kg/m2]
       Spc => State_Chm%Species
 
+#if defined( BPCH_DIAG )
+      !-----------------------------------------------------------------
+      ! ND16 (bpch) diagnostic
+      !-----------------------------------------------------------------
+
       ! ND16 diagnostic...save F (fraction of grid box raining)
       IF ( ND16 > 0e+0_fp .and. L <= LD16 ) THEN
          AD16(I,J,L,IDX) = AD16(I,J,L,IDX) + F_WASHOUT
-         CT16(I,J,L,IDX) = CT16(I,J,L,IDX) + 1
+         CT16(I,J,L,IDX) = CT16(I,J,L,IDX) + 1 
       ENDIF
 
       ! ND18 diagnostic...increment counter
       IF ( ND18 > 0 .and. L <= LD18 ) THEN
          CT18(I,J,L,IDX) = CT18(I,J,L,IDX) + 1
       ENDIF
+#endif
+
+#if defined( NC_DIAG )
+      !-----------------------------------------------------------------
+      ! HISTORY (aka netCDF diagnostics)
+      !
+      ! Archive the fraction of the box that is undergoing large-scale 
+      ! precipitation (PrecipFracLs).  This includes contributions
+      ! from both rainout and washout.  Here we add the contribution
+      ! from washout.
+      !
+      ! NOTE: We always assume large-scale precipitation, because
+      ! the LS flag is always set to TRUE in the calling routine 
+      ! for both GEOS-FP and MERRA-2 meteorology.
+      !-----------------------------------------------------------------
+
+      ! NOTE: This diagnostic may need some work
+      ! Units: [1]
+      IF ( State_Diag%Archive_PrecipFracLS ) THEN
+         State_Diag%PrecipFracLS(I,J,L) = 
+     &   State_Diag%PrecipFracLS(I,J,L) + F_Washout
+      ENDIF
+#endif
 
       ! air temperature [K]
       TK  = State_Met%T(I,J,L)
@@ -3649,11 +4076,20 @@
          ! Call WASHOUT to compute the fraction of 
          ! species lost to washout in grid box (I,J,L)
          CALL WASHOUT( am_I_Root, I, J, L, N,
-     &                 State_Met%BXHEIGHT(I,J,L), 
-     &                 TK,        QDOWN,        DT,   
-     &                 TF,        H2O2s(I,J,L), SO2s(I,J,L), 
+     &                 State_Met%BXHEIGHT(I,J,L),
+     &                 TK,        QDOWN,        DT,
+     &                 TF,        
+     &                 State_Chm%H2O2AfterChem(I,J,L),
+     &                 State_Chm%SO2AfterChem(I,J,L),
      &                 WASHFRAC,  KIN,          Input_Opt,
-     &                 State_Met, State_Chm, RC )
+     &                 State_Met, State_Chm,    RC           )
+
+         ! Trap potential errors
+         IF ( RC /= GC_SUCCESS ) THEN
+            ErrorMsg = 'Error encountered in "Washout"!'
+            CALL GC_Error( ErrorMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
 
          !%%% BUG FIX (bmy, hamos, 5/26/11, 8/12/15)
          !
@@ -3683,12 +4119,11 @@
          IF ( KIN ) THEN
            WASHFRAC = WASHFRAC / TF * F_WASHOUT
          ENDIF
-                  
-         !--------------------------------------------------------------
+            
+         !==============================================================      
          ! Washout of aerosol species -- 
          ! this is modeled as a kinetic process
-         !--------------------------------------------------------------
-
+         !==============================================================      
          IF ( KIN ) THEN
 
             ! Define ALPHA, the fraction of the raindrops that 
@@ -3731,13 +4166,15 @@
 
 #if defined( TOMAS )
 !added for TOMAS (win, 7/16/09)
+#if defined( BPCH_DIAG )
             ! Save the amout of SO4 [kg S/m2] added via aqueous 
             ! chem to ND05(6) diagnostic assuming it's all 
             ! by reacting with H2O2 (win, 7/16/09)
             IF ( ND05 > 0 .and. L <= LD05 ) 
      &         AD05(I,J,L,6) = AD05(I,J,L,6) +
      &         ( GAINED * 32e+0_fp / 64e+0_fp )
-                            
+#endif
+
             ! Re-evaporated portion get distributed onto
             ! size-resolved sulfate by AQOXID (win, 7/16/09)
             IF ( GAINED > 0e+0_fp ) THEN 
@@ -3774,10 +4211,10 @@
                   REEVAPSO2 = GAINED * 96e+0_fp / 64e+0_fp
      &                        * State_Met%AREA_M2(I,J,1)
                ELSE
-                  MSG = 'Unexpected species units: ' 
-     &                            // TRIM( State_Chm%Spc_Units )
-                  LOC = 'Routine DO_WASHOUT_ONLY in wetscav_mod.F'
-                  CALL ERROR_STOP( MSG, LOC )
+                  ErrorMsg= 'Unexpected species units: ' // 
+     &                       TRIM( State_Chm%Spc_Units )
+                  CALL GC_Error( ErrorMsg, RC, ThisLoc )
+                  RETURN
                ENDIF
                CALL AQOXID( am_I_Root, REEVAPSO2, KMIN, I, J, L, 
      &                      Input_Opt, State_Met, State_Chm, RC  )
@@ -3803,16 +4240,39 @@
                DSpc(NW,L,I,J) = DSpc(NW,L+1,I,J) + WETLOSS
             ENDIF
 
+#if defined( BPCH_DIAG )
+            !-----------------------------------------------------------
+            ! ND18 (bpch) diagnostic
+            !-----------------------------------------------------------
+
             ! ND18 diagnostic...divide washout fraction by F
             IF ( ND18 > 0 .and. L <= LD18 ) THEN
                AD18(I,J,L,NW,IDX) = 
      &         AD18(I,J,L,NW,IDX) + ( WASHFRAC / F_WASHOUT )
             ENDIF
+#endif
 
-         !--------------------------------------------------------------
+#if defined( NC_DIAG )
+            !-----------------------------------------------------------
+            ! HISTORY (aka netCDF diagnostics)
+            !
+            ! Archive the fraction of soluble species lost to washout
+            ! in large-scale precipitation (WashFracLS)
+            !
+            ! Here we only handle the soluble aerosol species
+            !-----------------------------------------------------------
+            
+            ! Units: [1]
+            IF ( State_Diag%Archive_WashFracLS .and. 
+     &           F_Washout > 0.0_fp ) THEN
+               State_Diag%WashFracLS(I,J,L,NW) = WashFrac / F_Washout
+            ENDIF
+#endif
+
+         !==============================================================      
          ! Washout of non-aerosol species
          ! This is modeled as an equilibrium process
-         !--------------------------------------------------------------
+         !==============================================================      
          ELSE
                   
             ! MASS_NOWASH is the amount of non-aerosol species in 
@@ -3844,16 +4304,45 @@
                DSpc(NW,L,I,J) = DSpc(NW,L+1,I,J) + WETLOSS
             ENDIF
 
+#if defined( BPCH_DIAG )
+            !-----------------------------------------------------------
+            ! ND18 (bpch) diagnostic
+            !-----------------------------------------------------------
+
             ! ND18 diagnostic...we don't have to divide the
             ! washout fraction by F since this is accounted for.
             IF ( ND18 > 0 .and. L <= LD18 ) THEN
                AD18(I,J,L,NW,IDX) = 
      &         AD18(I,J,L,NW,IDX) + WASHFRAC
             ENDIF
+#endif
+
+#if defined( NC_DIAG )
+            !-----------------------------------------------------------
+            ! HISTORY (aka netCDF diagnostics)
+            !
+            ! Archive the fraction of soluble species lost to washout
+            ! in large-scale precipitation (WashFracLS)
+            !
+            ! Here we handle the non-aerosol soluble species.  We don't 
+            ! have to divide by F_Washout, since this has already been 
+            ! accounted for in the equations above.
+            !-----------------------------------------------------------
+            
+            ! Units: [1]
+            IF ( State_Diag%Archive_WashFracLS ) THEN
+               State_Diag%WashFracLS(I,J,L,NW) = WashFrac
+            ENDIF
+#endif
+
          ENDIF
 
 #if defined( BPCH_DIAG )
-         ! ND39 diag -- save rainout losses in [kg/s]
+         !--------------------------------------------------------------
+         ! ND39 (bpch) diagnostic
+         !--------------------------------------------------------------
+
+         ! ND39 diag -- save washout losses in [kg/s]
          ! NOTE: Eventually this will be [kg/m2/s] (ewl, 11/16/15)
          ! Add LGTMM in condition for AD39 (ccc, 11/18/09)
          IF ( ( ND39 > 0 .or. LGTMM ) .and. L <= LD39 ) THEN
@@ -3863,36 +4352,61 @@
          ENDIF
 #endif
 
+#if defined( NC_DIAG )
+         !--------------------------------------------------------------
+         ! HISTORY (aka netCDF diagnostics)
+         !
+         ! Archive the amount of soluble species lost to large-scale 
+         ! precipitation (WetLossLS).  This includes contributions 
+         ! from rainout, washout, and reevaporation.  Here we add the 
+         ! component from washout.
+         !--------------------------------------------------------------
+
+         ! Units: [kg/s], but eventually consider changing to [kg/m2/s]
+         IF ( State_Diag%Archive_WetLossLs ) THEN
+            State_Diag%WetLossLS(I,J,L,NW) = 
+     &      State_Diag%WetLossLS(I,J,L,NW) + ( WetLoss / DT )
+     &                                     *  State_Met%Area_M2(I,J,1)
+         ENDIF
+#endif
+
          ! Archive wet loss in kg/m2/s
          IF ( LSOILNOX ) THEN
-            CALL SOIL_WETDEP ( I, J, L, N, WETLOSS / DT )
+            CALL SOIL_WETDEP ( I, J, L, N, WETLOSS / DT, State_Chm )
          ENDIF
 
-  
          !--------------------------------------------------------------
          ! Error checks
          !--------------------------------------------------------------
-         IF ( IT_IS_NAN( Spc(I,J,L,N) )   .or.
+         IF ( IT_IS_NAN( Spc(I,J,L,N) )       .or.
      &        Spc(I,J,L,N)   < 0e+0_fp        .or. 
      &        DSpc(NW,L,I,J) < 0e+0_fp      ) THEN
 
             ! Print error message and stop simulaton
             CALL SAFETY( I, J, L, N, ERRMSG,
-     &                   LS          = LS,           
-     &                   PDOWN       = PDOWN(L+1,I,J),  
-     &                   QQ          = QQ(L,I,J),      
-     &                   ALPHA       = ALPHA,       
-     &                   ALPHA2      = ALPHA2,         
-     &                   RAINFRAC    = 0e+0_fp,     
-     &                   WASHFRAC    = WASHFRAC, 
+     &                   LS          = LS,
+     &                   PDOWN       = PDOWN(L+1,I,J),
+     &                   QQ          = QQ(L,I,J),
+     &                   ALPHA       = ALPHA,
+     &                   ALPHA2      = ALPHA2,
+     &                   RAINFRAC    = 0e+0_fp,
+     &                   WASHFRAC    = WASHFRAC,
      &                   MASS_WASH   = MASS_WASH,
      &                   MASS_NOWASH = MASS_NOWASH,
      &                   WETLOSS     = WETLOSS,
-     &                   GAINED      = GAINED,         
-     &                   LOST        = LOST,         
-     &                   DSpc        = DSpc(NW,:,I,J), 
-     &                   Spc         = Spc(I,J,:,N)     )
+     &                   GAINED      = GAINED,
+     &                   LOST        = LOST,
+     &                   DSpc        = DSpc(NW,:,I,J),
+     &                   Spc         = Spc(I,J,:,N),
+     &                   RC          = RC              )
 
+            ! Trap potential errors
+            IF ( RC /= GC_SUCCESS ) THEN
+               Spc    => NULL()
+               ErrorMsg = 'Error encountered in "Safety"!'
+               CALL GC_Error( ErrorMsg, RC, ThisLoc )
+               RETURN
+            ENDIF
          ENDIF
       ENDDO  
 
@@ -3914,37 +4428,39 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE DO_COMPLETE_REEVAP( am_I_Root, LS,        I, J, L,
-     &                               IDX,       ERRMSG,    DT,             
-     &                               DSpc,      Input_Opt, State_Met, 
-     &                               State_Chm, RC                   )
+      SUBROUTINE DO_COMPLETE_REEVAP( am_I_Root, LS,         I, J, L,
+     &                               IDX,       ERRMSG,     DT,     
+     &                               DSpc,      Input_Opt,  State_Met,
+     &                               State_Chm, State_Diag, RC         ) 
 !     
 ! !USES:
 !
-      USE CMN_DIAG_MOD                                 ! Diagnostic flags
       USE CMN_SIZE_MOD                                 ! Size parameters
-      USE DIAG_MOD,           ONLY : AD16              ! ND16 diag array
-      USE DIAG_MOD,           ONLY : AD17              ! ND17 diag array
-      USE DIAG_MOD,           ONLY : AD18              ! ND18 diag array
-#if defined( BPCH_DIAG )
-      USE DIAG_MOD,           ONLY : AD39              ! ND39 diag array
-#endif
-      USE DIAG_MOD,           ONLY : CT16              ! ND16 diag counter
-      USE DIAG_MOD,           ONLY : CT17              ! ND17 diag counter
-      USE DIAG_MOD,           ONLY : CT18              ! ND18 diag counter
-      USE ERROR_MOD
-      USE GET_NDEP_MOD,       ONLY : SOIL_WETDEP       ! Wet deposited species
-      USE Input_Opt_Mod,      ONLY : OptInput
-      USE State_Chm_Mod,      ONLY : ChmState
-      USE State_Met_Mod,      ONLY : MetState
+#if defined( BPCH_DIAG )                              
+      USE CMN_DIAG_MOD                                 ! Diagnostic flags
+      USE DIAG_MOD,       ONLY : AD05
+      USE DIAG_MOD,       ONLY : AD16                  ! ND16 diag array
+      USE DIAG_MOD,       ONLY : AD17                  ! ND17 diag array
+      USE DIAG_MOD,       ONLY : AD18                  ! ND18 diag array
+      USE DIAG_MOD,       ONLY : AD39                  ! ND39 diag array
+      USE DIAG_MOD,       ONLY : CT16                  ! ND16 diag counter
+      USE DIAG_MOD,       ONLY : CT17                  ! ND17 diag counter
+      USE DIAG_MOD,       ONLY : CT18                  ! ND18 diag counter
+#endif                                                
+      USE ErrCode_Mod
+      USE Error_Mod,      ONLY : It_Is_Nan
+      USE GET_NDEP_MOD,   ONLY : SOIL_WETDEP           ! Wet deposited species
+      USE Input_Opt_Mod,  ONLY : OptInput
+      USE State_Chm_Mod,  ONLY : ChmState
+      USE State_Diag_Mod, ONLY : DgnState
+      USE State_Met_Mod,  ONLY : MetState
 #if defined( TOMAS )
-      USE TOMAS_MOD,          ONLY : IBINS, ICOMP, AQOXID
-      USE DIAG_MOD,           ONLY : AD05
+      USE TOMAS_MOD,      ONLY : IBINS, ICOMP, AQOXID
 #endif
 !
 ! !INPUT PARAMETERS: 
 !
-      LOGICAL,          INTENT(IN)    :: am_I_Root     ! Are we on the root CPU?
+      LOGICAL,          INTENT(IN)    :: am_I_Root     ! Are we on root CPU?
       LOGICAL,          INTENT(IN)    :: LS            ! =T denotes LS precip
       INTEGER,          INTENT(IN)    :: I             ! Longitude index
       INTEGER,          INTENT(IN)    :: J             ! Latitude index
@@ -3958,6 +4474,8 @@
 ! !INPUT/OUTPUT PARAMETERS: 
 !
       TYPE(ChmState),   INTENT(INOUT) :: State_Chm     ! Chemistry State object
+      TYPE(DgnState),   INTENT(INOUT) :: State_Diag    ! Diagnoss State object
+
       REAL(fp),         INTENT(INOUT) :: DSpc(:,:,:,:) ! Accumulator array 
                                                        ! [kg/m2] 
 !
@@ -3973,14 +4491,20 @@
 !  30 Sep 2015 - E. Lundgren - Now pass Input_Opt for use in TOMAS AQOXID
 !  30 Jun 2016 - R. Yantosca - Replace STT with Spc and DSTT with DSpc
 !  05 Jul 2016 - R. Yantosca - Replace IDWETD with State_Chm%Map_WetDep
+!  09 Nov 2017 - R. Yantosca - Now accept State_Diag as an argument
+!  09 Nov 2017 - R. Yantosca - Return error condition to calling program
 !EOP
 !------------------------------------------------------------------------------
 !BOC
 !
 ! !LOCAL VARIABLES:
 !
+      ! Scalars
       INTEGER            :: N, NW
       REAL(fp)           :: WETLOSS
+
+      ! Strings
+      CHARACTER(LEN=255) :: ErrorMsg, ThisLoc
 
       ! Pointers
       REAL(fp), POINTER  :: Spc(:,:,:,:)
@@ -3988,12 +4512,17 @@
 #if defined( TOMAS )
       REAL(fp)           :: REEVAPSO2  !(win, 7/16/09)
       INTEGER            :: KMIN       !(win, 7/16/09)
-      CHARACTER(LEN=255) :: MSG, LOC   !(ewl, 10/1/15)
 #endif
 
       !=================================================================
       ! DO_COMPLETE_REEVAP begins here!
       !=================================================================
+
+      ! Initialize
+      RC        = GC_SUCCESS
+      ErrorMsg  = ''
+      ThisLoc   = 
+     &   ' -> at Do_Complete_Reevap (in module GeosCore/wetscav_mod.F)'
 
       ! Point to chemical species array [kg/m2]
       Spc => State_Chm%Species
@@ -4069,11 +4598,11 @@
      &                                  / 64e+0_fp )
      &                                  * State_Met%AREA_M2(I,J,1)
                         ELSE
-                           MSG = 'Unexpected species units: ' 
-     &                            // TRIM(State_Chm%Spc_Units)
-                           LOC = 'Routine DO_COMPLETE_REEVAP' 
-     &                           // 'in wetscav_mod.F'
-                           CALL ERROR_STOP( MSG, LOC )
+                           Spc    => NULL()
+                           ErrorMsg = 'Unexpected species units: ' 
+     &                              // TRIM(State_Chm%Spc_Units)
+                           CALL GC_Error( ErrorMsg, RC, ThisLoc )
+                           RETURN
                         ENDIF
                         CALL AQOXID( am_I_Root, REEVAPSO2, KMIN, I, J, 
      &                               L, Input_Opt, State_Met, 
@@ -4091,11 +4620,11 @@
          ! (I,J,L), so set DSpc at grid box (I,J,L) to zero.
          DSpc(NW,L,I,J) = 0e+0_fp
          
+#if defined( BPCH_DIAG )
          !--------------------------------------------------------------
-         ! Diagnostics
+         ! ND39 (bpch) diagnostic
          !--------------------------------------------------------------
 
-#if defined( BPCH_DIAG )
          ! ND39 diag -- save rainout losses in [kg/s]
          ! NOTE: Eventually this will be [kg/m2/s] (ewl, 11/16/15)
          ! Add LGTMM in condition for AD39 (ccc, 11/18/09)
@@ -4106,11 +4635,28 @@
          ENDIF
 #endif
 
+#if defined( NC_DIAG )
+         !--------------------------------------------------------------
+         ! HISTORY (aka netCDF diagnostics)
+         !
+         ! Archive the amount of soluble species lost to large-scale 
+         ! precipitation (WetLossLs).  This includes contributions 
+         ! from rainout, washout, and reevaporation.  Here we add the 
+         ! component from reevaporation (which is negative).
+         !--------------------------------------------------------------
+
+         ! Units: [kg/s], but eventually consider changing to [kg/m2/s]
+         IF ( State_Diag%Archive_WetLossLs ) THEN
+            State_Diag%WetLossLs(I,J,L,NW) = 
+     &      State_Diag%WetLossLs(I,J,L,NW) + ( WetLoss / DT )
+     &                                     *  State_Met%Area_M2(I,J,1)
+         ENDIF
+#endif
+
          ! Archive wet loss in kg/m2/s
          IF ( LSOILNOX ) THEN
-            CALL SOIL_WETDEP ( I, J, L, N, WETLOSS / DT )
+            CALL SOIL_WETDEP ( I, J, L, N, WETLOSS / DT, State_Chm )
          ENDIF
-
 
          !--------------------------------------------------------------
          ! Error checks
@@ -4121,20 +4667,29 @@
 
             ! Print error message and stop simulaton
             CALL SAFETY( I, J, L, N, ERRMSG,
-     &                   LS          = LS,             
+     &                   LS          = LS,
      &                   PDOWN       = 0e+0_fp,
-     &                   QQ          = 0e+0_fp,      
-     &                   ALPHA       = 0e+0_fp,       
-     &                   ALPHA2      = 0e+0_fp,         
+     &                   QQ          = 0e+0_fp,
+     &                   ALPHA       = 0e+0_fp,
+     &                   ALPHA2      = 0e+0_fp,
      &                   RAINFRAC    = 0e+0_fp,     
-     &                   WASHFRAC    = 0e+0_fp, 
+     &                   WASHFRAC    = 0e+0_fp,
      &                   MASS_WASH   = 0e+0_fp,
      &                   MASS_NOWASH = 0e+0_fp,
      &                   WETLOSS     = WETLOSS,
-     &                   GAINED      = 0e+0_fp,         
-     &                   LOST        = 0e+0_fp,         
-     &                   DSpc        = DSpc(NW,:,I,J), 
-     &                   Spc         = Spc(I,J,:,N)     )
+     &                   GAINED      = 0e+0_fp,
+     &                   LOST        = 0e+0_fp,
+     &                   DSpc        = DSpc(NW,:,I,J),
+     &                   Spc         = Spc(I,J,:,N),
+     &                   RC          = RC              )
+
+            ! Trap potential errors
+            IF ( RC /= GC_SUCCESS ) THEN
+               Spc      => NULL()
+               ErrorMsg = 'Error encountered in "Safety"!'
+               CALL GC_Error( ErrorMsg, RC, ThisLoc )
+               RETURN
+            ENDIF
          ENDIF
       ENDDO
 
@@ -4156,31 +4711,32 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE DO_WASHOUT_AT_SFC( am_I_Root, LS,        I, J, L,         
-     &                              IDX,       ERRMSG,    QDOWN,     
-     &                              F,         DT,        DSpc,      
-     &                              Input_Opt, State_Met, State_Chm, 
-     &                              RC                              )
+      SUBROUTINE DO_WASHOUT_AT_SFC( am_I_Root,  LS,        I, J, L,
+     &                              IDX,        ERRMSG,    QDOWN,
+     &                              F,          DT,        DSpc,
+     &                              Input_Opt,  State_Met, State_Chm,
+     &                              State_Diag, RC                    )
 !
 ! !USES:
 !
-      USE CMN_DIAG_MOD                                 ! Diagnostic flags
       USE CMN_SIZE_MOD                                 ! Size parameters
-      USE DIAG_MOD,           ONLY : AD16              ! ND16 diag array
-      USE DIAG_MOD,           ONLY : AD17              ! ND17 diag array
-      USE DIAG_MOD,           ONLY : AD18              ! ND18 diag array
-#if defined( BPCH_DIAG )
-      USE DIAG_MOD,           ONLY : AD39              ! ND39 diag array
-#endif
-      USE DIAG_MOD,           ONLY : CT16              ! ND16 diag counter
-      USE DIAG_MOD,           ONLY : CT17              ! ND17 diag counter
-      USE DIAG_MOD,           ONLY : CT18              ! ND18 diag counter
-      USE ErrCode_Mod
-      USE ERROR_MOD,          ONLY : IT_IS_NAN         ! Test for NaN
-      USE GET_NDEP_MOD,       ONLY : SOIL_WETDEP       ! Wet deposited species
-      USE Input_Opt_Mod,      ONLY : OptInput          ! Input options
-      USE State_Chm_Mod,      ONLY : ChmState          ! Chm State object
-      USE State_Met_Mod,      ONLY : MetState          ! Met State object
+#if defined( BPCH_DIAG )                               
+      USE CMN_DIAG_MOD                                 ! Diagnostic flags
+      USE DIAG_MOD,       ONLY : AD16                  ! ND16 diag array
+      USE DIAG_MOD,       ONLY : AD17                  ! ND17 diag array
+      USE DIAG_MOD,       ONLY : AD18                  ! ND18 diag array
+      USE DIAG_MOD,       ONLY : AD39                  ! ND39 diag array
+      USE DIAG_MOD,       ONLY : CT16                  ! ND16 diag counter
+      USE DIAG_MOD,       ONLY : CT17                  ! ND17 diag counter
+      USE DIAG_MOD,       ONLY : CT18                  ! ND18 diag counter
+#endif                                                 
+      USE ErrCode_Mod                                  
+      USE ERROR_MOD,      ONLY : IT_IS_NAN             ! Test for NaN
+      USE GET_NDEP_MOD,   ONLY : SOIL_WETDEP           ! Wet deposited species
+      USE Input_Opt_Mod,  ONLY : OptInput              ! Input options
+      USE State_Chm_Mod,  ONLY : ChmState              ! Chm State object
+      USE State_Diag_Mod, ONLY : DgnState
+      USE State_Met_Mod,  ONLY : MetState              ! Met State object
 !
 ! !INPUT PARAMETERS: 
 !     
@@ -4204,6 +4760,7 @@
       REAL(fp),         INTENT(INOUT) :: DSpc(:,:,:,:) ! Accumulator array 
                                                        ! [kg/m2]
       TYPE(ChmState),   INTENT(INOUT) :: State_Chm     ! Chemistry State object
+      TYPE(DgnState),   INTENT(INOUT) :: State_Diag    ! Diags State object
 ! 
 ! !OUTPUT PARAMETERS:
 !
@@ -4223,28 +4780,42 @@
 !  29 Sep 2015 - E. Lundgren - Now use local pointer for STT array [kg/m2]
 !  30 Jun 2016 - R. Yantosca - Replace STT with Spc and DSTT with DSpc
 !  05 Jul 2016 - R. Yantosca - Now replace IDWETD with State_Chm%Map_Wetdep
+!  09 Nov 2017 - R. Yantosca - Now accept State_Diag as an argument
+!  09 Nov 2017 - R. Yantosca - Return error condition to calling program
 !EOP
 !------------------------------------------------------------------------------
 !BOC
 !
 ! !LOCAL VARIABLES:
-!
-      LOGICAL           :: KIN
-      INTEGER           :: N,        NW
-      REAL(fp)          :: WASHFRAC, WETLOSS, TMP, TK
+!     
+      ! Scalars
+      LOGICAL            :: KIN
+      INTEGER            :: N,        NW
+      REAL(fp)           :: WASHFRAC, WETLOSS, TMP, TK
+
+      ! Strings
+      CHARACTER(LEN=255) :: ErrorMsg, ThisLoc
 
       ! Pointers
-      REAL(fp), POINTER :: Spc(:,:,:,:)
+      REAL(fp), POINTER  :: Spc(:,:,:,:)
 
       !=================================================================
       ! DO_WASHOUT_AT_SFC begins here!
       !=================================================================
 
-      ! Assume success
-      RC        =  GC_SUCCESS
+      ! Initialize
+      RC        = GC_SUCCESS
+      ErrorMsg  = ''
+      ThisLoc   = 
+     &   ' -> at Do_Washout_at_Sfc (in module GeosCore/wetscav_mod.F)'
 
       ! Point to the chemical species array [kg/m2]
       Spc => State_Chm%Species
+
+#if defined( BPCH_DIAG )
+      !-----------------------------------------------------------------
+      ! ND16 (bpch) diagnostic
+      !-----------------------------------------------------------------
 
       ! ND16 diagnostic...save F 
       IF ( ND16 > 0 .and. L <= LD16 ) THEN
@@ -4256,6 +4827,30 @@
       IF ( ND18 > 0 .and. L <= LD18 ) THEN
          CT18(I,J,L,IDX) = CT18(I,J,L,IDX) + 1
       ENDIF
+#endif
+
+#if defined( NC_DIAG )
+      !-----------------------------------------------------------------
+      ! HISTORY (aka netCDF diagnostics)
+      !
+      ! Archive the fraction of the box that is undergoing large-scale 
+      ! precipitation (PrecipFracLs).  This includes contributions
+      ! from both rainout and washout.  Here we add the contribution
+      ! from washout.
+      !
+      ! NOTE: We always assume large-scale precipitation, because
+      ! the LS flag is always set to TRUE in the calling routine 
+      ! for both GEOS-FP and MERRA-2 meteorology.
+      !-----------------------------------------------------------------
+
+      ! NOTE: This diagnostic may need some work
+      ! Units: [1]
+      IF ( State_Diag%Archive_PrecipFracLS ) THEN
+         State_Diag%PrecipFracLS(I,J,L) =
+     &   State_Diag%PrecipFracLS(I,J,L) + F
+
+      ENDIF
+#endif
 
       ! air temperature [K]
       TK = State_Met%T(I,J,L)
@@ -4272,10 +4867,20 @@
          ! in grid box (I,J,L) that is lost to washout.  
          CALL WASHOUT( am_I_Root, I, J, L, N,
      &                 State_Met%BXHEIGHT(I,J,L), 
-     &                 TK ,       QDOWN,        DT,   
-     &                 F,         H2O2s(I,J,L), SO2s(I,J,L), 
+     &                 TK ,       QDOWN,        DT,
+     &                 F,
+     &                 State_Chm%H2O2AfterChem(I,J,L),
+     &                 State_Chm%SO2AfterChem(I,J,L),
      &                 WASHFRAC,  KIN,          Input_Opt,
-     &                 State_Met, State_Chm, RC )
+     &                 State_Met, State_Chm,    RC           )
+
+         ! Trap potential errors
+         IF ( RC /= GC_SUCCESS ) THEN
+            Spc    => NULL()
+            ErrorMsg = 'Error encountered in "Washout"!'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
 
          ! NOTE: for HNO3 and aerosols, there is an F factor
          ! already present in WASHFRAC.  For other soluble
@@ -4293,8 +4898,9 @@
          ! (added cdh, 4/14/2009)
          DSpc(NW,L,I,J) = DSpc(NW,L+1,I,J) + WETLOSS
 
+#if defined( BPCH_DIAG )
          !--------------------------------------------------------------
-         ! Diagnostics
+         ! ND18 and ND39 (bpch) diagnostics
          !--------------------------------------------------------------
 
          ! ND18 diagnostic...LS and conv washout fractions [unitless]
@@ -4311,7 +4917,6 @@
             AD18(I,J,L,NW,IDX) = AD18(I,J,L,NW,IDX) + TMP
          ENDIF
 
-#if defined( BPCH_DIAG )
          ! ND39 diag -- save washout loss in [kg/s]
          ! NOTE: Eventually this will be [kg/m2/s] (ewl, 11/16/15)
          ! Add LGTMM in condition for AD39 (ccc, 11/18/09)
@@ -4321,10 +4926,49 @@
          ENDIF
 #endif
 
+#if defined( NC_DIAG )
+         !--------------------------------------------------------------
+         ! HISTORY (aka netCDF diagnostics)
+         !
+         ! Archive the fraction of soluble species lost to washout
+         ! in large-scale precipitation (WashFracLS)
+         !--------------------------------------------------------------
+         IF ( State_Diag%Archive_WashFracLS ) THEN
+
+            ! Only divide WASHFRAC by F for aerosols, since
+            ! for non-aerosols this is already accounted for
+            IF ( KIN ) THEN
+               Tmp = WashFrac / F
+            ELSE
+               TMP = WashFrac
+            ENDIF
+
+            ! Units: [1]
+            State_Diag%WashFracLS(I,J,L,NW) = Tmp
+         ENDIF
+
+         !--------------------------------------------------------------
+         ! HISTORY (aka netCDF diagnostics)
+         !
+         ! Archive the amount of soluble species lost to large-scale 
+         ! precipitation (WetLossLS).  This includes contributions 
+         ! from rainout, washout, and reevaporation.  Here we add the 
+         ! component from washout.
+         !--------------------------------------------------------------
+
+         ! Units: [kg/s], but eventually consider changing to [kg/m2/s]
+         IF ( State_Diag%Archive_WetLossLS ) THEN
+            State_Diag%WetLossLS(I,J,L,NW) = 
+     &      State_Diag%WetLossLS(I,J,L,NW) + ( WetLoss / DT )
+     &                                     *  State_Met%Area_M2(I,J,1)
+         ENDIF
+
+#endif
+
          ! Archive wet loss in kg/m2/s (check source code for this routine
          ! - ewl )
 !         IF ( LSOILNOX ) THEN
-            CALL SOIL_WETDEP ( I, J, L, N, WETLOSS / DT )
+            CALL SOIL_WETDEP ( I, J, L, N, WETLOSS / DT, State_Chm )
 !         ENDIF
 
          !-----------------------------------------------------
@@ -4348,31 +4992,39 @@
      &        Spc(I,J,L,N)   < 0e+0_fp        .or. 
      &        DSpc(NW,L,I,J) < 0e+0_fp      ) THEN
 
-            PRINT*, 'WASHFRAC = ', WASHFRAC
-            PRINT*, 'F        = ', F
+            !PRINT*, 'WASHFRAC = ', WASHFRAC
+            !PRINT*, 'F        = ', F
 
             ! Print error message and stop simulaton
             CALL SAFETY( I, J, L, N, ERRMSG,
-     &                   LS          = LS,             
+     &                   LS          = LS,
      &                   PDOWN       = 0e+0_fp,
-     &                   QQ          = 0e+0_fp,      
-     &                   ALPHA       = 0e+0_fp,       
-     &                   ALPHA2      = 0e+0_fp,         
-     &                   RAINFRAC    = 0e+0_fp,     
+     &                   QQ          = 0e+0_fp,
+     &                   ALPHA       = 0e+0_fp,
+     &                   ALPHA2      = 0e+0_fp,
+     &                   RAINFRAC    = 0e+0_fp,
      &                   WASHFRAC    = 0e+0_fp, 
      &                   MASS_WASH   = 0e+0_fp,
      &                   MASS_NOWASH = 0e+0_fp,
      &                   WETLOSS     = WETLOSS,
-     &                   GAINED      = 0e+0_fp,         
-     &                   LOST        = 0e+0_fp,         
-     &                   DSpc        = DSpc(NW,:,I,J), 
-     &                   Spc         = Spc(I,J,:,N)     )
+     &                   GAINED      = 0e+0_fp,
+     &                   LOST        = 0e+0_fp,
+     &                   DSpc        = DSpc(NW,:,I,J),
+     &                   Spc         = Spc(I,J,:,N),
+     &                   RC          = RC              )
 
+            ! Trap potential errors
+            IF ( RC /= GC_SUCCESS ) THEN
+               Spc      => NULL()
+               ErrorMsg = 'Error encountered in "Safety"!'
+               CALL GC_Error( ErrorMsg, RC, ThisLoc )
+               RETURN
+            ENDIF
          ENDIF
       ENDDO
 
       ! Free pointer
-      NULLIFY( Spc )
+      Spc => NULL()
 
       END SUBROUTINE DO_WASHOUT_AT_SFC
 !EOC
@@ -4389,41 +5041,44 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE SAFETY( I,         J,           L,        N,     
-     &                   A,         LS,          PDOWN,    QQ,       
-     &                   ALPHA,     ALPHA2,      RAINFRAC, WASHFRAC, 
-     &                   MASS_WASH, MASS_NOWASH, WETLOSS,  GAINED,   
-     &                   LOST,      DSpc,        Spc )
+      SUBROUTINE SAFETY( I,         J,           L,        N,
+     &                   A,         LS,          PDOWN,    QQ,
+     &                   ALPHA,     ALPHA2,      RAINFRAC, WASHFRAC,
+     &                   MASS_WASH, MASS_NOWASH, WETLOSS,  GAINED, 
+     &                   LOST,      DSpc,        Spc,      RC        )
 
 !
 ! !USES:
 !
       USE CMN_SIZE_MOD
-      USE ERROR_MOD,    ONLY : GEOS_CHEM_STOP
-
+      USE ErrCode_Mod
 !
 ! !INPUT PARAMETERS: 
 !
       ! Arguments
-      LOGICAL,          INTENT(IN) :: LS            !
-      INTEGER,          INTENT(IN) :: I             !
-      INTEGER,          INTENT(IN) :: J             !
-      INTEGER,          INTENT(IN) :: L             !
-      INTEGER,          INTENT(IN) :: N             !
-      CHARACTER(LEN=*), INTENT(IN) :: A             !
-      REAL(fp),         INTENT(IN) :: PDOWN         !
-      REAL(fp),         INTENT(IN) :: QQ            !
-      REAL(fp),         INTENT(IN) :: ALPHA         !
-      REAL(fp),         INTENT(IN) :: ALPHA2        !
-      REAL(fp),         INTENT(IN) :: RAINFRAC      !
-      REAL(fp),         INTENT(IN) :: WASHFRAC      ! 
-      REAL(fp),         INTENT(IN) :: MASS_WASH     !
-      REAL(fp),         INTENT(IN) :: MASS_NOWASH   !
-      REAL(fp),         INTENT(IN) :: WETLOSS       !
-      REAL(fp),         INTENT(IN) :: GAINED        !
-      REAL(fp),         INTENT(IN) :: LOST          !
-      REAL(fp),         INTENT(IN) :: DSpc(LLPAR)   !
-      REAL(fp),         INTENT(IN) :: Spc(LLPAR)    !
+      LOGICAL,          INTENT(IN)  :: LS            !
+      INTEGER,          INTENT(IN)  :: I             !
+      INTEGER,          INTENT(IN)  :: J             !
+      INTEGER,          INTENT(IN)  :: L             !
+      INTEGER,          INTENT(IN)  :: N             !
+      CHARACTER(LEN=*), INTENT(IN)  :: A             !
+      REAL(fp),         INTENT(IN)  :: PDOWN         !
+      REAL(fp),         INTENT(IN)  :: QQ            !
+      REAL(fp),         INTENT(IN)  :: ALPHA         !
+      REAL(fp),         INTENT(IN)  :: ALPHA2        !
+      REAL(fp),         INTENT(IN)  :: RAINFRAC      !
+      REAL(fp),         INTENT(IN)  :: WASHFRAC      ! 
+      REAL(fp),         INTENT(IN)  :: MASS_WASH     !
+      REAL(fp),         INTENT(IN)  :: MASS_NOWASH   !
+      REAL(fp),         INTENT(IN)  :: WETLOSS       !
+      REAL(fp),         INTENT(IN)  :: GAINED        !
+      REAL(fp),         INTENT(IN)  :: LOST          !
+      REAL(fp),         INTENT(IN)  :: DSpc(LLPAR)   !
+      REAL(fp),         INTENT(IN)  :: Spc(LLPAR)    !
+!
+! ! OUTPUT PARAMETERS:
+!
+      INTEGER,          INTENT(OUT) :: RC            ! Success or failure?
 ! 
 ! !REVISION HISTORY: 
 !  18 Mar 2004 - R. Yantosca - Initial version
@@ -4433,10 +5088,21 @@
 !EOP
 !------------------------------------------------------------------------------
 !BOC
+!
+! !LOCAL VARIABLES:
+!
+      ! Strings
+      CHARACTER(LEN=255) :: ErrMsg, ThisLoc
+
       !=================================================================
       ! SAFETY begins here!
       !=================================================================
       
+      ! Initialize
+      RC      = GC_SUCCESS
+      ErrMsg  = 'Error encountered in wet deposition!'
+      ThisLoc = ' -> at SAFETY (in module GeosCore/wetscav_mod.F)'
+
       ! Print line
       WRITE( 6, '(a)' ) REPEAT( '=', 79 )
 
@@ -4463,8 +5129,8 @@
       ! Print line
       WRITE( 6, '(a)' ) REPEAT( '=', 79 )
 
-      ! DEALLOCATE memory and stop
-      CALL GEOS_CHEM_STOP()
+      ! Return with error
+      CALL GC_Error( ErrMsg, RC, ThisLoc )
 
       END SUBROUTINE SAFETY
 !EOC
@@ -4481,21 +5147,23 @@
 !\\
 ! !INTERFACE:
 !
-      FUNCTION GET_VUD( State_Met, I, J, L ) RESULT( VUD )
+      FUNCTION GET_VUD( State_Met, Input_Opt, I, J, L ) RESULT( VUD )
 !
 ! !USES:
 !
       USE DAO_MOD,            ONLY : IS_WATER
       USE State_Met_Mod,      ONLY : MetState
+      USE Input_Opt_Mod,      ONLY : OptInput 
 !
 ! !INPUT PARAMETERS: 
 !
-      TYPE(MetState), INTENT(IN)    :: State_Met   ! Meteorology State object
-      INTEGER,        INTENT(IN)    :: I, J, L     ! Location 
+      TYPE(MetState), INTENT(IN) :: State_Met   ! Meteorology State object
+      TYPE(OptInput), INTENT(IN) :: Input_Opt   ! Input Options object
+      INTEGER,        INTENT(IN) :: I, J, L     ! Location 
 !
 ! !RETURN VALUE:
 !
-      REAL(fp)                      :: VUD     ! Vertical updraft velocity in m/s. 
+      REAL(fp)                   :: VUD    ! Vertical updraft velocity in m/s. 
 ! 
 ! !REVISION HISTORY:
 !  12 Feb 2015 - C. Keller   - Initial version
@@ -4504,6 +5172,7 @@
 !  13 Mar 2017 - C. Keller   - Bug fix: make sure VUD_DEFINED is updated after
 !                              defining VUD.
 !  01 Jun 2017 - C. Keller   - Set VUD_DEFINED only if UPDVVEL has valid values. 
+!  05 Jun 2018 - C. Keller   - Add flag for online VUD calculation
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -4523,6 +5192,23 @@
       ! Use vertical updraft velocity from State_Met
       ! Convert hPa/s to m/s here
       !=================================================================
+#if defined( MODEL_GEOS )
+      IF ( Input_Opt%UseOnlineVUD ) THEN
+         IF ( ASSOCIATED( State_Met%UPDVVEL ) ) THEN
+            IF ( State_Met%DELP(I,J,L)    > TINY_FP .AND. 
+     &           State_Met%UPDVVEL(I,J,L) > 0.0_fp       ) THEN
+    
+               ! Compute VUD 
+               VUD = State_Met%UPDVVEL (I,J,L) 
+     &             * State_Met%BXHEIGHT(I,J,L) 
+     &             / State_Met%DELP    (I,J,L) 
+   
+               ! VUD is now defined
+               VUD_DEFINED = .TRUE.
+            ENDIF
+         ENDIF
+      ENDIF
+#else
       IF ( ASSOCIATED( State_Met%UPDVVEL ) ) THEN
          IF ( State_Met%DELP(I,J,L)    > TINY_FP .AND. 
      &        State_Met%UPDVVEL(I,J,L) > 0.0_fp       ) THEN
@@ -4534,8 +5220,9 @@
 
             ! VUD is now defined
             VUD_DEFINED = .TRUE.
-         ENDIF
-      ENDIF
+          ENDIF
+       ENDIF
+#endif
 
       !=================================================================
       ! Traditional GEOS-Chem:
@@ -4565,16 +5252,18 @@
 !\\
 ! !INTERFACE:
 !
-      FUNCTION GET_F( State_Met, I, J, L, K ) RESULT( F )
+      FUNCTION GET_F( State_Met, Input_Opt, I, J, L, K ) RESULT( F )
 !
 ! !USES:
 !
       USE DAO_MOD,            ONLY : IS_WATER
       USE State_Met_Mod,      ONLY : MetState
+      USE Input_Opt_Mod,      ONLY : OptInput 
 !
 ! !INPUT PARAMETERS: 
 !
       TYPE(MetState), INTENT(IN) :: State_Met  ! Meteorology State object
+      TYPE(OptInput), INTENT(IN) :: Input_Opt   ! Input Options object
       INTEGER,        INTENT(IN) :: I, J, L    ! Lon, lat, level indices
       REAL(fp),       INTENT(IN) :: K          ! Rate constant
 !
@@ -4605,7 +5294,7 @@
      &                 State_Met%BXHEIGHT(I,J,L) )
                
       ! Vertical updraft velocity [m/s]
-      Vud = GET_VUD( State_Met, I, J, L )
+      Vud = GET_VUD( State_Met, Input_Opt, I, J, L )
 
       ! Compute F (avoid div-by-zero errors)
       IF ( Vud > TINY_FP ) THEN
@@ -4630,23 +5319,25 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE INIT_WETSCAV( am_I_Root, Input_Opt, State_Chm, RC )
+      SUBROUTINE INIT_WETSCAV( am_I_Root, Input_Opt, 
+     &                         State_Chm, State_Diag, RC )
 !
 ! !USES:
 !
       USE CMN_Size_Mod
       USE ErrCode_Mod
-      USE Error_Mod
-      USE Input_Opt_Mod,      ONLY : OptInput
-      USE Species_Mod,        ONLY : Species
-      USE State_Chm_Mod,      ONLY : ChmState
-      USE State_Chm_Mod,      ONLY : Ind_
+      USE Input_Opt_Mod,  ONLY : OptInput
+      USE Species_Mod,    ONLY : Species
+      USE State_Chm_Mod,  ONLY : ChmState
+      USE State_Chm_Mod,  ONLY : Ind_
+      USE State_Diag_Mod, ONLY : DgnState
 !
 ! !INPUT PARAMETERS:
 !
       LOGICAL,        INTENT(IN)  :: am_I_Root   ! Are we on the root CPU?
       TYPE(OptInput), INTENT(IN)  :: Input_Opt   ! Input Options object
       TYPE(ChmState), INTENT(IN)  :: State_Chm   ! Chemistry State object
+      TYPE(DgnState), INTENT(IN)  :: State_Diag  ! Diagnostics State object
 !
 ! !OUTPUT PARAMETERS:
 !
@@ -4663,6 +5354,8 @@
 !                              print info if wetdep is turned on.
 !  29 Apr 2016 - R. Yantosca - Don't initialize pointers in declaration stmts
 !  20 Jun 2016 - R. Yantosca - Now define species IDs in the init phase
+!  09 Nov 2017 - R. Yantosca - Now accept State_Diag as an argument
+!  09 Nov 2017 - R. Yantosca - Return error condition to calling program
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -4684,11 +5377,14 @@
       ! INIT_WETSCAV begins here!
       !=================================================================
 
+      ! Assume success
+      RC       = GC_SUCCESS
+
       ! Exit if we have already executed this routine
       IF ( .not. FIRST ) RETURN
 
       ! Initialize
-      SpcInfo => NULL()
+      SpcInfo  => NULL()
       
       ! Define species ID flags
       id_NK1   = Ind_('NK1'  )
@@ -4699,35 +5395,44 @@
       id_H2O2  = Ind_('H2O2' )
 
       !-----------------------------------------------------------------
-      ! Allocate H2O2s and SO2s for wet deposition 
-      ! (regardless of whether wet dep is turned on or not
-      !-----------------------------------------------------------------
-      ALLOCATE( H2O2s( IIPAR, JJPAR, LLPAR ), STAT=RC )
-      IF ( RC /= 0 ) CALL ALLOC_ERR( 'H2O2s' )
-      H2O2s = 0.0_fp
- 
-      ALLOCATE( SO2s( IIPAR, JJPAR, LLPAR ), STAT=RC )
-      IF ( RC /= 0 ) CALL ALLOC_ERR( 'SO2s' )
-      SO2s = 0.0_fp
-
-      !-----------------------------------------------------------------
       ! Only allocate arrays if wetdep or convection is turned on
       !-----------------------------------------------------------------
       IF ( Input_Opt%LWETD .or. Input_Opt%LCONV ) THEN
 
+         ! Allocate PDOWN on first call
+         ALLOCATE( PDOWN( LLPAR, IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'wetscav_mod.F:PDOWN', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
+         PDOWN = 0e+0_fp
+      
+         ! Allocate QQ on first call
+         ALLOCATE( QQ( LLPAR, IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'wetscav_mod.F:QQ', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
+         QQ = 0e+0_fp
+
+         ! Allocate REEVAP on first call
+         ALLOCATE( REEVAP( LLPAR, IIPAR, JJPAR ), STAT=RC )
+         CALL GC_CheckVar( 'wetscav_mod.F:REEVAP', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
+         REEVAP = 0d0
+
          ! Allocate C_H2O on first call
          ALLOCATE( C_H2O( IIPAR, JJPAR, LLPAR ), STAT=RC )
-         IF ( RC /= 0 ) CALL ALLOC_ERR( 'C_H2O' )
+         CALL GC_CheckVar( 'wetscav_mod.F:C_H2O', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          C_H2O = 0.0_fp
             
          ! Allocate CLDLIQ on first call
          ALLOCATE( CLDLIQ( IIPAR, JJPAR, LLPAR ), STAT=RC )
-         IF ( RC /= 0 ) CALL ALLOC_ERR( 'CLDLIQ' )
+         CALL GC_CheckVar( 'wetscav_mod.F:CLDLIQ', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          CLDLIQ = 0.0_fp
             
          ! Allocate CLDICE on first call
          ALLOCATE( CLDICE( IIPAR, JJPAR, LLPAR ), STAT=RC )
-         IF ( RC /= 0 ) CALL ALLOC_ERR( 'CLDICE' )
+         CALL GC_CheckVar( 'wetscav_mod.F:CLDICE', 0, RC )
+         IF ( RC /= GC_SUCCESS ) RETURN
          CLDICE = 0.0_fp
 
       ENDIF
@@ -4906,7 +5611,7 @@
       ! Pointers
       REAL(fp), POINTER :: PL
       REAL(fp), POINTER :: TK
-            
+
       !=====================================================================
       ! Compute Vud, CLDLIQ, CLDICE, C_H2O, following Jacob et al, 2000.
       !=====================================================================
@@ -4914,6 +5619,7 @@
       ! Initialize
       PL => NULL()
       TK => NULL()
+      RC = GC_SUCCESS
 
       ! Only do computation if wetdep or convection is turned on
       IF ( Input_Opt%LWETD .or. Input_Opt%LCONV ) THEN
@@ -5007,7 +5713,7 @@
          ! call to SETUP_WETSCAV, store H2O2s in legacy units [v/v dry air] 
          ! for now for use in sulfate_mod and WASHOUT (ewl, 10/15/15)
          IF ( id_H2O2 > 0 ) THEN
-            H2O2s = State_Chm%Species(:,:,:,id_H2O2)
+            State_Chm%H2O2AfterChem = State_Chm%Species(:,:,:,id_H2O2)
      &            * ( AIRMW / State_Chm%SpcData(id_H2O2)%Info%emMW_g )
          ENDIF
 
@@ -5017,7 +5723,7 @@
          ! call to SETUP_WETSCAV, store SO2s in units [v/v dry air] for now 
          ! for use in sulfate_mod and WASHOUT (ewl, 10/15/15)
          IF ( id_SO2 > 0 ) THEN
-            SO2s = State_Chm%Species(:,:,:,id_SO2)
+            State_Chm%SO2AfterChem = State_Chm%Species(:,:,:,id_SO2)
      &           * ( AIRMW / State_Chm%SpcData(id_SO2)%Info%emMW_g )
          ENDIF
 
@@ -5039,27 +5745,56 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE CLEANUP_WETSCAV
+      SUBROUTINE CLEANUP_WETSCAV( am_I_Root, RC )
+!
+! !USES:
+!
+      USE ErrCode_Mod
+!
+! !INPUT_PARAMETERS:
+! 
+      LOGICAL, INTENT(IN)  :: am_I_Root   ! Are we on the root CPU?
+!
+! !OUTPUT PARAMETERS:
+!
+      INTEGER, INTENT(OUT) :: RC          ! Success or failure?
 !
 ! !REVISION HISTORY: 
 !  23 Feb 2000 - R. Yantosca - Initial version
 !  16 Sep 2010 - R. Yantosca - Added ProTeX headers
 !  03 Sep 2015 - R. Yantosca - Now deallocate IDWETD
 !  17 Mar 2017 - R. Yantosca - Now remove IDWETD, it's obsolete
+!  09 Nov 2017 - R. Yantosca - Return error condition to calling program
 !EOP
 !------------------------------------------------------------------------------
 !BOC
+!
       !=================================================================
       ! CLEANUP_WETSCAV begins here!
       !=================================================================
-      IF ( ALLOCATED( C_H2O  ) ) DEALLOCATE( C_H2O  )
-      IF ( ALLOCATED( CLDLIQ ) ) DEALLOCATE( CLDLIQ )
-      IF ( ALLOCATED( CLDICE ) ) DEALLOCATE( CLDICE )
-      IF ( ALLOCATED( PDOWN  ) ) DEALLOCATE( PDOWN  )
-      IF ( ALLOCATED( QQ     ) ) DEALLOCATE( QQ     )
-      IF ( ALLOCATED( H2O2s  ) ) DEALLOCATE( H2O2s  )
-      IF ( ALLOCATED( SO2s   ) ) DEALLOCATE( SO2s   )
-      IF ( ALLOCATED( REEVAP ) ) DEALLOCATE( REEVAP )
+      IF ( ALLOCATED( C_H2O  ) ) DEALLOCATE( C_H2O,  STAT=RC )
+      CALL GC_CheckVar( 'wetscav_mod.F:C_H2O', 2, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
+
+      IF ( ALLOCATED( CLDLIQ ) ) DEALLOCATE( CLDLIQ, STAT=RC )
+      CALL GC_CheckVar( 'wetscav_mod.F:CLDLIQ', 2, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
+
+      IF ( ALLOCATED( CLDICE ) ) DEALLOCATE( CLDICE, STAT=RC )
+      CALL GC_CheckVar( 'wetscav_mod.F:CLDICE', 2, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
+
+      IF ( ALLOCATED( PDOWN  ) ) DEALLOCATE( PDOWN,  STAT=RC )
+      CALL GC_CheckVar( 'wetscav_mod.F:PDOWN', 2, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
+
+      IF ( ALLOCATED( QQ     ) ) DEALLOCATE( QQ,     STAT=RC )
+      CALL GC_CheckVar( 'wetscav_mod.F:QQ', 2, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
+
+      IF ( ALLOCATED( REEVAP ) ) DEALLOCATE( REEVAP, STAT=RC )
+      CALL GC_CheckVar( 'wetscav_mod.F:REEVAP', 2, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
 
       END SUBROUTINE CLEANUP_WETSCAV
 !EOC

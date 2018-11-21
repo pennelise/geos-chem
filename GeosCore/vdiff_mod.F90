@@ -15,7 +15,9 @@ MODULE VDIFF_MOD
 ! 
 ! !USES:
 !
+#if defined( BPCH_DIAG )
   USE CMN_DIAG_MOD,  ONLY : ND15,  ND44            ! Diagnostics
+#endif
   USE CMN_SIZE_MOD,  ONLY : IIPAR, JJPAR, LLPAR    ! Grid dimensions
   USE CMN_SIZE_MOD,  ONLY : plev  => LLPAR         ! # of levels
   USE ERROR_MOD,     ONLY : DEBUG_MSG              ! Routine for debug output
@@ -117,7 +119,7 @@ MODULE VDIFF_MOD
 ! Diagnostic quantities
 !-----------------------------------------------------------------------
 
-  LOGICAL :: Archive_DryDepFlux_Mix   ! Is drydep flux diagnostic turned on?
+  LOGICAL :: Do_ND44           = .FALSE. ! Do ND44 bpch diagnostic
 !
 ! !REMARKS:
 !  The non-local PBL mixing routine VDIFF modifies the specific humidity,
@@ -146,6 +148,7 @@ MODULE VDIFF_MOD
 !                              remove unused parameters
 !  22 Jun 2016 - M. Yannetti - Replace TCVV with species db MW and phys constant
 !  29 Nov 2016 - R. Yantosca - grid_mod.F90 is now gc_grid_mod.F90
+!  09 Aug 2018 - J. Lin      - Add simple bug fix to ensure mass conservation
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -214,20 +217,25 @@ contains
 !\\
 ! !INTERFACE:
 !
-  subroutine vdiff( lat,        ip,        uwnd,       vwnd,        &
-                    tadv,       pmid,      pint,       rpdel_arg,   &
-                    rpdeli_arg, ztodt,     zm_arg,     shflx_arg,   &
-                    sflx,       thp_arg,   as2,        pblh_arg,    &
-                    kvh_arg,    kvm_arg,   tpert_arg,  qpert_arg,   &
-                    cgs_arg,    shp,       wvflx_arg,  plonl,       &
-                    Input_Opt,  State_Met, State_Chm,  taux_arg,    &
-                    tauy_arg,   ustar_arg )
+  subroutine vdiff( lat,        ip,        uwnd,       vwnd,                 &
+                    tadv,       pmid,      pint,       rpdel_arg,            &
+                    rpdeli_arg, ztodt,     zm_arg,     shflx_arg,            &
+                    sflx,       thp_arg,   as2,        pblh_arg,             &
+                    kvh_arg,    kvm_arg,   tpert_arg,  qpert_arg,            &
+                    cgs_arg,    shp,       wvflx_arg,  plonl,                &
+                    Input_Opt,  State_Met, State_Chm,  State_Diag,           &
+                    taux_arg,   tauy_arg,  ustar_arg,  RC                   )
 !
 ! !USES:
 !
+#if defined( BPCH_DIAG )
     USE DIAG_MOD,           ONLY : TURBFLUP
+#endif
+    USE ErrCode_Mod
+    USE ERROR_MOD,          ONLY : IS_SAFE_DIV
     USE Input_Opt_Mod,      ONLY : OptInput
     USE State_Chm_Mod,      ONLY : ChmState
+    USE State_Diag_Mod,     ONLY : DgnState
     USE State_Met_Mod,      ONLY : MetState
 
     implicit none
@@ -260,15 +268,7 @@ contains
          shp(:,:,:),         &     ! specific humidity (kg/kg)
          thp_arg(:,:,:)            ! pot temp after vert. diffusion
     TYPE(ChmState), INTENT(INOUT) :: State_Chm   ! Chemistry State object
-!
-! !OUTPUT PARAMETERS: 
-!
-    real(fp), intent(out) ::   &
-         kvh_arg(:,:,:),     &     ! coefficient for heat and tracers
-         kvm_arg(:,:,:),     &     ! coefficient for momentum
-         tpert_arg(:,:),     &     ! convective temperature excess
-         qpert_arg(:,:),     &     ! convective humidity excess
-         cgs_arg(:,:,:)            ! counter-grad star (cg/flux)
+    TYPE(DgnState), INTENT(INOUT) :: State_Diag  ! Diagnostics State object
 
     real(fp), optional, intent(inout) :: &
          taux_arg(:,:),      &     ! x surface stress (n)
@@ -277,6 +277,16 @@ contains
 
     real(fp), intent(inout) :: pblh_arg(:,:) ! boundary-layer height [m]
 
+!
+! !OUTPUT PARAMETERS: 
+!
+    INTEGER,  INTENT(OUT) :: RC 
+    real(fp), intent(out) :: &
+         kvh_arg(:,:,:),     &     ! coefficient for heat and tracers
+         kvm_arg(:,:,:),     &     ! coefficient for momentum
+         tpert_arg(:,:),     &     ! convective temperature excess
+         qpert_arg(:,:),     &     ! convective humidity excess
+         cgs_arg(:,:,:)            ! counter-grad star (cg/flux)
 !
 ! !REMARKS:
 !  Free atmosphere diffusivities are computed first; then modified by the 
@@ -393,9 +403,18 @@ contains
     real(fp) :: qp0(plonl,plev,pcnst) ! To store initial concentration values
                                     ! (as2)
 
+    real(fp) :: sum_qp0, sum_qp1    ! Jintai Lin 20180809
+
     !=================================================================
     ! vdiff begins here!
     !=================================================================
+
+    ! Assume success
+    RC = GC_SUCCESS
+
+    ! Initialize
+    sum_qp0  = 0.0_fp
+    sum_qp1  = 0.0_fp
 
     !### Debug
     IF ( LPRT .and. ip < 5 .and. lat < 5 ) &
@@ -731,6 +750,33 @@ contains
     endwhere
 
 !-----------------------------------------------------------------------
+! Simple bug fix to ensure mass conservation - Jintai Lin 20180809
+!   Without this fix, mass is almost but not completed conserved,
+!   which is OK for full chemistry simulations but a big problem
+!   for long lived species such as CH4 and CO2
+!-----------------------------------------------------------------------
+    DO M = 1, pcnst
+    do I = 1, plonl
+
+       ! total mass in the PBL (ignoring the v/v -> m/m conversion)
+       !   including pre-mixing mass and surface flux (emis+drydep)
+       sum_qp0 = sum(qp0(I,ntopfl:plev,M) * &
+                 State_Met%AD(I,lat,plev-ntopfl+1:1:-1)) &
+               + dqbot(I,M) * State_Met%AD(I,lat,1)
+
+       ! total mass in the PBL (ignoring the v/v -> m/m conversion)
+       sum_qp1 = sum(qp1(I,ntopfl:plev,M) * &
+                 State_Met%AD(I,lat,plev-ntopfl+1:1:-1))
+
+       IF ( IS_SAFE_DIV( sum_qp0, sum_qp1 ) ) THEN
+          qp1(I,ntopfl:plev,M) = qp1(I,ntopfl:plev,M) * &
+                                 sum_qp0 / sum_qp1
+       ENDIF
+
+    enddo
+    ENDDO
+
+!-----------------------------------------------------------------------
 ! 	... diffuse sh
 !-----------------------------------------------------------------------
 
@@ -767,6 +813,7 @@ contains
     IF (PRESENT(tauy_arg )) tauy_arg(:,lat)  = tauy   
     IF (PRESENT(ustar_arg)) ustar_arg(:,lat) = ustar  
 
+#if defined( BPCH_DIAG )
     !=======================================================
     ! ND15 Diagnostic: 
     ! mass change due to mixing in the boundary layer
@@ -780,6 +827,29 @@ contains
        dqbot = 0e+0_fp
        call qvdiff( pcnst, qmx, dqbot, cch, zeh, &
             termh, qp1, plonl )
+
+!-----------------------------------------------------------------------
+! Simple bug fix to ensure mass conservation - Jintai Lin 20180809
+!   Without this fix, mass is almost but not completed conserved,
+!   which is OK for full chemistry simulations but a big problem
+!   for long lived species such as CH4 and CO2
+!-----------------------------------------------------------------------
+       DO M = 1, pcnst
+       do I = 1, plonl
+
+          ! total mass in the PBL (ignoring the v/v -> m/m conversion)
+          sum_qp0 = sum(qp0(I,ntopfl:plev,M) * &
+                    State_Met%AD(I,lat,plev-ntopfl+1:1:-1))
+
+          ! total mass in the PBL (ignoring the v/v -> m/m conversion)
+          sum_qp1 = sum(qp1(I,ntopfl:plev,M) * &
+                    State_Met%AD(I,lat,plev-ntopfl+1:1:-1))
+
+          qp1(I,ntopfl:plev,M) = qp1(I,ntopfl:plev,M) * &
+                                 sum_qp0 / sum_qp1
+
+       enddo
+       ENDDO
 
        DO M = 1, pcnst
        DO L = 1, plev 
@@ -798,6 +868,7 @@ contains
        ENDDO
 
     ENDIF
+#endif
 
   end subroutine vdiff
 !EOC
@@ -1345,7 +1416,6 @@ contains
        do k = ntopfl+1,plev-1
           do i = 1,plonl
              zfq(i,k,m) = (qm1(i,k,m) + cc(i,k)*zfq(i,k-1,m))*term(i,k)
-             
           end do
        end do
     end do
@@ -1353,9 +1423,8 @@ contains
 ! 	... bottom level: (includes  surface fluxes)
 !-----------------------------------------------------------------------
     do i = 1,plonl
-       tmp1d(i) = 1.e+0_fp/(1.e+0_fp + cc(i,plev) - &
-                  cc(i,plev)*ze(i,plev-1))
-       ze(i,plev) = 0.
+       tmp1d(i) = 1.e+0_fp/(1.e+0_fp + cc(i,plev) - cc(i,plev)*ze(i,plev-1))
+       ze(i,plev) = 0.e+0_fp
     end do
     do m = 1,ncnst
        do i = 1,plonl
@@ -1713,18 +1782,26 @@ contains
 !\\
 ! !INTERFACE:
 !
-  SUBROUTINE VDINTI
+  SUBROUTINE VDINTI( am_I_Root, RC )
 !
 ! !USES:
 ! 
-    USE ERROR_MOD,    ONLY : ALLOC_ERR
+    USE ErrCode_Mod
     USE PRESSURE_MOD, ONLY : GET_AP, GET_BP
-    
-    implicit none
+!
+! !INPUT PARAMETERS:
+!
+    LOGICAL, INTENT(IN)  :: am_I_Root    ! Are we on the root CPU?
+!
+! !OUTPUT PARAMETERS:
+!
+    INTEGER, INTENT(OUT) :: RC           ! Success or failure?
 !
 ! !REVISION HISTORY: 
 !  02 Mar 2011 - R. Yantosca - Bug fixes for PGI compiler: these mostly
 !                              involve explicitly using "D" exponents
+!  07 Nov 2017 - R. Yantosca - Add am_I_root, RC as arguments so that we
+!                              can propagate the error to the top level
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -1735,13 +1812,15 @@ contains
     integer :: k, &                               ! vertical loop index
                m
     
-    integer :: AS
     real(fp)  :: ref_pmid(LLPAR)
 
     !=================================================================
     ! vdinti begins here!
     !=================================================================
-
+    
+    ! Assume success
+    RC = GC_SUCCESS
+    
     ref_pmid = 0.e+0_fp
     plevp = plev+1
 !-----------------------------------------------------------------------
@@ -1784,8 +1863,9 @@ contains
 !-----------------------------------------------------------------------
 ! 	... set the square of the mixing lengths
 !-----------------------------------------------------------------------
-    ALLOCATE( ml2(plevp), STAT=AS )
-    IF ( AS /= 0 ) CALL ALLOC_ERR( 'ml2' )
+    ALLOCATE( ml2(plevp), STAT=RC )
+    CALL GC_CheckVar( 'vdiff_mod:ML2', 0, RC )
+    IF ( RC /= GC_SUCCESS ) RETURN
 
     ml2(1) = 0.e+0_fp
     do k = 2,plev
@@ -1797,8 +1877,9 @@ contains
 !           normally this should be the same as qmin.
 !-----------------------------------------------------------------------
     
-    ALLOCATE( qmincg(pcnst), STAT=AS )
-    IF ( AS /= 0 ) CALL ALLOC_ERR( 'DETRAINE' )
+    ALLOCATE( qmincg(pcnst), STAT=RC )
+    CALL GC_CheckVar( 'vdiff_mod:QMINCG', 0, RC )
+    IF ( RC /= GC_SUCCESS ) RETURN
     
     do m = 1,pcnst
        qmincg(m) = 0.e+0_fp
@@ -1832,7 +1913,8 @@ contains
 !
 ! !INTERFACE:
 !
-  SUBROUTINE VDIFFDR( am_I_Root, Input_Opt, State_Met, State_Chm, State_Diag )
+  SUBROUTINE VDIFFDR( am_I_Root, Input_Opt,  State_Met,                      &
+                      State_Chm, State_Diag, RC                             )
 !
 ! !USES:
 ! 
@@ -1843,6 +1925,7 @@ contains
     USE DIAG_MOD,           ONLY : AD44
 #endif
     USE DRYDEP_MOD,         ONLY : DEPSAV
+    USE ErrCode_Mod
     USE GET_NDEP_MOD,       ONLY : SOIL_DRYDEP
     USE GLOBAL_CH4_MOD,     ONLY : CH4_EMIS
     USE GC_GRID_MOD,        ONLY : GET_AREA_M2
@@ -1878,6 +1961,10 @@ contains
     TYPE(MetState), INTENT(INOUT) :: State_Met    ! Meteorology State object
     TYPE(ChmState), INTENT(INOUT) :: State_Chm    ! Chemistry State object
     TYPE(DgnState), INTENT(INOUT) :: State_Diag   ! Diagnostics State object
+!
+! !OUTPUT PARAMETERS: 
+!   
+    INTEGER,        INTENT(OUT)   :: RC           ! Success or failure?
 !
 ! !REMARKS:
 !  (1) Need to declare the Meteorology State object (State_MET) with
@@ -1951,6 +2038,8 @@ contains
 !  30 Jun 2017 - R. Yantosca - For now, print out eflx/dflx if DEVEL=y
 !  05 Oct 2017 - R. Yantosca - Now accept State_Diag as an argument
 !  10 Oct 2017 - R. Yantosca - Now archive drydep flux (mixing) for History
+!  07 Nov 2017 - R. Yantosca - Now accept RC as an argument, so that we can
+!                              pass error codes back to the top level
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -2014,7 +2103,7 @@ contains
     ! HEMCO update
     LOGICAL            :: FND
     REAL(fp)           :: TMPFLX, EMIS, DEP
-    INTEGER            :: RC,     HCRC, TOPMIX
+    INTEGER            :: HCRC,   TOPMIX
 
     ! PARANOX loss fluxes (kg/m2/s), imported from 
     ! HEMCO PARANOX extension module (ckeller, 4/15/2015)
@@ -2033,12 +2122,18 @@ contains
     ! For diagnostics
     REAL(fp)                :: EmMW_kg
 
+    ! For error trapping
+    CHARACTER(LEN=255)      :: ErrMsg, ThisLoc
+
     !=================================================================
     ! vdiffdr begins here!
     !=================================================================
 
-    ! Number of advected species
-    nAdvect = State_Chm%nAdvect
+    ! Initialize
+    RC      = GC_SUCCESS               ! Assume success
+    nAdvect = State_Chm%nAdvect        ! # of advected species
+    ErrMsg  = ''
+    ThisLoc = ' -> at VDIFF (in module GeosCore/vdiff_mod.F90)'
 
     !### Debug
     IF ( LPRT ) CALL DEBUG_MSG( '### VDIFFDR: VDIFFDR begins' )
@@ -2085,7 +2180,7 @@ contains
     LGTMM        = Input_Opt%LGTMM
     LSOILNOX     = Input_Opt%LSOILNOX
 
-    dtime = GET_TS_CONV()*60e+0_fp ! min -> second
+    dtime = GET_TS_CONV() ! second
     
     shflx = State_Met%EFLUX / latvap ! latent heat -> water vapor flux
 
@@ -2391,7 +2486,7 @@ contains
 
              ! Deposition mass, kg
              DEP_KG = dflx( I, J, N ) * GET_AREA_M2( I, J, 1 ) &
-                    * GET_TS_CONV() * 60e+0_fp
+                    * GET_TS_CONV()
 
              IF ( SpcInfo%Is_Hg2 ) THEN
 
@@ -2399,8 +2494,9 @@ contains
                 Hg_Cat = SpcInfo%Hg_Cat
 
                 ! Archive dry-deposited Hg2
-                CALL ADD_Hg2_DD      ( I, J, Hg_Cat, DEP_KG            )
-                CALL ADD_Hg2_SNOWPACK( I, J, Hg_Cat, DEP_KG, State_Met )
+                CALL ADD_Hg2_DD      ( I, J, Hg_Cat,    DEP_KG              )
+                CALL ADD_Hg2_SNOWPACK( I, J, Hg_Cat,    DEP_KG,              &
+                                       State_Met, State_Chm, State_Diag     )
 
              ELSE IF ( SpcInfo%Is_HgP ) THEN 
 
@@ -2408,8 +2504,9 @@ contains
                 Hg_Cat = SpcInfo%Hg_Cat
 
                 ! Archive dry-deposited HgP
-                CALL ADD_HgP_DD      ( I, J, Hg_Cat, DEP_KG            )
-                CALL ADD_Hg2_SNOWPACK( I, J, Hg_Cat, DEP_KG, State_Met )
+                CALL ADD_HgP_DD      ( I, J, Hg_Cat,    DEP_KG              )
+                CALL ADD_Hg2_SNOWPACK( I, J, Hg_Cat,    DEP_KG,              &
+                                       State_Met, State_Chm, State_Diag     )
 
              ENDIF
 
@@ -2439,7 +2536,9 @@ contains
     ! specialty simulations) are accounted for in species 1..nDrydep,
     ! so we don't need to do any further special handling.
     !=======================================================================
-    if ( ND44 > 0 .or. LGTMM .or. LSOILNOX .or. Archive_DryDepFlux_Mix ) then
+    if ( Do_ND44 .or. LGTMM .or. LSOILNOX .or.  &
+         State_Diag%Archive_DryDepMix     .or.  &
+         State_Diag%Archive_DryDep       ) then
 
        ! Loop over only the drydep species
        ! If drydep is turned off, nDryDep=0 and the loop won't execute
@@ -2462,7 +2561,7 @@ contains
           !-----------------------------------------------------------------
           ! Update dry deposition flux diagnostic for bpch output (ND44) 
           !-----------------------------------------------------------------
-	  IF( ND44 > 0 .or. LGTMM) THEN                
+	  IF( Do_ND44 .or. LGTMM) THEN                
              ! only for the lowest model layer
              ! Convert : kg/m2/s -> molec/cm2/s
              ! consider timestep difference between convection and emissions
@@ -2473,7 +2572,6 @@ contains
                              * 1.e-4_fp * GET_TS_CONV() / GET_TS_CHEM() 
           ENDIF
 #endif
-
 #if defined( NC_DIAG )
           !-----------------------------------------------------------------
           ! HISTORY: Update dry deposition flux loss [molec/cm2/s]
@@ -2503,10 +2601,11 @@ contains
           !
           !    -- Bob Yantosca (yantosca@seas.harvard.edu)
           !-----------------------------------------------------------------
-          IF ( Archive_DryDepFlux_Mix ) THEN
-             State_Diag%DryDepFlux_Mix(:,:,1,ND) = Dflx(:,:,N)               &
-                                                 * 1.0e-4_fp                 &
-                                                 * ( AVO / EmMW_kg  )
+          IF ( State_Diag%Archive_DryDepMix .OR. &
+               State_Diag%Archive_DryDep ) THEN
+             State_Diag%DryDepMix(:,:,ND) = Dflx(:,:,N)               &
+                                            * 1.0e-4_fp               &
+                                            * ( AVO / EmMW_kg  )
           ENDIF
 #endif
 
@@ -2530,7 +2629,7 @@ contains
                   * AVO * 1.e-4_fp &
                   * GET_TS_CONV() / GET_TS_EMIS()
           
-                CALL SOIL_DRYDEP ( I, J, 1, N, soilflux)
+                CALL SOIL_DRYDEP ( I, J, 1, N, soilflux, State_Chm )
              ENDDO
              ENDDO
 	  ENDIF
@@ -2604,14 +2703,14 @@ contains
 !$OMP PARALLEL DO DEFAULT( SHARED )      &
 !$OMP PRIVATE( J )     
        do J = 1, JJPAR
-          call vdiff( J,         1,         p_um1,  p_vm1,     &
-                      p_tadv,    p_pmid,    p_pint, p_rpdel,   &
-                      p_rpdeli,  dtime,     p_zm,   p_hflux,   &
-                      sflx,      p_thp,     p_as2,  pblh,      &
-                      p_kvh,     p_kvm,     tpert,  qpert,     &
-                      p_cgs,     p_shp,     shflx,  IIPAR,     &
-                      Input_Opt, State_Met, State_Chm,         &
-                      ustar_arg=p_ustar )
+          call vdiff( J,         1,         p_um1,     p_vm1,                &
+                      p_tadv,    p_pmid,    p_pint,    p_rpdel,              &
+                      p_rpdeli,  dtime,     p_zm,      p_hflux,              &
+                      sflx,      p_thp,     p_as2,     pblh,                 &
+                      p_kvh,     p_kvm,     tpert,     qpert,                &
+                      p_cgs,     p_shp,     shflx,     IIPAR,                & 
+                      Input_Opt, State_Met, State_Chm, State_Diag,           &
+                      ustar_arg=p_ustar,    RC=RC                           )
        enddo
 !$OMP END PARALLEL DO
 
@@ -2703,7 +2802,16 @@ contains
        ! PBL is in m 
        State_Met%PBLH = pblh 
 
-       CALL COMPUTE_PBL_HEIGHT( State_Met )
+       ! Compute PBL quantities
+       CALL COMPUTE_PBL_HEIGHT( am_I_Root, State_Met, RC )
+
+       ! Trap potential errors
+       IF ( RC /= GC_SUCCESS ) THEN
+          ErrMsg = 'Error encountered in "COMPUTE_PBL_HEIGHT"!'
+          CALL GC_Error( ErrMsg, RC, ThisLoc )
+          RETURN
+       ENDIF
+
     endif
 
 #if defined( USE_TEND )
@@ -2737,6 +2845,9 @@ contains
 !
 ! !USES:
 !
+#if defined( BPCH_DIAG )
+    USE CMN_DIAG_MOD,       ONLY : ND44
+#endif
     USE DAO_MOD,            ONLY : AIRQNT
     USE ERROR_MOD,          ONLY : DEBUG_MSG
     USE ErrCode_Mod
@@ -2748,6 +2859,12 @@ contains
     USE State_Diag_Mod,     ONLY : DgnState
     USE TIME_MOD,           ONLY : ITS_TIME_FOR_EMIS
     USE UnitConv_Mod,       ONLY : Convert_Spc_Units
+#if defined( NC_DIAG )
+    USE CMN_Size_Mod,       ONLY : IIPAR, JJPAR
+    USE Diagnostics_Mod,    ONLY : Compute_Column_Mass
+    USE Diagnostics_Mod,    ONLY : Compute_Budget_Diagnostics
+    USE Time_Mod,           ONLY : Get_Ts_Dyn
+#endif
 
     IMPLICIT NONE
 !
@@ -2786,6 +2903,8 @@ contains
 !  27 Sep 2017 - E. Lundgren - Apply unit conversion within routine instead
 !                              of in do_mixing
 !  05 Oct 2017 - R. Yantosca - Now accept State_Diag as an argument
+!   7 Nov 2017 - R. Yantosca - Now send error condition back to top level
+!  26 Sep 2018 - E. Lundgren - Implement budget diagnostics
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -2793,33 +2912,57 @@ contains
 ! !LOCAL VARIABLES:
 !
     ! SAVEd scalars
-    LOGICAL, SAVE :: FIRST = .TRUE.
+    LOGICAL, SAVE      :: FIRST = .TRUE.
 
     ! Scalars
-    LOGICAL           :: prtDebug
-    CHARACTER(LEN=63) :: OrigUnit
+    LOGICAL            :: prtDebug
+
+    ! Strings
+    CHARACTER(LEN=63)  :: OrigUnit
+    CHARACTER(LEN=255) :: ErrMsg, ThisLoc
+
+#if defined( NC_DIAG )
+    REAL(fp)           :: DT_Dyn
+#endif
 
     !=======================================================================
     ! DO_PBL_MIX_2 begins here!
     !=======================================================================
 
-    ! Assume success
-    RC  =  GC_SUCCESS
-
-    ! Set a flag if we should print debug output to the log file
-    prtDebug = ( Input_Opt%LPRT .and. am_I_Root )
+    ! Initialize
+    RC       =  GC_SUCCESS                          ! Assume success
+    prtDebug = ( Input_Opt%LPRT .and. am_I_Root )   ! Print debug output?
+    ErrMsg   = ''
+    ThisLoc  = ' -> at DO_PBL_MIX_2 (in module GeosCore/vdiff_mod.F90)'
 
     !-----------------------------------------------------------------------
     ! First-time initialization
     ! NOTE: Should really move this into the init stage
     !-----------------------------------------------------------------------
     IF ( FIRST ) THEN
-       CALL INIT_PBL_MIX()
-       call vdinti()
 
-       ! Test if we are archiving the drydep flux (from mixing) diagnostic
-       Archive_DryDepFlux_Mix = ASSOCIATED( State_Diag%DryDepFlux_Mix ) 
+       ! Make sure the various PBL arrays are allocated
+       CALL INIT_PBL_MIX( am_I_Root, RC )
+       IF ( RC /= GC_SUCCESS ) THEN
+          ErrMsg = 'Error encountered in "INIT_PBL_MIX"!'
+          CALL GC_Error( ErrMsg, RC, ThisLoc )
+          RETURN
+       ENDIF
 
+       ! Perform more internal initializations
+       CALL Vdinti( am_I_Root, RC )
+       IF ( RC /= GC_SUCCESS ) THEN
+          ErrMsg = 'Error encountered in "VDINTI"!'
+          CALL GC_Error( ErrMsg, RC, ThisLoc )
+          RETURN
+       ENDIF
+
+#if defined( BPCH_DIAG )
+       ! Set a flag to denote we should archive ND44 bpch diagnostic
+       ! NOTE: this will only be valid if BPCH_DIAG=y
+       Do_ND44 = ( ND44 > 0 ) 
+#endif
+      
        ! Reset first-time flag
        FIRST = .FALSE.
     ENDIF
@@ -2829,30 +2972,148 @@ contains
     !-----------------------------------------------------------------------
     IF ( DO_VDIFF ) THEN
 
+#if defined( NC_DIAG )
+       !------------------------------------------------------
+       ! Non-local PBL mixing budget diagnostics - Part 1 of 2
+       ! 
+       ! WARNING: The mixing budget diagnostic includes the application
+       ! of species tendencies (emissions fluxes and dry deposition
+       ! rates) below the PBL when using non-local PBL mixing. This is
+       ! done for all species with defined emissions / dry deposition
+       ! rates, including dust. These tendencies below the PBL are 
+       ! therefore not included in the emissions/dry deposition budget 
+       ! diagnostics when using non-local PBL mixing. (ewl, 9/26/18)
+       !------------------------------------------------------
+       IF ( State_Diag%Archive_BudgetMixing ) THEN
+          ! Get initial column masses
+          CALL Compute_Column_Mass( am_I_Root,                              & 
+                                    Input_Opt, State_Met, State_Chm,        &
+                                    State_Chm%Map_Advect,                   &
+                                    State_Diag%Archive_BudgetMixingFull, &
+                                    State_Diag%Archive_BudgetMixingTrop, &
+                                    State_Diag%Archive_BudgetMixingPBL,  &
+                                    State_Diag%BudgetMass1,              &
+                                    RC ) 
+          IF ( RC /= GC_SUCCESS ) THEN
+             ErrMsg = 'Mixing budget diagnostics error 1 (non-local mixing)'
+             CALL GC_Error( ErrMsg, RC, ThisLoc )
+             RETURN
+          ENDIF
+       ENDIF       
+#endif
+
+       !----------------------------------------
+       ! Unit conversion #1
+       !----------------------------------------
+
        ! Convert species concentration to v/v dry
        CALL Convert_Spc_Units( am_I_Root, Input_Opt, State_Met, State_Chm,   &
-                              'v/v dry',   RC,       OrigUnit=OrigUnit      )
+                              'v/v dry',  RC,        OrigUnit=OrigUnit      )
+
+       ! Trap potential error
+       IF ( RC /= GC_SUCCESS ) THEN
+          ErrMsg = 'Error encountred in "Convert_Spc_Units" (to v/v dry)!'
+          CALL GC_Error( ErrMsg, RC, ThisLoc )
+          RETURN
+       ENDIF
+
+       !----------------------------------------
+       ! PBL mixing
+       !----------------------------------------
 
        ! Do non-local PBL mixing
-       CALL VDIFFDR( am_I_Root, Input_Opt, State_Met, State_Chm, State_Diag )
+       CALL VDIFFDR( am_I_Root, Input_Opt,  State_Met,                       &
+      &              State_Chm, State_Diag, RC                              )
+
+       ! Trap potential error
+       IF ( RC /= GC_SUCCESS ) THEN
+          ErrMsg = 'Error encountred in "VDIFFDR"!'
+          CALL GC_Error( ErrMsg, RC, ThisLoc )
+          RETURN
+       ENDIF
+
+       ! Debug print
        IF( prtDebug ) THEN
           CALL DEBUG_MSG( '### DO_PBL_MIX_2: after VDIFFDR' )
        ENDIF
 
-       ! Update air quantities and tracer concentrations with updated
+       !----------------------------------------
+       ! Update airmass etc. and mixing ratios
+       !----------------------------------------
+
+       ! Update air quantities and species concentrations with updated
        ! specific humidity (ewl, 10/28/15)
+       !
        ! NOTE: Prior to October 2015, air quantities were not updated
        ! with specific humidity modified in VDIFFDR at this point in
        ! the model
        CALL AIRQNT( am_I_Root, Input_Opt, State_Met, State_Chm,              &
                     RC,        update_mixing_ratio=.TRUE.                   )
+
+       ! Trap potential error
+       IF ( RC /= GC_SUCCESS ) THEN
+          ErrMsg = 'Error encountred in "AIRQNT"!'
+          CALL GC_Error( ErrMsg, RC, ThisLoc )
+          RETURN
+       ENDIF
+
+       ! Debug print
        IF( prtDebug ) THEN
           CALL DEBUG_MSG( '### DO_PBL_MIX_2: after AIRQNT' )
        ENDIF
 
+       !----------------------------------------
+       ! Unit conversion #2
+       !----------------------------------------
+
        ! Convert species back to the original units
        CALL Convert_Spc_Units( am_I_Root, Input_Opt, State_Met,              &
                                State_Chm, OrigUnit,  RC                     )
+
+       ! Trap potential error
+       IF ( RC /= GC_SUCCESS ) THEN
+          ErrMsg = 'Error encountred in "Convert_Spc_Units" (from v/v dry)!'
+          CALL GC_Error( ErrMsg, RC, ThisLoc )
+          RETURN
+       ENDIF
+
+#if defined( NC_DIAG )
+       !------------------------------------------------------
+       ! Non-local PBL mixing budget diagnostics - Part 2 of 2
+       !------------------------------------------------------
+       IF ( State_Diag%Archive_BudgetMixing ) THEN
+
+          ! Get dynamics timestep [s]
+          DT_Dyn = Get_Ts_Dyn()
+
+          ! Get final column masses and compute diagnostics
+          CALL Compute_Column_Mass( am_I_Root,                              &
+                                    Input_Opt, State_Met, State_Chm,        &
+                                    State_Chm%Map_Advect,                   &
+                                    State_Diag%Archive_BudgetMixingFull,    &
+                                    State_Diag%Archive_BudgetMixingTrop,    &
+                                    State_Diag%Archive_BudgetMixingPBL,     &
+                                    State_Diag%BudgetMass2,                 &
+                                    RC )    
+          CALL Compute_Budget_Diagnostics( am_I_Root,                       &
+                                       State_Chm%Map_Advect,                &
+                                       DT_Dyn,                              &
+                                       State_Diag%Archive_BudgetMixingFull, &
+                                       State_Diag%Archive_BudgetMixingTrop, &
+                                       State_Diag%Archive_BudgetMixingPBL,  &
+                                       State_Diag%BudgetMixingFull,         &
+                                       State_Diag%BudgetMixingTrop,         &
+                                       State_Diag%BudgetMixingPBL,          &
+                                       State_Diag%BudgetMass1,              &
+                                       State_Diag%BudgetMass2,              &
+                                       RC )
+          IF ( RC /= GC_SUCCESS ) THEN
+             ErrMsg = 'Mixing budget diagnostics error 2 (non-local mixing)'
+             CALL GC_Error( ErrMsg, RC, ThisLoc )
+             RETURN
+          ENDIF
+       ENDIF
+#endif
 
     ENDIF
 

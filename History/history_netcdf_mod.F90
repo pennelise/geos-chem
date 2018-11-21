@@ -127,7 +127,8 @@ CONTAINS
        Container%IsFileDefined = .FALSE.
        Container%ReferenceYmd  = UNDEFINED_INT
        Container%ReferenceHms  = UNDEFINED_INT
-       Container%ReferenceJd   = UNDEFINED_DBL
+!       Container%ReferenceJd   = UNDEFINED_DBL
+       Container%ReferenceJsec = UNDEFINED_DBL
        Container%CurrTimeSlice = UNDEFINED_INT
 
        !--------------------------------------------------------------------
@@ -210,6 +211,8 @@ CONTAINS
 !  28 Aug 2017 - R. Yantosca - Now make sure AREA is written as REAL(f4)
 !  28 Aug 2017 - R. Yantosca - Replace "TBD" in units w/ species units
 !  30 Aug 2017 - R. Yantosca - Now print file write info only on the root CPU
+!  11 Jul 2018 - R. Yantosca - Avoid roundoff errors when computing the
+!                              file reference date and time
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -221,6 +224,7 @@ CONTAINS
     INTEGER                     :: VarXDimId,  VarYDimId
     INTEGER                     :: VarZDimId,  VarTDimId
     INTEGER                     :: yyyymmdd,   hhmmss
+    INTEGER                     :: nLev,       nILev
     INTEGER                     :: DataType
 
     ! Strings                   
@@ -281,9 +285,8 @@ CONTAINS
 
           ! Subtract the file write alarm interval that we added to
           ! the current date/time (CurrentJd) field at initialization
-          Container%ReferenceJd = Container%CurrentJd                        &
-                                - ( Container%FileWriteIvalSec /             &
-                                    SECONDS_PER_DAY                         )
+          Container%ReferenceJsec = Container%CurrentJsec                    &
+                                  - Container%FileWriteIvalSec
 
        ELSE
 
@@ -298,13 +301,17 @@ CONTAINS
           ! For all future file writes, set the reference date/time to the
           ! current date/time (CurrentJd).
           IF ( Container%FirstInst ) THEN
-             Container%ReferenceJd = Container%EpochJd
+             Container%ReferenceJsec = Container%EpochJsec
              Container%FirstInst   = .FALSE.
           ELSE
-             Container%ReferenceJd = Container%CurrentJd
+             Container%ReferenceJsec = Container%CurrentJsec
           ENDIF
-
        ENDIF
+
+       ! Convert the reference time from Astronomical Julian Seconds
+       ! to Astronomical Julian Date.  This is needed for the conversion
+       ! to calendar date and time via routine CALDATE.
+       Container%ReferenceJd = Container%ReferenceJsec / SECONDS_PER_DAY
 
        ! Recompute the ReferenceYmd and ReferenceHms fields
        CALL CalDate( JulianDay = Container%ReferenceJd,                      &
@@ -324,16 +331,6 @@ CONTAINS
                               hhmmss     = Container%ReferenceHms,           &
                               MAPL_Style = .TRUE. )
    
-       ! Echo info about the file we are creating
-       IF ( am_I_Root ) THEN
-          WRITE( 6, 100 ) TRIM( Container%Name ),                            &
-                          Container%ReferenceYmd,                            &
-                          Container%ReferenceHms
-          WRITE( 6, 110 ) TRIM( FileName       )
-       ENDIF
- 100   FORMAT( '     - Creating file for ', a, '; reference = ', i8.8,1x,i6.6 )
- 110   FORMAT( '        with filename = ', a                                   )
-
 !------------------------------------------------------------------------------
 ! TEMPORARY FIX (bmy, 9/20/17)
 ! NOTE: The different timestamps will cause the binary diff in the unit
@@ -360,41 +357,74 @@ CONTAINS
        Container%ProdDateTime = ''
 !------------------------------------------------------------------------------
 
-       !--------------------------------------------------------------------
-       ! Create the file and add global attributes
-       ! Remain in netCDF define mode upon exiting this routine
-       !
-       ! NOTE: Container%Reference is a global attribute lists the GEOS-Chem
-       ! web and wiki page.  It has nothing to do with the reference date
-       ! and time fields that are computed by History_Set_RefDateTime.
-       !--------------------------------------------------------------------
-       CALL Nc_Create( Create_Nc4   = .TRUE.,                                &
-                       NcFile       = FileName,                              &
-                       nLon         = Container%nX,                          &
-                       nLat         = Container%nY,                          &
-                       nLev         = Container%nZ,                          &
-                       nIlev        = Container%nZ+1,                        &
-                       nTime        = NF_UNLIMITED,                          &
-                       NcFormat     = Container%NcFormat,                    &
-                       Conventions  = Container%Conventions,                 &
-                       History      = Container%History,                     &
-                       ProdDateTime = Container%ProdDateTime,                &
-                       Reference    = Container%Reference,                   &
-                       Title        = Container%Title,                       &
-                       Contact      = Container%Contact,                     &
-                       fId          = Container%FileId,                      &
-                       TimeId       = Container%tDimId,                      &
-                       LevId        = Container%zDimId,                      &
-                       ILevId       = Container%iDimId,                      &
-                       LatId        = Container%yDimId,                      &
-                       LonId        = Container%xDimId,                      &
-                       KeepDefMode  = .TRUE.,                                &
-                       Varct        = VarCt                                 )
-         
-       !--------------------------------------------------------------------
-       ! Denote that the file has been created and is open
-       !--------------------------------------------------------------------
-       Container%IsFileOpen = .TRUE.
+       ! Pick the dimensions of the lev and ilev variables properly
+       IF ( Container%OnLevelEdges ) THEN
+          nILev = Container%NZ
+          nLev  = nILev - 1
+       ELSE
+          nLev  = Container%NZ
+          nILev = nLev  + 1
+       ENDIF
+
+       ! Do not create netCDF file on first timestep if instantaneous collection
+       ! and frequency = duration. This will avoid creation of a netCDF file
+       ! containing all missing values.
+       IF ( TRIM( Container%UpdateMode ) == 'instantaneous'       .and. &
+            Container%UpdateIvalSec == Container%FileCloseIvalSec .and. &
+            Container%FileCloseAlarm  == 0.0  ) THEN
+          RETURN
+       ELSE
+
+          ! Echo info about the file we are creating
+          IF ( am_I_Root ) THEN
+             WRITE( 6, 100 ) TRIM( Container%Name ),                         &
+                             Container%ReferenceYmd,                         &
+                             Container%ReferenceHms
+             WRITE( 6, 110 ) TRIM( FileName       )
+          ENDIF
+100       FORMAT( '     - Creating file for ', a, '; reference = ',i8.8,1x,i6.6)
+110       FORMAT( '        with filename = ', a                                )
+
+          !--------------------------------------------------------------------
+          ! Create the file and add global attributes
+          ! Remain in netCDF define mode upon exiting this routine
+          !
+          ! NOTE: Container%Reference is a global attribute lists the GEOS-Chem
+          ! web and wiki page.  It has nothing to do with the reference date
+          ! and time fields that are computed by History_Set_RefDateTime.
+          !--------------------------------------------------------------------
+          CALL Nc_Create( Create_Nc4     = .TRUE.,                           &
+                          NcFile         = FileName,                         &
+                          nLon           = Container%nX,                     &
+                          nLat           = Container%nY,                     &
+                          nLev           = nLev,                             &
+                          nIlev          = nILev,                            &
+                          nTime          = NF_UNLIMITED,                     &
+                          NcFormat       = Container%NcFormat,               &
+                          Conventions    = Container%Conventions,            &
+                          History        = Container%History,                &
+                          ProdDateTime   = Container%ProdDateTime,           &
+                          Reference      = Container%Reference,              &
+                          Title          = Container%Title,                  &
+                          Contact        = Container%Contact,                &
+                          StartTimeStamp = Container%StartTimeStamp,         &
+                          EndTimeStamp   = Container%EndTimeStamp,           &
+                          fId            = Container%FileId,                 &
+                          TimeId         = Container%tDimId,                 &
+                          LevId          = Container%zDimId,                 &
+                          ILevId         = Container%iDimId,                 &
+                          LatId          = Container%yDimId,                 &
+                          LonId          = Container%xDimId,                 &
+                          KeepDefMode    = .TRUE.,                           &
+                          Varct          = VarCt                               )
+
+          !--------------------------------------------------------------------
+          ! Denote that the file has been created and is open
+          !--------------------------------------------------------------------
+          Container%IsFileOpen = .TRUE.
+
+       ENDIF
+
     ENDIF
 
     !=======================================================================
@@ -488,7 +518,6 @@ CONTAINS
                                Item     = Current%Item,                      &
                                VarUnits = VarUnits                          )
 
-
           ! Replace "TBD"  with the current units of State_Chm%Species
           IF ( TRIM( VarUnits ) == 'TBD' ) THEN
              VarUnits = Container%Spc_Units
@@ -504,6 +533,7 @@ CONTAINS
                            VarCt        = Current%Item%NcVarId,              &
                            timeId       = Current%Item%NcTDimId,             &
                            levId        = Current%Item%NcZDimId,             &
+                           iLevId       = Current%Item%NcIDimId,             &
                            latId        = Current%Item%NcYDimId,             &
                            lonId        = Current%Item%NcXDimId,             &
                            VarLongName  = Current%Item%LongName,             &
@@ -643,6 +673,7 @@ CONTAINS
 !  03 Aug 2017 - R. Yantosca - Initial version
 !  18 Sep 2017 - R. Yantosca - Elapsed time is now in seconds, but keep the
 !                              time vector in minutes since the ref date/time
+!  11 Jul 2018 - R. Yantosca - Pass args in seconds to COMPUTE_ELAPSED_TIME
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -707,10 +738,15 @@ CONTAINS
     ! Compute the time stamp value for the current time slice
     !=======================================================================
 
+!    ! Compute the elapsed time in seconds since the file creation
+!    CALL Compute_Elapsed_Time( CurrentJd  = Container%CurrentJd,             &
+!                               TimeBaseJd = Container%ReferenceJd,           & 
+!                               ElapsedSec = Container%TimeStamp             )
+
     ! Compute the elapsed time in seconds since the file creation
-    CALL Compute_Elapsed_Time( CurrentJd  = Container%CurrentJd,             &
-                               TimeBaseJd = Container%ReferenceJd,           & 
-                               ElapsedSec = Container%TimeStamp             )
+    CALL Compute_Elapsed_Time( CurrentJsec  = Container%CurrentJsec,         &
+                               TimeBaseJsec = Container%ReferenceJsec,       & 
+                               ElapsedSec   = Container%TimeStamp           )
 
     ! For time-averaged collections, offset the timestamp 
     ! by 1/2 of the file averaging interval in minutes

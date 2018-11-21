@@ -118,6 +118,10 @@
 ! !USES:
 !
       USE ErrCode_Mod
+#if defined( NC_DIAG )
+      USE Diagnostics_Mod,    ONLY : Compute_Column_Mass
+      USE Diagnostics_Mod,    ONLY : Compute_Budget_Diagnostics
+#endif
       USE Input_Opt_Mod,      ONLY : OptInput
       USE State_Met_Mod,      ONLY : MetState
       USE State_Chm_Mod,      ONLY : ChmState
@@ -126,7 +130,11 @@
 #if defined( USE_TEND )
       USE TENDENCIES_MOD
 #endif
-      USE UnitConv_Mod,   ONLY : Convert_Spc_Units
+#if defined( NC_DIAG )
+      USE Time_Mod,           ONLY : Get_Ts_Dyn
+#endif
+      USE UnitConv_Mod,       ONLY : Convert_Spc_Units
+
 !
 ! !INPUT PARAMETERS: 
 !
@@ -156,6 +164,8 @@
 !  27 Sep 2017 - E. Lundgren - Apply unit conversion within routine instead
 !                              of in do_mixing
 !  05 Oct 2017 - R. Yantosca - Now accept State_Diag as an argument
+!  07 Nov 2017 - R. Yantosca - Now return error conditions to calling program
+!  26 Sep 2018 - E. Lundgren - Implement budget diagnostics
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -163,41 +173,98 @@
 ! !LOCAL VARIABLES:
 !
       ! SAVEd scalars
-      LOGICAL, SAVE  :: FIRST = .TRUE.
+      LOGICAL, SAVE      :: FIRST = .TRUE.
 
       ! Scalars
-      INTEGER        :: N, NA, nAdvect
+      INTEGER            :: N, NA
 #if defined( USE_TEND )
-      REAL(fp)       :: DT_TEND
+      REAL(fp)           :: DT_TEND
 #endif
 
       ! Strings
-      CHARACTER(LEN=63) :: OrigUnit 
+      CHARACTER(LEN=63)  :: OrigUnit 
+      CHARACTER(LEN=255) :: ErrMsg, ThisLoc
+
+#if defined( NC_DIAG )
+      REAL(fp)           :: DT_Dyn
+#endif
 
       !=================================================================
       ! DO_PBL_MIX begins here!
       !=================================================================
 
-      ! Assume success
+      ! Initialize
       RC      = GC_SUCCESS
+      ErrMsg  = ''
+      ThisLoc = ' -> at DO_PBL_MIX (in module GeosCore/pbl_mix_mod.F)'
 
-      ! Number of advected species
-      nAdvect = State_Chm%nAdvect
-
+      !-----------------------------
       ! First-time initialization
+      !-----------------------------
       IF ( FIRST ) THEN
-         CALL INIT_PBL_MIX()
+
+         ! Allocate arrays etc.
+         CALL INIT_PBL_MIX( am_I_Root, RC )
+
+         ! Trap potential error
+         IF ( RC /= GC_SUCCESS ) THEN
+            ErrMsg = 'Error encountered in "INIT_PBL_MIX"!'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
+         
+         ! Reset first-time flag
          FIRST = .FALSE.
       ENDIF
-         
-      ! The following only needs be done if turbulence is turned on...
+
+      !=================================================================
+      ! The following only needs be done if full PBL mixing is on...
+      !=================================================================
       IF ( DO_TURBDAY ) THEN
+
+#if defined( NC_DIAG )
+         !-------------------------------------------------
+         ! Full PBL mixing budget diagnostics - Part 1 of 2
+         !-------------------------------------------------
+         IF ( State_Diag%Archive_BudgetMixing ) THEN
+            ! Get initial column masses
+            CALL Compute_Column_Mass( am_I_Root,                 
+     &                    Input_Opt, State_Met, State_Chm,     
+     &                    State_Chm%Map_Advect,                
+     &                    State_Diag%Archive_BudgetMixingFull, 
+     &                    State_Diag%Archive_BudgetMixingTrop, 
+     &                    State_Diag%Archive_BudgetMixingPBL,  
+     &                    State_Diag%BudgetMass1,               
+     &                    RC ) 
+            IF ( RC /= GC_SUCCESS ) THEN
+               ErrMsg = 'Mixing budget diagnostics ' //
+     &                  'error 1 (full PBL mixing)'
+               CALL GC_Error( ErrMsg, RC, ThisLoc )
+               RETURN
+            ENDIF
+         ENDIF
+#endif
+
+         !--------------------------
+         ! Unit conversion #1
+         !--------------------------
 
          ! Convert species to v/v dry
          CALL Convert_Spc_Units( am_I_Root, Input_Opt, State_Met, 
      &                           State_Chm, 'v/v dry', RC, 
      &                           OrigUnit=OrigUnit )
 
+         ! Trap potential error
+         IF ( RC /= GC_SUCCESS ) THEN
+            ErrMsg = 
+     &        'Error encountred in "Convert_Spc_Units" (to v/v dry)!'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
+
+         !--------------------------
+         ! Do full PBL mixing
+         !--------------------------
 
 #if defined( USE_TEND ) 
          ! Archive species concentrations for tendencies. Tracers are 
@@ -206,20 +273,71 @@
      &                     State_Chm, 'PBLMIX', RC )
 #endif
 
-         ! Do complete mixing of tracers in the PBL (if necessary)
+         ! Do complete mixing of tracers in the PBL
          CALL TURBDAY( am_I_Root, Input_Opt,  State_Met,
      &                 State_Chm, State_Diag, RC         )
 
 #if defined( USE_TEND ) 
          ! Archive species concentrations for tendencies (ckeller, 7/15/2015)
-         DT_TEND = GET_TS_CONV() * 60.0_fp
+         DT_TEND = GET_TS_CONV()
          CALL TEND_STAGE2( am_I_Root, Input_Opt, State_Met,
      &                     State_Chm, 'PBLMIX', DT_TEND, RC )
 #endif
 
+         !--------------------------
+         ! Unit conversion #2
+         !--------------------------
+
          ! Convert species back to original units
          CALL Convert_Spc_Units( am_I_Root, Input_Opt, State_Met, 
      &                           State_Chm, OrigUnit,  RC )
+
+         ! Trap potential error
+         IF ( RC /= GC_SUCCESS ) THEN
+            ErrMsg = 
+     &         'Error encountred in "Convert_Spc_Units" (from v/v dry)!'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
+
+#if defined( NC_DIAG )
+       !-------------------------------------------------
+       ! Full PBL mixing budget diagnostics - Part 2 of 2
+       !-------------------------------------------------
+       IF ( State_Diag%Archive_BudgetMixing ) THEN
+
+          ! Get dynamics timestep [s]
+          DT_Dyn = Get_Ts_Dyn()
+
+          ! Get final column masses and compute diagnostics
+          CALL Compute_Column_Mass( am_I_Root,              
+     &                  Input_Opt, State_Met, State_Chm,     
+     &                  State_Chm%Map_Advect,                
+     &                  State_Diag%Archive_BudgetMixingFull, 
+     &                  State_Diag%Archive_BudgetMixingTrop, 
+     &                  State_Diag%Archive_BudgetMixingPBL,  
+     &                  State_Diag%BudgetMass2,              
+     &                  RC )    
+          CALL Compute_Budget_Diagnostics( am_I_Root,       
+     &                  State_Chm%Map_Advect,                
+     &                  DT_Dyn,                              
+     &                  State_Diag%Archive_BudgetMixingFull, 
+     &                  State_Diag%Archive_BudgetMixingTrop, 
+     &                  State_Diag%Archive_BudgetMixingPBL,  
+     &                  State_Diag%BudgetMixingFull,         
+     &                  State_Diag%BudgetMixingTrop,         
+     &                  State_Diag%BudgetMixingPBL,          
+     &                  State_Diag%BudgetMass1,              
+     &                  State_Diag%BudgetMass2,              
+     &                  RC )
+          IF ( RC /= GC_SUCCESS ) THEN
+             ErrMsg = 'Mixing budget diagnostics error 2' //
+     &                ' (full PBL mixing)'
+             CALL GC_Error( ErrMsg, RC, ThisLoc )
+             RETURN
+          ENDIF
+       ENDIF
+#endif
 
       ENDIF
 
@@ -238,18 +356,26 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE COMPUTE_PBL_HEIGHT( State_Met )
+      SUBROUTINE COMPUTE_PBL_HEIGHT( am_I_Root, State_Met, RC )
 !
 ! !USES:
 !
       USE CMN_SIZE_MOD             ! Size parameters
-      USE ERROR_MOD,          ONLY : ERROR_STOP
+      USE ErrCode_Mod
       USE PhysConstants            ! Scale height
       USE State_Met_Mod,      ONLY : MetState
+!
+! !INPUT PARAMETERS:
+!
+      LOGICAL,        INTENT(IN)    :: am_I_Root   ! Are we on the root CPU?
 !
 ! !INPUT/OUTPUT PARAMETERS: 
 !
       TYPE(MetState), INTENT(INOUT) :: State_Met   ! Meteorology State object
+!
+! !OUTPUT PARAMETERS: 
+!
+      INTEGER,        INTENT(OUT)   :: RC          ! Success or failure?
 !
 ! !REVISION HISTORY: 
 !  11 Feb 2005 - R. Yantosca - Initial version
@@ -265,19 +391,27 @@
 !  22 Aug 2014 - R. Yantosca - Now declare State_Met INTENT(INOUT)
 !  26 Feb 2015 - E. Lundgren - Replace GET_PEDGE with State_Met%PEDGE.
 !                              Remove dependency on pressure_mod.
+!  06 Nov 2017 - R. Yantosca - Now return error to main program level
+!  08 Jan 2018 - R. Yantosca - Now compute query field State_Met%InPbl
 !EOP
 !------------------------------------------------------------------------------
 !BOC
 !
 ! !LOCAL VARIABLES:
 !
-      INTEGER :: I,     J,      L,    LTOP
-      REAL(fp)  :: BLTOP, BLTHIK, DELP
-      REAL(fp)  :: P(0:LLPAR)
+      LOGICAL  :: Bad_Sum
+      INTEGER  :: I,     J,      L,    LTOP
+      REAL(fp) :: BLTOP, BLTHIK, DELP
+      REAL(fp) :: P(0:LLPAR)
 
       !=================================================================
       ! COMPUTE_PBL_HEIGHT begins here!
       !=================================================================
+
+      ! Initialize
+      RC              = GC_SUCCESS
+      Bad_Sum         = .FALSE.
+      State_Met%InPbl = .FALSE.
 
 !$OMP PARALLEL DO 
 !$OMP+DEFAULT( SHARED )
@@ -310,6 +444,8 @@
          !----------------------------------------------
          ! Find model level where BLTOP occurs
          !----------------------------------------------
+
+         ! Initialize
          LTOP = 0
 
          ! Loop over levels
@@ -319,6 +455,8 @@
             IF ( BLTOP > P(L) ) THEN
                LTOP = L
                EXIT
+            ELSE
+               State_Met%InPbl(I,J,L) = .TRUE.
             ENDIF
 
          ENDDO 
@@ -434,13 +572,21 @@
 
          ! Error check
          IF (ABS(SUM( F_OF_PBL(I,J,:) ) - 1.e+0_fp) > 1.e-3_fp) THEN
+!$OMP CRITICAL
             PRINT*, 'bad sum at: ', I, J
-            CALL ERROR_STOP( 'Error in computing F_OF_PBL!',
-     &                       'COMPUTE_PBL_HEIGHT ("pbl_mix_mod.f")' )
+            Bad_Sum = .TRUE.
+!$OMP END CRITICAL
          ENDIF
       ENDDO
       ENDDO 
 !$OMP END PARALLEL DO
+
+      ! Exit to main program level if bad sum was encountered
+      IF ( Bad_Sum ) THEN 
+         CALL GC_Error( 'Error in computing F_OF_PBL !', RC,
+     &                  'COMPUTE_PBL_HEIGHT ("pbl_mix_mod.f")' )
+         RETURN
+      ENDIF
 
       ! Model level where PBL top occurs
       PBL_MAX_L = MAXVAL( IMIX ) 
@@ -465,9 +611,11 @@
 !
 ! !USES:
 !
-      USE CMN_DIAG_MOD
       USE CMN_SIZE_MOD
+#if defined( BPCH_DIAG )
+      USE CMN_DIAG_MOD
       USE DIAG_MOD,       ONLY : TURBFLUP
+#endif
       USE ErrCode_Mod
       USE Input_Opt_Mod,  ONLY : OptInput
       USE PhysConstants,  ONLY : AIRMW
@@ -494,6 +642,7 @@
       INTEGER,        INTENT(OUT)   :: RC          ! Success or failure?
 ! 
 ! !REMARKS:
+
 !  Original subroutine by Dale Allen, Univ of MD.
 !
 ! !REVISION HISTORY: 
@@ -568,17 +717,18 @@
 !
       LOGICAL, SAVE :: FIRST = .TRUE.
 
-      INTEGER           :: I,    J,  L     
-      INTEGER           :: LTOP, N,  NA,    nAdvect            
-      REAL(fp)          :: AA,   CC, CC_AA, AREA_M2, DTCONV
+      CHARACTER(LEN=255) :: ErrMsg, ThisLoc
+      INTEGER            :: I,    J,  L     
+      INTEGER            :: LTOP, N,  NA,    nAdvect            
+      REAL(fp)           :: AA,   CC, CC_AA, AREA_M2, DTCONV
 
       ! Arrays
-      REAL(fp)          :: A(IIPAR,JJPAR)
-      REAL(fp)          :: DTC(IIPAR,JJPAR,LLPAR,State_Chm%nAdvect)  
+      REAL(fp)           :: A(IIPAR,JJPAR)
+      REAL(fp)           :: DTC(IIPAR,JJPAR,LLPAR,State_Chm%nAdvect)  
 
       ! Pointers
-      REAL(fp), POINTER :: AD(:,:,:)
-      REAL(fp), POINTER :: TC(:,:,:,:)
+      REAL(fp), POINTER  :: AD(:,:,:)
+      REAL(fp), POINTER  :: TC(:,:,:,:)
 
       !=================================================================
       ! TURBDAY begins here!          
@@ -611,7 +761,7 @@
       TC      => State_Chm%Species   ! Chemical species [v/v]
 
       ! Convection timestep [s]
-      DTCONV = GET_TS_CONV() * 60e+0_fp
+      DTCONV = GET_TS_CONV()
 
       ! Loop over Lat/Long grid boxes (I,J)
 !$OMP PARALLEL DO
@@ -689,9 +839,10 @@
                
             TC(I,J,L,N) = TC(I,J,L,N) + DTC(I,J,L,N) / AD(I,J,L)
 
+#if defined( BPCH_DIAG )
             !=======================================================
-            ! ND15 Diagnostic: 
-            ! mass change due to mixing in the boundary layer
+            ! ND15 (bpch) Diagnostic: 
+            ! Mass change due to mixing in the boundary layer
             !=======================================================
             IF ( ND15 > 0 ) THEN
                DO L = 1, IMIX(I,J)
@@ -700,6 +851,7 @@
      &                 / State_Chm%SpcData(N)%Info%emMW_g ) * DTCONV )
                ENDDO
             ENDIF
+#endif
          ENDDO                  
       ENDDO                     
       ENDDO                     
@@ -899,7 +1051,7 @@
 !
 ! !RETURN VALUE:
 !
-      REAL(fp)              :: TOP    ! PBL top [model levels]
+      REAL(fp)            :: TOP    ! PBL top [model levels]
 ! 
 ! !REVISION HISTORY: 
 !  11 Feb 2005 - R. Yantosca - Initial version
@@ -989,70 +1141,89 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE INIT_PBL_MIX
+      SUBROUTINE INIT_PBL_MIX( am_I_root, RC )
 !
 ! !USES:
 !
       USE CMN_SIZE_MOD
-      USE ERROR_MOD, ONLY : ALLOC_ERR
+      USE ErrCode_Mod
+!
+! !INPUT PARAMETERS:
+!
+      LOGICAL, INTENT(IN)  :: am_I_Root ! Are we on the root CPU?
+!
+! !OUTPUT PARAMETERS:
+!
+      INTEGER, INTENT(OUT) :: RC           ! Success or failure?
 ! 
 ! !REVISION HISTORY: 
 !  11 Feb 2005 - R. Yantosca - Initial version
 !  28 Feb 2012 - R. Yantosca - Added ProTeX headers
 !  14 Nov 2014 - C. Keller   - Added error trap to prevent second allocation 
 !                              attempt in ESMF environment.
+!  07 Nov 2017 - R. Yantosca - Add am_I_root, RC as arguments so that we
+!                              can propagate the error to the top level
 !EOP
 !------------------------------------------------------------------------------
 !BOC
 !
 ! !LOCAL VARIABLES:
 !
-      INTEGER :: AS
-
       !=================================================================
       ! INIT_PBL_MIX begins here!
       !=================================================================
 
+      ! Initialize
+      RC = GC_SUCCESS
+
       ! Error trap: in an ESMF environment, it is possible that this
       ! routine is called twice. No need to allocate arrays if already
       ! done so.
-      IF ( ALLOCATED(IMIX) ) RETURN
+      IF ( ALLOCATED( IMIX ) ) RETURN
 
       ! Scalars
       PBL_MAX_L = 0
 
       ! Arrays
-      ALLOCATE( IMIX( IIPAR, JJPAR ), STAT=AS )
-      IF ( AS /= 0 ) CALL ALLOC_ERR( 'IMIX' )
+      ALLOCATE( IMIX( IIPAR, JJPAR ), STAT=RC )
+      CALL GC_CheckVar( 'pbl_mix_mod:IMIX', 0, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
       IMIX = 0
 
-      ALLOCATE( FPBL( IIPAR, JJPAR ), STAT=AS )
-      IF ( AS /= 0 ) CALL ALLOC_ERR( 'FPBL' )
-      FPBL = 0e+0_fp
+      ALLOCATE( FPBL( IIPAR, JJPAR ), STAT=RC )
+      CALL GC_CheckVar( 'pbl_mix_mod:FPBL', 0, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
+      FPBL = 0.0_fp
 
-      ALLOCATE( F_OF_PBL( IIPAR, JJPAR, LLCHEM ), STAT=AS )
-      IF ( AS /= 0 ) CALL ALLOC_ERR( 'F_OF_PBL' )
-      F_OF_PBL = 0e+0_fp
+      ALLOCATE( F_OF_PBL( IIPAR, JJPAR, LLCHEM ), STAT=RC )
+      CALL GC_CheckVar( 'pbl_mix_mod:F_OF_PBL', 0, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
+      F_OF_PBL = 0.0_fp
 
-      ALLOCATE( F_UNDER_TOP( IIPAR, JJPAR, LLCHEM ), STAT=AS )
-      IF ( AS /= 0 ) CALL ALLOC_ERR( 'F_UNDER_TOP' )
-      F_UNDER_TOP = 0e+0_fp
+      ALLOCATE( F_UNDER_TOP( IIPAR, JJPAR, LLCHEM ), STAT=RC )
+      CALL GC_CheckVar( 'pbl_mix_mod:F_UNDER_TOP', 0, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
+      F_UNDER_TOP = 0.0_fp
 
-      ALLOCATE( PBL_TOP_hPa( IIPAR, JJPAR ), STAT=AS )
-      IF ( AS /= 0 ) CALL ALLOC_ERR( 'PBL_TOP_hPa' )
-      PBL_TOP_hPa = 0e+0_fp
+      ALLOCATE( PBL_TOP_hPa( IIPAR, JJPAR ), STAT=RC )
+      CALL GC_CheckVar( 'pbl_mix_mod:PBL_TOP_hPa', 0, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
+      PBL_TOP_hPa = 0.0_fp
 
-      ALLOCATE( PBL_TOP_L( IIPAR, JJPAR ), STAT=AS )
-      IF ( AS /= 0 ) CALL ALLOC_ERR( 'PBL_TOP_L' )
-      PBL_TOP_L = 0e+0_fp
+      ALLOCATE( PBL_TOP_L( IIPAR, JJPAR ), STAT=RC )
+      CALL GC_CheckVar( 'pbl_mix_mod:PBL_TOP_L', 0, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
+      PBL_TOP_L = 0.0_fp
 
-      ALLOCATE( PBL_TOP_m( IIPAR, JJPAR ), STAT=AS )
-      IF ( AS /= 0 ) CALL ALLOC_ERR( 'PBL_TOP_m' )
-      PBL_TOP_m = 0e+0_fp
+      ALLOCATE( PBL_TOP_m( IIPAR, JJPAR ), STAT=RC )
+      CALL GC_CheckVar( 'pbl_mix_mod:PBL_TOP_m', 0, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
+      PBL_TOP_m = 0.0_fp
 
-      ALLOCATE( PBL_THICK( IIPAR, JJPAR ), STAT=AS )
-      IF ( AS /= 0 ) CALL ALLOC_ERR( 'PBL_THICK' )
-      PBL_THICK = 0e+0_fp
+      ALLOCATE( PBL_THICK( IIPAR, JJPAR ), STAT=RC )
+      CALL GC_CheckVar( 'pbl_mix_mod:PBL_THICK', 0, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
+      PBL_THICK = 0.0_fp
 
       END SUBROUTINE INIT_PBL_MIX
 !EOC

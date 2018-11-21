@@ -135,6 +135,8 @@
 !  12 Jul 2016 - E. Lundgren - Remove bpch restart file option and associated 
 !                              routines. Now use netcdf in restart_mod.F.
 !  29 Nov 2016 - R. Yantosca - grid_mod.F90 is now gc_grid_mod.F90
+!  27 Feb 2018 - C. Thackray - added L_ADD_MBL_BR and LRED_CLOUDONLY switches
+!  01 Nov 2018 - M. Sulprizio- Move Hg0aq, Hg2aq, and HgPaq arrays to State_Chm
 !******************************************************************************
 !
       USE inquireMod,    ONLY : findFreeLUN
@@ -157,10 +159,14 @@
       PUBLIC :: CHECK_OCEAN_MERCURY   ! Call from restart_mod for nc rst (ewl)
       PUBLIC :: CLEANUP_OCEAN_MERCURY
       PUBLIC :: OCEAN_MERCURY_FLUX
-      PUBLIC :: LDYNSEASALT, LPOLARBR, LBRCHEM, LBROCHEM
+      PUBLIC :: LDYNSEASALT, LGCAPEMIS, LPOLARBR, LBRCHEM, LBROCHEM
+      PUBLIC :: L_ADD_MBL_BR
       PUBLIC :: LGEIA05 !(add for 2005 GEIA, eck 10/19/11)
       PUBLIC :: LVEGEMIS ! jaf
       PUBLIC :: LRED_JNO2,   LGEOSLWC
+      PUBLIC :: LHALOGENCHEM
+      PUBLIC :: LHGAQCHEM
+      PUBLIC :: LRED_CLOUDONLY
       PUBLIC :: LHg2HalfAerosol
       PUBLIC :: STRAT_BR_FACTOR,        LAnthroHgOnly
       PUBLIC :: LOHO3CHEM,              LnoUSAemis
@@ -197,13 +203,8 @@
       REAL(fpp)   :: dFLOW2
       REAL(fpp)   :: FLOWNOW 
 
-      ! Public arrays used for netcdf restart file read/write (ewl, 3/29/16)
-      REAL(fpp), PUBLIC, ALLOCATABLE :: Hg0aq(:,:,:)
-      REAL(fpp), PUBLIC, ALLOCATABLE :: Hg2aq(:,:,:)
-      REAL(fpp), PUBLIC, ALLOCATABLE :: HgPaq(:,:,:)
-      REAL(fpp), PUBLIC, ALLOCATABLE :: Hgaq_tot(:,:,:)
-
       ! Private arrays
+      REAL(fpp),  ALLOCATABLE :: Hgaq_tot(:,:,:)
       REAL(fpp),  ALLOCATABLE :: dMLD(:,:)
       REAL(fpp),  ALLOCATABLE :: HgPaq_SUNK(:,:,:) !eds 5/15/12 fix
 !      REAL(fpp),  ALLOCATABLE :: MLD(:,:)
@@ -233,10 +234,13 @@
 
       ! Logical switches for the mercury simulation, all of which are 
       ! set in INIT_MERCURY (cdh, 9/1/09)
-      LOGICAL   :: LDYNSEASALT, LPOLARBR, LBRCHEM, LBROCHEM
+      LOGICAL   :: LDYNSEASALT, LGCAPEMIS, LPOLARBR, LBRCHEM, LBROCHEM
+      LOGICAL   :: L_ADD_MBL_BR, LRED_CLOUDONLY
       LOGICAL   :: LGEIA05 !eck, 10/19/11
       LOGICAL   :: LVEGEMIS ! jaf
       LOGICAL   :: LRED_JNO2,   LGEOSLWC
+      LOGICAL   :: LHALOGENCHEM
+      LOGICAL   :: LHGAQCHEM
       LOGICAL   :: LHg2HalfAerosol
       LOGICAL   :: LAnthroHgOnly,          LOHO3CHEM
       LOGICAL   :: LGCBROMINE !eds 4/19/12
@@ -396,9 +400,11 @@
 !
 ! !USES:
 !     
-      USE CMN_DIAG_MOD
       USE CMN_SIZE_MOD
+#if defined( BPCH_DIAG )
+      USE CMN_DIAG_MOD
       USE DIAG03_MOD,         ONLY : ND03                
+#endif
       USE ErrCode_Mod
       USE ERROR_MOD,          ONLY : GEOS_CHEM_STOP, ERROR_STOP
       USE HCO_INTERFACE_MOD,  ONLY : HcoState
@@ -647,8 +653,10 @@
 !$OMP END PARALLEL DO
 
 
+#if defined( BPCH_DIAG )
       ! Increment diagnostic timestep counter. 
       CALL SET_Hg2_DIAG( INCREMENT=.TRUE. )
+#endif
 
       ! Free pointers
       ARRAYso4  => NULL()
@@ -676,27 +684,35 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE DELIVER_SNOW_HG( SNOW_Hg2aq, I, J, State_Met )
+      SUBROUTINE DELIVER_SNOW_HG( SNOW_Hg2aq, I, J,
+     &                            State_Met, State_Chm, State_Diag )
 !
 ! !USES:
 !
       USE CMN_SIZE_MOD
       USE DAO_MOD,            ONLY : IS_ICE,  IS_LAND
+#if defined( BPCH_DIAG )
       USE DIAG03_MOD,         ONLY : AD03,    ND03 
+#endif
       USE DEPO_MERCURY_MOD,   ONLY : LHGSNOW
-      USE DEPO_MERCURY_MOD,   ONLY : SNOW_HG_OC,  SNOW_HG_STORED_OC
-      USE DEPO_MERCURY_MOD,   ONLY : SNOW_HG_LN,  SNOW_HG_STORED_LN
+      USE State_Chm_Mod,      ONLY : ChmState
+      USE State_Diag_Mod,     ONLY : DgnState
       USE State_Met_Mod,      ONLY : MetState
+      USE Time_Mod,           ONLY : Get_Ts_Chem
 !
 ! !INPUT PARAMETERS: 
 !
-      INTEGER, INTENT(IN)        :: I, J 
-      TYPE(MetState), INTENT(IN) :: State_Met   ! Meteorology State object
+      INTEGER, INTENT(IN)           :: I, J
+      TYPE(MetState), INTENT(IN)    :: State_Met   ! Meteorology State object
+!
+! !INPUT/OUTPUT PARAMETERS:
+!
+      TYPE(ChmState), INTENT(INOUT) :: State_Chm   ! Chemistry State object
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag  ! Diagnostics State object
 !
 ! !OUTPUT PARAMETERS:
 !
-      REAL(fpp), INTENT(OUT)     :: SNOW_Hg2aq(N_Hg_CATS)  ! Hg2 from snow
-
+      REAL(fpp),      INTENT(OUT)   :: SNOW_Hg2aq(N_Hg_CATS)  ! Hg2 from snow
 !
 ! !REMARKS:
 !  Snowpack Hg is delivered to the ocean instantaneously in an ionic pulse 
@@ -714,9 +730,15 @@
 ! !LOCAL VARIABLES:
 !
       INTEGER       :: NN
-      REAL(fpp)     :: FROCSNOW, FRLNSNOW
+      REAL(fpp)     :: FROCSNOW, FRLNSNOW, DT
       LOGICAL       :: IS_MELT, IS_SNOWHG_OC, IS_SNOWHG_LN
       LOGICAL       :: IS_OPEN_OCEAN, IS_OPEN_LAND
+
+      ! Pointers
+      REAL(fpp), POINTER :: SNOW_HG_OC(:,:,:)
+      REAL(fpp), POINTER :: SNOW_HG_LN(:,:,:)
+      REAL(fpp), POINTER :: SNOW_HG_STORED_OC(:,:,:)
+      REAL(fpp), POINTER :: SNOW_HG_STORED_LN(:,:,:)
 
       !=================================================================
       ! DELIVER_SNOW_HG begins here!
@@ -725,8 +747,17 @@
       ! Return to calling program if snowpack model is disabled
       IF (.NOT. LHGSNOW) RETURN
 
+      ! Chemistry timestep in seconds
+      DT = GET_TS_CHEM()
+
       ! Intialize
       SNOW_Hg2aq = 0d0
+
+      ! Point to fields in State_Chm
+      SNOW_HG_OC        => State_Chm%SnowHgOcean
+      SNOW_HG_LN        => State_Chm%SnowHgLand
+      SNOW_HG_STORED_OC => State_Chm%SnowHgOceanStored
+      SNOW_HG_STORED_LN => State_Chm%SnowHgLandStored
 
       IS_OPEN_OCEAN = ( ( State_Met%FROCEAN(I,J) - 
      &                    State_Met%FRSEAICE(I,J) ) > 0e+0_fpp )
@@ -750,9 +781,27 @@
             SNOW_Hg2aq(NN) =
      &            ( SNOW_HG_OC(I,J,NN) + SNOW_HG_STORED_OC(I,J,NN) )
                   
-            ! Store diagnostic of meltwater delivery to ocean
+#if defined( BPCH_DIAG )
+            !===========================================================
+            ! %%%%% ND03 (bpch) DIAGNOSTIC %%%%%
+            !
+            ! Store diagnostic of meltwater delivery to ocean [kg]
+            !===========================================================
             IF ( ND03 > 0 ) AD03(I,J,19,1) = AD03(I,J,19,1) +
      &         ( SNOW_HG_OC(I,J,NN) + SNOW_HG_STORED_OC(I,J,NN) )
+#endif
+
+#if defined( NC_DIAG )
+            !===========================================================
+            ! %%%%% HISTORY (aka netCDF diagnostics) %%%%%
+            !
+            ! Store diagnostic of meltwater delivery to ocean [kg/s]
+            !===========================================================
+            IF ( State_Diag%Archive_EmisHg2snowToOcean ) THEN
+               State_Diag%EmisHg2snowToOcean(I,J) = 
+     &          ( SNOW_HG_OC(I,J,NN) + SNOW_HG_STORED_OC(I,J,NN) ) / DT
+            ENDIF
+#endif
 
             ! Zero reservoirs over ocean box, since we've added it
             ! all to the ocean
@@ -769,12 +818,19 @@
       
       ENDDO ! Hg Tracers
       
+      ! Free pointers
+      SNOW_HG_OC        => NULL()
+      SNOW_HG_LN        => NULL()
+      SNOW_HG_STORED_OC => NULL()
+      SNOW_HG_STORED_LN => NULL()
+
       END SUBROUTINE DELIVER_SNOW_HG
 !EOC
 !------------------------------------------------------------------------------
 
-      SUBROUTINE OCEAN_MERCURY_FLUX( am_I_Root, Input_Opt, State_Met, 
-     &                               State_Chm, FLUX,      RC         )
+      SUBROUTINE OCEAN_MERCURY_FLUX( am_I_Root, Input_Opt,  State_Met, 
+     &                               State_Chm, State_Diag, FLUX,     
+     &                               RC                                )
 !
 !******************************************************************************
 !  Subroutine OCEAN_MERCURY_FLUX calculates emissions of Hg(0) from 
@@ -966,7 +1022,9 @@
       USE CMN_SIZE_MOD             ! Size parameters
       USE DAO_MOD,            ONLY : IS_WATER, IS_ICE
       USE DEPO_MERCURY_MOD,   ONLY : DD_Hg2, WD_Hg2, DD_HgP, WD_HgP
+#if defined( BPCH_DIAG )
       USE DIAG03_MOD,         ONLY : AD03, ND03, AD03_RIV
+#endif
       USE ErrCode_Mod
       USE ERROR_MOD,          ONLY : ERROR_STOP
       USE GC_GRID_MOD,        ONLY : GET_AREA_M2, GET_XMID, GET_YMID 
@@ -974,6 +1032,7 @@
       USE HCO_EmisList_Mod,   ONLY : HCO_GetPtr 
       USE Input_Opt_Mod,      ONLY : OptInput
       USE State_Chm_Mod,      ONLY : ChmState
+      USE State_Diag_Mod,     ONLY : DgnState
       USE State_Met_Mod,      ONLY : MetState
       USE TIME_MOD
 !
@@ -986,6 +1045,7 @@
 ! !INPUT/OUTPUT PARAMETERS:
 !
       TYPE(ChmState), INTENT(INOUT) :: State_Chm   ! Chemistry State object
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag  ! Diagnostics State object
 !
 ! !OUTPUT PARAMETERS:
 !
@@ -1019,8 +1079,7 @@
       REAL(fpp)            :: k_red,    k_red_rad,  k_red_bio        
       REAL(fpp)            :: k_ox    
       REAL(fpp)            :: SPM,      Frac_Hg2, OC_tot_kg          
-      !REAL(fpp)            :: Hgaq_tot 
-      REAL(fpp)            ::Hg2aq_tot                      
+      REAL(fpp)            :: Hg2aq_tot                      
       REAL(fpp)            :: C_tot,    Ze,       OC_tot,   Hg0_OX  
       REAL(fpp)            :: Kd_part, k_ox_dark ! sjs
       REAL(fpp)            :: FRAC_OPEN_OCEAN,    FRAC_OCEAN_OR_ICE
@@ -1074,6 +1133,9 @@
 
       ! Pointers
       REAL(fpp), POINTER   :: Spc(:,:,:,:)
+      REAL(fpp), POINTER   :: Hg0aq(:,:,:)
+      REAL(fpp), POINTER   :: Hg2aq(:,:,:)
+      REAL(fpp), POINTER   :: HgPaq(:,:,:)
 
       ! Pointers to fields in the HEMCO data structure
       REAL(f4), POINTER    :: TOMS   (:,:)   ! O3   
@@ -1104,6 +1166,12 @@
       LArcticRiv   = Input_Opt%LArcticRiv
       LKRedUV      = Input_Opt%LKRedUV
 
+      ! Point to fields in State_Chm
+      Spc      => State_Chm%Species
+      Hg0aq    => State_Chm%OceanHg0
+      Hg2aq    => State_Chm%OceanHg2
+      HgPaq    => State_Chm%OceanHgP
+
       ! Loop limit for use below
       IF ( LSPLIT ) THEN
          N_tot_oc = 2
@@ -1126,7 +1194,8 @@
       IF ( USE_CHECKS .and. LSPLIT ) THEN
          CALL CHECK_ATMOS_MERCURY( State_Chm,
      &                             'start of OCEAN_MERCURY_FLUX' )
-         CALL CHECK_OCEAN_MERCURY( 'start of OCEAN_MERCURY_FLUX' )
+         CALL CHECK_OCEAN_MERCURY( State_Chm,
+     &                             'start of OCEAN_MERCURY_FLUX' )
          CALL CHECK_OCEAN_FLUXES ( 'start of OCEAN_MERCURY_FLUX' )
       ENDIF
 
@@ -1192,11 +1261,12 @@
       ENDIF
 
       ! Emission timestep [s]
-      DTSRCE = GET_TS_EMIS() * 60e+0_fpp
+      DTSRCE = GET_TS_EMIS()
 
       !----------------------------------------------------------------
-      ! Calculate total mean NPP (mg/m2/day) for later                                                  
-      !----------------------------------------------------------------                                     
+      ! Calculate total mean NPP (mg/m2/day) for later                      
+      !----------------------------------------------------------------
+                          
       ! Initialize values
       NPP_tot = 0e+0_fpp
       A_ocean = 0e+0_fpp
@@ -1244,9 +1314,6 @@
          RIVER_HG = FLOWNOW * RIVER_CHg(THISMONTH) * 1e-9_fpp /
      &              A_ARCTIC_OCEAN
       ENDIF
-
-      ! Point to the chemical species array [kg]
-      Spc => State_Chm%Species
 
       ! Loop over surface boxes  
 !$OMP PARALLEL DO
@@ -1346,7 +1413,8 @@
          ! Deliver snowpack Hg to ocean if snow has melted
          ! Call before IF statement so that snow Hg is zeroed in land
          ! boxes as well as ocean boxes (jaf, 11/29/11)
-         CALL DELIVER_SNOW_HG( SNOW_Hg2aq, I, J, State_Met )
+         CALL DELIVER_SNOW_HG( SNOW_Hg2aq, I, J, State_Met, State_Chm,
+     &                         State_Diag )
 
          ! Loop over total Hg (and ocean Hg if necessary)
          DO C = 1, N_tot_oc
@@ -1850,16 +1918,38 @@
 
                !--------------------------------------------------------
                ! Calculate new Hg(II) mass
-               !--------------------------------------------------------
+               !
                ! Add flux of Hg(II) from rivers in Arctic (jaf, 12/8/11)
                ! Convert to kg/box/timestep and add to Hg2aq
+               !--------------------------------------------------------
                IF ( (LArcticRiv) .AND. (Y >= 70) ) THEN
                   Hg2aq(I,J,NN) = Hg2aq(I,J,NN) + RIVER_HG *
      &                            A_M2 * DTSRCE * FRAC_O
 
+#if defined( BPCH_DIAG )
+                  !-----------------------------------------------------
+                  ! %%%%% ND03 (bpch) DIAGNOSTIC %%%%%
+                  !
+                  ! Flux of Hg(II) from rivers to ocean in Arctic [kg/s]
+                  ! NOTE: RIVER_HG is kg/m2/s, convert to kg/s
+                  !-----------------------------------------------------
                   IF ( ( ND03 > 0 ) .and. ( NN == ID_Hg_tot ) )
      &                AD03_riv(I,J) = AD03_riv(I,J) + RIVER_HG *
      &                                A_M2 * DTSRCE * FRAC_O
+#endif
+
+#if defined( NC_DIAG )
+                  !-----------------------------------------------------
+                  ! %%%%% ND03 (bpch) DIAGNOSTIC %%%%%
+                  !
+                  ! Flux of Hg(II) from rivers to ocean in Arctic [kg/s]
+                  ! NOTE: RIVER_HG is kg/m2/s, convert to kg/s
+                  !-----------------------------------------------------
+                  IF ( State_Diag%Archive_EmisHg2rivers ) THEN
+                     State_Diag%EmisHg2rivers(I,J) = 
+     &                  ( RIVER_HG * A_M2 * FRAC_O )
+                  ENDIF
+#endif
                ENDIF
                   
                !--------------------------------------------------------
@@ -2004,10 +2094,28 @@
 
                   HgPaq(I,J,NN)   = MAX ( HgPaq(I,J,NN) , 0e+0_fpp )    
 
-                  ! Store carbon sinking [kgC/time]
+#if defined( BPCH_DIAG )
+                  !-----------------------------------------------------
+                  ! %%%%% ND03 (bpch) DIAGNOSTIC %%%%%
+                  !
+                  ! Store organic carbon sinking to ocean [kgC/time]
+                  !-----------------------------------------------------
                   IF ( ND03 > 0 ) THEN
                      AD03(I,J,12,1) = AD03(I,J,12,1) + JorgC_kg
                   ENDIF
+#endif
+
+#if defined( NC_DIAG )
+                  !-----------------------------------------------------
+                  ! %%%%% ND03 (bpch) DIAGNOSTIC %%%%%
+                  !
+                  ! Store organic carbon sinking to ocean [kgC/s]
+                  !-----------------------------------------------------
+                  IF ( State_Diag%Archive_FluxOCtoDeepOcean ) THEN
+                     State_Diag%FluxOCtoDeepOcean(I,J) = JorgC_kg
+     &                                                 / DTSRCE
+                  ENDIF                  
+#endif
                 
                !- eds 8/31/10 -----------------------------------------
                !ENDIF
@@ -2119,10 +2227,12 @@
 
             ENDDO   
 
+#if defined( BPCH_DIAG )
             !-----------------------------------------------------------
-            ! ND03 diagnostics ("OCEAN-HG")
+            ! %%%%% ND03 (bpch) DIAGNOSTICS
+            !
+            ! Oceanic Hg quantities
             !-----------------------------------------------------------
-
             IF ( ND03 > 0 ) THEN
 
               ! eds 9/9/10 added NN loop
@@ -2175,7 +2285,72 @@
                AD03(I,J,20,1) = AD03(I,J,20,1) + TOTDEP
 
             ENDIF
+#endif
 
+#if defined( NC_DIAG )
+            !-----------------------------------------------------------
+            ! %%%%% HISTORY (aka netCDF) DIAGNOSTICS %%%%%
+            !
+            ! Oceanic Hg quantities
+            !
+            ! NOTE: We have converted units from kg
+            !-----------------------------------------------------------
+
+            ! NOTE: for now just use the total category
+            NN = 1
+
+            ! Mass of oceanic Hg0 [kg]
+            IF ( State_Diag%Archive_MassHg0inOcean ) THEN
+               State_Diag%MassHg0inOcean(I,J) = Hg0aq(I,J,NN)
+            ENDIF
+
+            ! Mass of oceanic Hg2 [kg]
+            IF ( State_Diag%Archive_MassHg2inOcean ) THEN
+               State_Diag%MassHg2inOcean(I,J) = Hg2aq(I,J,NN)
+            ENDIF
+
+            ! Mass of oceanic HgP [kg]
+            IF ( State_Diag%Archive_MassHgPinOcean ) THEN
+               State_Diag%MassHgPinOcean(I,J) = HgPaq(I,J,NN)
+            ENDIF
+
+            ! Total oceanic mercury [kg]
+            IF ( State_Diag%Archive_MassHgTotalInOcean ) THEN
+               State_Diag%MassHgTotalInOcean(I,J) = Hgaq_tot(I,J,NN)
+            ENDIF
+
+            ! Flux of Hg2 sunk to deep ocean [kg/s]
+            IF ( State_Diag%Archive_FluxHg2toDeepOcean ) THEN
+               State_Diag%FluxHg2toDeepOcean(I,J) =
+     &            HgPaq_SUNK(I,J,NN) / DTSRCE
+            ENDIF
+
+            ! Ocean-to-air and air-to-ocean fluxes
+            IF ( FLUX(I,J,NN) > 0e+0_fpp ) THEN
+               
+               ! Volatization flux of Hg0 from ocean to air
+               ! NOTE: Units are kg/s
+               IF ( State_Diag%Archive_FluxHg0fromOceantoAir ) THEN
+                  State_Diag%FluxHg0fromOceanToAir(I,J) = FLUX(I,J,NN)
+               ENDIF
+              
+            ELSE IF ( FLUX(I,J,NN) < 0e+0_fpp)  THEN
+               
+               ! Drydep flux of Hg0 from air to ocean
+               IF ( State_Diag%Archive_FluxHg0fromAirToOcean ) THEN
+                  State_Diag%FluxHg0fromAirToOcean(I,J) =
+     &                 ABS( FLUX(I,J,NN) )
+               ENDIF
+
+            ENDIF
+
+            ! Total Hg2/HgP deposited to ocean 
+            ! NOTE: Changed unit to kg/s
+            IF ( State_Diag%Archive_FluxHg2HgPfromAirToOcean ) THEN
+               State_Diag%FluxHg2HgPfromAirToOcean(I,J) = TOTDEP
+     &                                                  / DTSRCE
+            ENDIF
+#endif
            
          !==============================================================
          ! If we are not in an ocean box, set Hg(0) flux to zero
@@ -2199,10 +2374,13 @@
 !$OMP END PARALLEL DO
 
       ! Free pointers
-       Spc     => NULL()
-       TOMS    => NULL()
-       TOMS_PD => NULL()
-       TOMS_LT => NULL()
+      Spc      => NULL()
+      Hg0aq    => NULL()
+      Hg2aq    => NULL()
+      HgPaq    => NULL()
+      TOMS     => NULL()
+      TOMS_PD  => NULL()
+      TOMS_LT  => NULL()
 
       !=================================================================
       ! Check tagged & total sums (if necessary)
@@ -2210,7 +2388,8 @@
       IF ( USE_CHECKS .and. LSPLIT ) THEN
          CALL CHECK_ATMOS_MERCURY(  State_Chm, 
      &                              'end of OCEAN_MERCURY_FLUX' )
-         CALL CHECK_OCEAN_MERCURY(  'end of OCEAN_MERCURY_FLUX' )
+         CALL CHECK_OCEAN_MERCURY(  State_Chm,
+     &                              'end of OCEAN_MERCURY_FLUX' )
          CALL CHECK_OCEAN_FLUXES (  'end of OCEAN_MERCURY_FLUX' )
          CALL CHECK_FLUX_OUT( FLUX, 'end of OCEAN_MERCURY_FLUX' )
       ENDIF
@@ -2567,12 +2746,22 @@
       ! For fields from Input_Opt
       LOGICAL               :: LSPLIT
 
+      ! Pointers
+      REAL(fpp), POINTER   :: Hg0aq(:,:,:)
+      REAL(fpp), POINTER   :: Hg2aq(:,:,:)
+      REAL(fpp), POINTER   :: HgPaq(:,:,:)
+
       !=================================================================
       ! MLD_ADJUSTMENT begins here!
       !=================================================================
 
       ! Copy values from Input_Opt
       LSPLIT       = Input_Opt%LSPLIT
+
+      ! Point to fields in State_Chm
+      Hg0aq       => State_Chm%OceanHg0
+      Hg2aq       => State_Chm%OceanHg2
+      HgPaq       => State_Chm%OceanHgP
 
       ! Loop limit for use below
       IF ( LSPLIT ) THEN
@@ -2835,6 +3024,11 @@
 
       ENDIF
       
+      ! Free pointers
+      Hg0aq    => NULL()
+      Hg2aq    => NULL()
+      HgPaq    => NULL()
+
       ! Return to calling program
       END SUBROUTINE MLD_ADJUSTMENT
 
@@ -3036,7 +3230,7 @@
 
 !------------------------------------------------------------------------------
 
-      SUBROUTINE CHECK_OCEAN_MERCURY( LOC )
+      SUBROUTINE CHECK_OCEAN_MERCURY( State_Chm, LOC )
 !
 !******************************************************************************
 !  Subroutine CHECK_TAGGED_HG_OC tests whether tagged tracers in Hg0aq and
@@ -3052,9 +3246,11 @@
       ! References to F90 modules
       USE CMN_SIZE_MOD              ! Size parameters
       USE ERROR_MOD,           ONLY : ERROR_STOP
+      USE State_Chm_Mod,       ONLY : ChmState
 
       ! Arguments
       CHARACTER(LEN=*), INTENT(IN) :: LOC
+      TYPE(ChmState),   INTENT(INOUT) :: State_Chm
 
       ! Local variables
       LOGICAL, SAVE                :: FIRST = .TRUE.
@@ -3081,8 +3277,8 @@
          !--------------------------------------
          ! Relative and absolute errors for Hg0 
          !--------------------------------------
-         Hg0_tot = Hg0aq(I,J,ID_Hg_tot)
-         Hg0_tag = SUM( Hg0aq(I,J,2:N_Hg_CATS) )
+         Hg0_tot = State_Chm%OceanHg0(I,J,ID_Hg_tot)
+         Hg0_tag = SUM( State_Chm%OceanHg0(I,J,2:N_Hg_CATS) )
          ABSERR0 = ABS( Hg0_tot - Hg0_tag )
 
          ! Avoid div by zero
@@ -3095,8 +3291,8 @@
          !--------------------------------------
          ! Relative and absolute errors for Hg2
          !--------------------------------------
-         Hg2_tot = Hg2aq(I,J,ID_Hg_tot)
-         Hg2_tag = SUM( Hg2aq(I,J,2:N_Hg_CATS) )
+         Hg2_tot = State_Chm%OceanHg2(I,J,ID_Hg_tot)
+         Hg2_tag = SUM( State_Chm%OceanHg2(I,J,2:N_Hg_CATS) )
          ABSERR2 = ABS( Hg2_tot - Hg2_tag )
 
          ! Avoid div by zero
@@ -3507,11 +3703,11 @@
       IF ( RC /= 0 ) CALL ALLOC_ERR( 'Fp' )
       Fp = 0e+0_fpp  
      
-      !-----------------------------------------------------------------
-      ! Exit if you are not using the dynamic ocean
-      !-----------------------------------------------------------------
-      IF ( .not. Input_Opt%LDYNOCEAN ) RETURN
-      
+      !eds 5/15/12 fix
+      ALLOCATE( Hgaq_tot (IIPAR, JJPAR, N_Hg_CATS ), STAT=RC )
+      IF ( RC /= 0 ) CALL ALLOC_ERR( 'Hgaq_tot' )
+      Hgaq_tot = 0e+0_fpp
+
       !-----------------------------------------------------------------
       ! These variables are only needed for the dynamic ocean option
       !-----------------------------------------------------------------
@@ -3635,27 +3831,9 @@
       IF ( RC /= 0 ) CALL ALLOC_ERR( 'dMLD' )
       dMLD = 0e+0_fpp
 
-      ALLOCATE( Hg0aq( IIPAR, JJPAR, N_Hg_CATS ), STAT=RC )
-      IF ( RC /= 0 ) CALL ALLOC_ERR( 'Hg0aq' )
-      Hg0aq = 0e+0_fpp
-
-      ALLOCATE( Hg2aq( IIPAR, JJPAR, N_Hg_CATS ), STAT=RC )
-      IF ( RC /= 0 ) CALL ALLOC_ERR( 'Hg2aq' )
-      Hg2aq = 0e+0_fpp
-
-      !eds 8/31/10 Added NN to HgPaq throughout module
-      ALLOCATE( HgPaq (IIPAR, JJPAR, N_Hg_CATS ), STAT=RC )
-      IF ( RC /= 0 ) CALL ALLOC_ERR( 'HgPaq' )
-      HgPaq = 0e+0_fpp
-
-      !eds 5/15/12 fix
-      ALLOCATE( Hgaq_tot (IIPAR, JJPAR, N_Hg_CATS ), STAT=RC )
-      IF ( RC /= 0 ) CALL ALLOC_ERR( 'Hgaq_tot' )
-      HgPaq = 0e+0_fpp
-
       ALLOCATE( HgPaq_SUNK (IIPAR, JJPAR, N_Hg_CATS ), STAT=RC )
       IF ( RC /= 0 ) CALL ALLOC_ERR( 'HgPaq_SUNK' )
-      HgPaq = 0e+0_fpp
+      HgPaq_SUNK = 0e+0_fpp
 
       ALLOCATE( MLDav( IIPAR, JJPAR ), STAT=RC )
       IF ( RC /= 0 ) CALL ALLOC_ERR( 'MLDav' )
@@ -3694,10 +3872,9 @@
       !=================================================================
       ! CLEANUP_OCEAN_MERCURY begins here!
       !=================================================================
+
+      IF ( ALLOCATED( Hgaq_tot  ) ) DEALLOCATE( Hgaq_tot  )
       IF ( ALLOCATED( dMLD      ) ) DEALLOCATE( dMLD      )
-      IF ( ALLOCATED( Hg0aq     ) ) DEALLOCATE( Hg0aq     )  
-      IF ( ALLOCATED( Hg2aq     ) ) DEALLOCATE( Hg2aq     )
-      IF ( ALLOCATED( HgPaq     ) ) DEALLOCATE( HgPaq     )  
       IF ( ALLOCATED( MLDav     ) ) DEALLOCATE( MLDav     )
       IF ( ALLOCATED( newMLD    ) ) DEALLOCATE( newMLD    )
       IF ( ALLOCATED( prevMLD   ) ) DEALLOCATE( prevMLD   ) !eds 10/19/10

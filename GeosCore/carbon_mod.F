@@ -39,6 +39,10 @@
       ! SOAupdate: for branching ratio diagnostic (hotp 5/24/10)
       PUBLIC :: BETANOSAVE
 
+      ! ORVC_SESQ needs to be public so that it can be added as a
+      ! restart variable to GEOS-5. (ckeller, 10/10/17)
+      PUBLIC :: ORVC_SESQ
+
 !      ! Make BIOG_SESQ array public so that it can be used by HEMCO
 !      ! (ckeller, 05/19/14)
 !      PUBLIC :: BIOG_SESQ
@@ -386,8 +390,8 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE CHEMCARBON( am_I_Root, Input_Opt, 
-     &                       State_Met, State_Chm, RC )
+      SUBROUTINE CHEMCARBON( am_I_Root, Input_Opt,  State_Met,
+     &                       State_Chm, State_Diag, RC         )
 !
 ! !USES:
 !
@@ -400,6 +404,7 @@
       USE HCO_EMISLIST_MOD,   ONLY : HCO_GetPtr
       USE Input_Opt_Mod,      ONLY : OptInput
       USE State_Chm_Mod,      ONLY : ChmState
+      USE State_Diag_Mod,     ONLY : DgnState
       USE State_Met_Mod,      ONLY : MetState
       USE TIME_MOD,           ONLY : ITS_A_NEW_MONTH
       USE TIME_MOD,           ONLY : GET_TS_CHEM
@@ -418,6 +423,7 @@
 ! !INPUT/OUTPUT PARAMETERS: 
 !
       TYPE(ChmState), INTENT(INOUT) :: State_Chm   ! Chemistry State object
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag  ! Diagnostics State object
 !
 ! !OUTPUT PARAMETERS:
 !
@@ -461,27 +467,29 @@
 !  10 Aug 2016 - R. Yantosca - Remove temporary tracer-removal code
 !  14 Oct 2016 - S. Farina   - Added 1-day e-folding "chemistry" for
 !                              SOA Simplified and SOA Precursor
+!  02 Nov 2017 - R. Yantosca - Now accept State_Diag as an argument
 !EOP
 !------------------------------------------------------------------------------
 !BOC
 !
 ! !LOCAL VARIABLES:
 !
+      ! SAVED scalars
       LOGICAL, SAVE      :: FIRSTCHEM = .TRUE.
+
+      ! Scalars
       LOGICAL            :: prtDebug
       LOGICAL            :: IT_IS_AN_AEROSOL_SIM
       LOGICAL            :: LSOA
       LOGICAL            :: LEMIS
       LOGICAL            :: LPRT
-
-      REAL(fp)              :: NEWSOA
-      REAL(fp)              :: DTCHEM, SOAP_LIFETIME  ! [=] seconds
-
-      INTEGER   :: L
+      REAL(fp)           :: NEWSOA
+      REAL(fp)           :: DTCHEM, SOAP_LIFETIME  ! [=] seconds
+      INTEGER            :: L
 
 #if defined ( TOMAS )
-      INTEGER   :: I, J
-      REAL*4    :: BOXVOL, TEMPTMS, PRES 
+      INTEGER            :: I, J
+      REAL*4             :: BOXVOL, TEMPTMS, PRES
 #endif
 
       ! Pointers
@@ -507,7 +515,7 @@
       LPRT                 = Input_Opt%LPRT
       IT_IS_AN_AEROSOL_SIM = Input_Opt%ITS_AN_AEROSOL_SIM
 
-      DTCHEM               = GET_TS_CHEM() * 60.0_fp
+      DTCHEM               = GET_TS_CHEM()
       !                      ( days )*(hrs/day)*(mins/hr)*(sec/min)
       SOAP_LIFETIME        = 1.00_fp * 24.0_fp * 60.0_fp * 60.0_fp
 
@@ -599,7 +607,8 @@
 
       ! Chemistry for hydrophobic BC
       IF ( id_BCPO > 0 ) THEN
-         CALL CHEM_BCPO( am_I_Root, Input_Opt, Spc(:,:,:,id_BCPO), RC )
+         CALL CHEM_BCPO( am_I_Root, Input_Opt, State_Diag,
+     &                   Spc(:,:,:,id_BCPO),   RC          )
          IF ( prtDebug ) THEN
             CALL DEBUG_MSG( '### CHEMCARBON: a CHEM_BCPO' )
          ENDIF
@@ -607,7 +616,8 @@
 
       ! Chemistry for hydrophilic BC
       IF ( id_BCPI > 0 ) THEN
-         CALL CHEM_BCPI( am_I_Root, Input_Opt, Spc(:,:,:,id_BCPI), RC )
+         CALL CHEM_BCPI( am_I_Root, Input_Opt, State_Diag,
+     &                   Spc(:,:,:,id_BCPI),   RC )
          IF ( prtDebug ) THEN
             CALL DEBUG_MSG( '### CHEMCARBON: a CHEM_BCPI' )
          ENDIF
@@ -615,7 +625,8 @@
 
       ! Chemistry for hydrophobic OC (traditional POA only) 
       IF ( id_OCPO > 0 ) THEN
-         CALL CHEM_OCPO( am_I_Root, Input_Opt, Spc(:,:,:,id_OCPO), RC )
+         CALL CHEM_OCPO( am_I_Root, Input_Opt, State_Diag,
+     &                   Spc(:,:,:,id_OCPO),   RC          )
          IF ( prtDebug ) THEN
             CALL DEBUG_MSG( '### CHEMCARBON: a CHEM_OCPO' )
          ENDIF
@@ -623,7 +634,8 @@
 
       ! Chemistry for hydrophilic OC (traditional POA only)
       IF ( id_OCPI > 0 ) THEN 
-         CALL CHEM_OCPI( am_I_Root, Input_Opt, Spc(:,:,:,id_OCPI), RC )
+         CALL CHEM_OCPI( am_I_Root, Input_Opt, State_Diag,
+     &                   Spc(:,:,:,id_OCPI),   RC )
          IF ( prtDebug ) THEN
             CALL DEBUG_MSG( '### CHEMCARBON: a CHEM_OCPI' )
          ENDIF
@@ -727,8 +739,8 @@
          ! Compute SOA chemistry
          ! NOTE: This is SOA production from the reversible mechanism only 
          ! (tmf, 12/07/07)
-         CALL SOA_CHEMISTRY( am_I_Root, Input_Opt, 
-     &                       State_Met, State_Chm, RC )
+         CALL SOA_CHEMISTRY( am_I_Root, Input_Opt,  State_Met,
+     &                       State_Chm, State_Diag, RC         )
 
          IF ( prtDebug ) THEN
             CALL DEBUG_MSG( '### CHEMCARBON: a SOA_CHEM' )
@@ -755,16 +767,19 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE CHEM_BCPO( am_I_Root, Input_Opt, TC, RC )
+      SUBROUTINE CHEM_BCPO( am_I_Root, Input_Opt, State_Diag, TC, RC )
 !
 ! !USES:
 !
-      USE CMN_DIAG_MOD
       USE CMN_SIZE_MOD
-      USE DIAG_MOD,           ONLY : AD07_BC 
+#if defined( BPCH_DIAG )
+      USE CMN_DIAG_MOD
+      USE DIAG_MOD,       ONLY : AD07_BC
+#endif
       USE ErrCode_Mod
-      USE Input_Opt_Mod,      ONLY : OptInput
-      USE TIME_MOD,           ONLY : GET_TS_CHEM
+      USE Input_Opt_Mod,  ONLY : OptInput
+      USE State_Diag_Mod, ONLY : DgnState
+      USE TIME_MOD,       ONLY : GET_TS_CHEM
 !
 ! !INPUT PARAMETERS:
 !
@@ -773,6 +788,7 @@
 !
 ! !INPUT/OUTPUT PARAMETERS:
 ! 
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag            ! Diags State
       REAL(fp),       INTENT(INOUT) :: TC(IIPAR,JJPAR,LLPAR) ! H-phobic BC [kg]
 !
 ! !OUTPUT PARAMETERS:
@@ -799,6 +815,7 @@
 !  12 Jun 2015 - R. Yantosca - Drydep is now handled in mixing_mod.F90,
 !                              so we can greatly collapse this code
 !  23 Sep 2015 - R. Yantosca - Remove reference to DRYBCPO, it's obsolete
+!  02 Nov 2017 - R. Yantosca - Now accept State_Diag as an argument
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -822,7 +839,7 @@
 
       ! Initialize
       KBC       = 1.e+0_fp / ( 86400e+0_fp * BC_LIFE )
-      DTCHEM    = GET_TS_CHEM() * 60e+0_fp
+      DTCHEM    = GET_TS_CHEM()
       BCCONV    = 0e+0_fp
 
       !=================================================================
@@ -864,12 +881,28 @@
          ! Amount of BCPO converted to BCPI [kg/timestep]
          BCCONV(I,J,L) = ( TC0 - CNEW ) * KBC / ( KBC + FREQ )
 
+#if defined( BPCH_DIAG )
          !==============================================================
          ! ND07 diagnostic: H-philic BC from H_phobic BC [kg/timestep]
          !==============================================================
          IF ( ND07 > 0 .and. L <= LD07 ) THEN
              AD07_BC(I,J,L) = AD07_BC(I,J,L) + BCCONV(I,J,L)
          ENDIF
+#endif
+
+#if defined( NC_DIAG )
+         !==============================================================
+         ! HISTORY (aka netCDF diagnostics)
+         !
+         ! Archive production of hydrophilic black carbon (BCPI) from
+         ! hydrophobic black carbon (BCPO) [kg]
+         !
+         ! NOTE: Consider converting to area-independent units kg/m2/s.
+         !==============================================================
+         IF ( State_Diag%Archive_ProdBCPIfromBCPO ) THEN
+            State_Diag%ProdBCPIfromBCPO(I,J,L) = BcConv(I,J,L)
+         ENDIF
+#endif
 
          ! Store new concentration back into species array
          TC(I,J,L) = CNEW
@@ -893,14 +926,14 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE CHEM_BCPI( am_I_Root, Input_Opt, TC, RC )
+      SUBROUTINE CHEM_BCPI( am_I_Root, Input_Opt, State_Diag, TC, RC )
 !
 ! !USES:
 !
-      USE CMN_DIAG_MOD
       USE CMN_SIZE_MOD
       USE ErrCode_Mod
-      USE Input_Opt_Mod,      ONLY : OptInput
+      USE Input_Opt_Mod,  ONLY : OptInput
+      USE State_Diag_Mod, ONLY : DgnState
 !
 ! !INPUT PARAMETERS:
 !
@@ -909,6 +942,7 @@
 !
 ! !INPUT/OUTPUT PARAMETERS: 
 !
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag            ! Diags State
       REAL(fp),       INTENT(INOUT) :: TC(IIPAR,JJPAR,LLPAR) ! H-philic BC [kg]
 !
 ! !OUTPUT PARAMETERS:
@@ -934,6 +968,7 @@
 !  12 Jun 2015 - R. Yantosca - Drydep is now handled in mixing_mod.F90,
 !                              so we can greatly collapse this code
 !  23 Sep 2015 - R. Yantosca - Remove reference to DRYBCPI, it's obsolete
+!  02 Nov 2017 - R. Yantosca - Now accept State_Diag as an argument
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -999,16 +1034,19 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE CHEM_OCPO( am_I_Root, Input_Opt, TC, RC )
+      SUBROUTINE CHEM_OCPO( am_I_Root, Input_Opt, State_Diag, TC, RC )
 !
 ! !USES:
 !
-      USE CMN_DIAG_MOD
       USE CMN_SIZE_MOD
-      USE DIAG_MOD,           ONLY : AD07_OC 
+#if defined( BPCH_DIAG )      
+      USE CMN_DIAG_MOD
+      USE DIAG_MOD,       ONLY : AD07_OC
+#endif
       USE ErrCode_Mod
-      USE Input_Opt_Mod,      ONLY : OptInput
-      USE TIME_MOD,           ONLY : GET_TS_CHEM
+      USE Input_Opt_Mod,  ONLY : OptInput
+      USE State_Diag_Mod, ONLY : DgnState
+      USE TIME_MOD,       ONLY : GET_TS_CHEM
 !
 ! !INPUT PARAMETERS: 
 !
@@ -1017,6 +1055,7 @@
 !
 ! !INPUT/OUTPUT PARAMETERS: 
 !
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag            ! Diags State
       REAL(fp),       INTENT(INOUT) :: TC(IIPAR,JJPAR,LLPAR) ! H-phobic OC [kg]
 !
 ! !OUTPUT PARAMETERS:
@@ -1039,6 +1078,7 @@
 !  04 Mar 2015 - C. Keller   - Now do dry dep in mixing_mod.F90 
 !  12 Jun 2015 - R. Yantosca - Remove orphaned ND44 drydep variables
 !  23 Sep 2015 - R. Yantosca - Remove reference to DRYOCPO, it's obsolete
+!  02 Nov 2017 - R. Yantosca - Now accept State_Diag as an argument
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -1062,7 +1102,7 @@
 
       ! Initialize
       KOC       = 1.e+0_fp / ( 86400e+0_fp * OC_LIFE )
-      DTCHEM    = GET_TS_CHEM() * 60e+0_fp
+      DTCHEM    = GET_TS_CHEM()
       OCCONV    = 0e+0_fp
 
       !=================================================================
@@ -1103,12 +1143,28 @@
          ! Amount of OCPO converted to OCPI [kg/timestep]
          OCCONV(I,J,L) = ( TC0 - CNEW ) * KOC / ( KOC + FREQ )
 
+#if defined( BPCH_DIAG )
          !==============================================================
          ! ND07 diagnostic: H-Philic OC from H-phobic [kg/timestep]
          !==============================================================
          IF ( ND07 > 0 .and. L <= LD07 ) THEN
             AD07_OC(I,J,L) = AD07_OC(I,J,L) + OCCONV(I,J,L) 
          ENDIF
+#endif
+
+#if defined( NC_DIAG )
+         !=================================================================
+         ! HISTORY (aka netCDF diagnostics)
+         !
+         ! Archive production of hydrophilic organic carbon (OCPI) from
+         ! hydrophobic organic carbon (OCPO) [kg]
+         !
+         ! NOTE: Consider converting to area-independent units kg/m2/s.
+         !=================================================================
+         IF ( State_Diag%Archive_ProdOCPIfromOCPO ) THEN
+            State_Diag%ProdOCPIfromOCPO(I,J,L) = OcConv(I,J,L)
+         ENDIF
+#endif
 
          ! Store modified OC concentration back in species array
          TC(I,J,L) = CNEW
@@ -1133,15 +1189,14 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE CHEM_OCPI( am_I_Root, Input_Opt, TC, RC )
+      SUBROUTINE CHEM_OCPI( am_I_Root, Input_Opt, State_Diag, TC, RC )
 !
 ! !USES:
 !
-      USE CMN_DIAG_MOD
       USE CMN_SIZE_MOD
       USE ErrCode_Mod
-      USE Input_Opt_Mod,      ONLY : OptInput
-      USE TIME_MOD,           ONLY : GET_TS_CHEM
+      USE Input_Opt_Mod,   ONLY : OptInput
+      USE State_Diag_Mod,  ONLY : DgnState
 !
 ! !INPUT PARAMETERS: 
 !
@@ -1150,6 +1205,7 @@
 !
 ! !INPUT/OUTPUT PARAMETERS: 
 !
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag            ! Diags State
       REAL(fp),       INTENT(INOUT) :: TC(IIPAR,JJPAR,LLPAR) ! H-philic OC [kg]
 
 !
@@ -1174,6 +1230,7 @@
 !  04 Mar 2015 - C. Keller   - Now do dry dep in mixing_mod.F90 
 !  12 Jun 2015 - R. Yantosca - Remove orphaned ND44 drydep variables
 !  23 Sep 2015 - R. Yantosca - Remove reference to DRYOCPI, it's obsolete
+!  02 Nov 2017 - R. Yantosca - Now accept State_Diag as an argument
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -1246,7 +1303,7 @@
 ! !USES:
 !
       USE CMN_SIZE_MOD
-      USE TIME_MOD,     ONLY : GET_TS_CHEM    ! [=] minute
+      USE TIME_MOD,     ONLY : GET_TS_CHEM    ! [=] second
       USE TOMAS_MOD,    ONLY : IBINS
 !
 ! !INPUT/OUTPUT PARAMETERS: 
@@ -1271,7 +1328,7 @@
       ! AGING_CARB begins here!
       !=================================================================
 
-      DTCHEM = GET_TS_CHEM() / 60e+0_fp / 24e+0_fp    ![=] day
+      DTCHEM = GET_TS_CHEM() / 3600e+0_fp / 24e+0_fp    ![=] day
 
       DO K = 1, IBINS
          MIL(:,:,:,K) = MIL(:,:,:,K) +
@@ -1296,22 +1353,19 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE SOA_CHEMISTRY( am_I_Root, Input_Opt, 
-     &                          State_Met, State_Chm, RC )
+      SUBROUTINE SOA_CHEMISTRY( am_I_Root, Input_Opt,  State_Met,
+     &                          State_Chm, State_Diag, RC )
 !
 ! !USES:
 !
-      USE CHEMGRID_MOD,       ONLY : ITS_IN_THE_NOCHEMGRID
-      USE CMN_DIAG_MOD
       USE CMN_O3_MOD
       USE CMN_SIZE_MOD
-      USE DIAG_MOD,           ONLY : AD07_HC
       USE ErrCode_Mod
       USE ERROR_MOD,          ONLY : DEBUG_MSG
       USE Input_Opt_Mod,      ONLY : OptInput
       USE State_Met_Mod,      ONLY : MetState
       USE State_Chm_Mod,      ONLY : ChmState
-      USE TIME_MOD,           ONLY : GET_TS_CHEM,      GET_MONTH
+      USE State_Diag_Mod,     ONLY : DgnState
 !
 ! !INPUT PARAMETERS:
 !
@@ -1322,6 +1376,7 @@
 ! !INPUT/OUTPUT PARAMETERS: 
 !
       TYPE(ChmState), INTENT(INOUT) :: State_Chm   ! Chemistry State object
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag  ! Diagnostics State object
 !
 ! !OUTPUT PARAMETERS:
 !
@@ -1473,6 +1528,7 @@
 !  12 Jun 2015 - R. Yantosca - Removed SOA_DEPO; ND44 is now done in mixing_mod
 !  30 Jun 2016 - R. Yantosca - Remove instances of STT.  Now get the advected
 !                              species ID from State_Chm%Map_Advect.
+!  02 Nov 2017 - R. Yantosca - Now accept State_Diag as an argument
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -1654,7 +1710,7 @@
       DO I = 1, IIPAR
 
          ! Skip non-chemistry boxes
-         IF ( ITS_IN_THE_NOCHEMGRID( I, J, L, State_Met ) ) CYCLE
+         IF ( .not. State_Met%InChemGrid(I,J,L) ) CYCLE
 
          ! Volume of grid box [m3]
          VOL    = State_Met%AIRVOL(I,J,L)
@@ -1685,10 +1741,11 @@
          ! ALPHA is a module variable now (ccc, 2/2/10)
          ! semivolpoa2: emit POA into semivolatiles here (hotp 2/27/09)
          ! add RO2+NO,HO2 rate constants (hotp 5/7/10)
-         CALL CHEM_NVOC( I,         J,         L, 
-     &                   KO3,       KOH,       KNO3, 
-     &                   GM0,       KRO2NO,    KRO2HO2,
-     &                   Input_Opt, State_Met, State_Chm, RC )
+         CALL CHEM_NVOC( I,          J,         L,
+     &                   KO3,        KOH,       KNO3,
+     &                   GM0,        KRO2NO,    KRO2HO2,
+     &                   Input_Opt,  State_Met, State_Chm,
+     &                   State_Diag, RC                    )
 
          !==============================================================
          ! Equilibrium calculation between GAS (SOG) and Aerosol (SOA)
@@ -1714,8 +1771,8 @@
             JHC = PARENTPOA
             JSV = IDSV(JHC)
             DO IPR = 1, NPROD(JSV)
-               ORG_GAS(IPR,JSV) = ORG_GAS(IPR,JSV) * OCFPOA
-               ORG_AER(IPR,JSV) = ORG_AER(IPR,JSV) * OCFPOA
+               ORG_GAS(IPR,JSV) = ORG_GAS(IPR,JSV) * OCFPOA(I,J)
+               ORG_AER(IPR,JSV) = ORG_AER(IPR,JSV) * OCFPOA(I,J)
             ENDDO          
          ENDIF
 
@@ -1726,8 +1783,8 @@
             JHC = PARENTOPOA
             JSV = IDSV(JHC)
             DO IPR = 1, NPROD(JSV)
-               ORG_GAS(IPR,JSV) = ORG_GAS(IPR,JSV) * OCFOPOA
-               ORG_AER(IPR,JSV) = ORG_AER(IPR,JSV) * OCFOPOA
+               ORG_GAS(IPR,JSV) = ORG_GAS(IPR,JSV) * OCFOPOA(I,J)
+               ORG_AER(IPR,JSV) = ORG_AER(IPR,JSV) * OCFOPOA(I,J)
             ENDDO  
          ENDIF
 
@@ -1753,7 +1810,7 @@
          ! Now treat either traditional POA or semivolatile POA (hotp 7/25/10)
          IF ( id_OCPI > 0 .and. id_OCPO > 0 ) THEN
             MPOC = ( Spc(I,J,L,id_OCPI) + Spc(I,J,L,id_OCPO) ) * FAC
-            MPOC = MPOC * 2.1e+0_fp
+            MPOC = MPOC * OCFOPOA(I,J)
          ELSE
             ! semivolpoa2: MPOC is zero now (hotp 2/27/09)
             MPOC = 1e-30_fp
@@ -1837,8 +1894,8 @@
                JHC = PARENTPOA
                JSV = IDSV(JHC)
                DO IPR = 1, NPROD(JSV)
-                  ORG_GAS(IPR,JSV) = ORG_GAS(IPR,JSV) / OCFPOA
-                  ORG_AER(IPR,JSV) = ORG_AER(IPR,JSV) / OCFPOA
+                  ORG_GAS(IPR,JSV) = ORG_GAS(IPR,JSV) / OCFPOA(I,J)
+                  ORG_AER(IPR,JSV) = ORG_AER(IPR,JSV) / OCFPOA(I,J)
                ENDDO
             ENDIF
 
@@ -1848,8 +1905,8 @@
                JHC = PARENTOPOA
                JSV = IDSV(JHC)
                DO IPR = 1, NPROD(JSV)
-                  ORG_GAS(IPR,JSV) = ORG_GAS(IPR,JSV) / OCFOPOA
-                  ORG_AER(IPR,JSV) = ORG_AER(IPR,JSV) / OCFOPOA
+                  ORG_GAS(IPR,JSV) = ORG_GAS(IPR,JSV) / OCFOPOA(I,J)
+                  ORG_AER(IPR,JSV) = ORG_AER(IPR,JSV) / OCFOPOA(I,J)
                ENDDO
             ENDIF
 
@@ -1892,7 +1949,7 @@
          GM0(IPR,JSV) = 0e+0_fp
             
          ! Lump SOA
-         CALL SOA_LUMP( I, J, L, GM0, AM0, State_Chm )
+         CALL SOA_LUMP( I, J, L, GM0, AM0, State_Chm, State_Diag )
 
          ! hotp diagnostic (3/11/09)
          GLOB_AM0_POA(I,J,L,1,:,:) = AM0(:,JSVPOA:JSVOPOA)
@@ -3106,8 +3163,9 @@
       IF ( LPRT ) THEN ! (hotp 8/24/09)
          print*, 'Semivolatile POA settings:---------------'
          print*, ' ALPHA:   ', ALPHA(1,1,9), ALPHA(1,2,9)
-         print*, ' POA OA/OC ratio:    ', OCFPOA 
-         print*, ' OPOA OA/OC ratio:   ', OCFOPOA
+         ! OCFPOA and OCFOPOA are now 2D arrays
+         !print*, ' POA OA/OC ratio:    ', OCFPOA(I,J)
+         !print*, ' OPOA OA/OC ratio:   ', OCFOPOA(I,J)
          print*, ' LSVPOA is set to:   ', LSVPOA
 
          print*, 'CHECK MHC, NOX, PR', MHC, MNOX, MPROD
@@ -3148,20 +3206,24 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE CHEM_NVOC( I,         J,         L, 
-     &                      KO3,       KOH,       KNO3, 
-     &                      GM0,       KNO,       KHO2,
-     &                      Input_Opt, State_Met, State_Chm, RC )
+      SUBROUTINE CHEM_NVOC( I,          J,         L, 
+     &                      KO3,        KOH,       KNO3, 
+     &                      GM0,        KNO,       KHO2,
+     &                      Input_Opt,  State_Met, State_Chm,
+     &                      State_Diag, RC )
 !
 ! !USES:
 !
-      USE CMN_DIAG_MOD
       USE CMN_SIZE_MOD
+#if defined( BPCH_DIAG )
+      USE CMN_DIAG_MOD
       USE DIAG_MOD,           ONLY : AD07_HC
+#endif
       USE ErrCode_Mod
       USE Input_Opt_Mod,      ONLY : OptInput
       USE State_Met_Mod,      ONLY : MetState
       USE State_Chm_Mod,      ONLY : ChmState
+      USE State_Diag_Mod,     ONLY : DgnState
       USE TIME_MOD,           ONLY : GET_TS_CHEM, GET_MONTH
 !
 ! !INPUT PARAMETERS: 
@@ -3186,6 +3248,7 @@
       REAL(fp),       INTENT(INOUT) :: GM0(MPROD,MSV)! Gas mass for HCs and
                                                      !  oxidation products [kg]
       TYPE(ChmState), INTENT(INOUT) :: State_Chm     ! Chemistry State object
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag  ! Diagnostics State object
 !
 ! !OUTPUT PARAMETERS: 
 !
@@ -3219,6 +3282,7 @@
 !  30 Jun 2016 - R. Yantosca - Remove instances of STT.  Now get the advected
 !                              species ID from State_Chm%Map_Advect.
 !  22 Sep 2016 - R. Yantosca - Avoid array size mismatch for GLOB_DARO2
+!  02 Nov 2017 - R. Yantosca - Now accept State_Diag as an argument
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -3251,7 +3315,7 @@
       Spc     => State_Chm%Species
 
       ! Chemistry timestep [s]
-      DTCHEM  = GET_TS_CHEM() * 60e+0_fp 
+      DTCHEM  = GET_TS_CHEM()
 
       ! Get offline OH, NO3, O3 concentrations [molec/cm3]
       OHMC    = GET_OH(  I, J, L, Input_Opt, State_Chm, State_Met ) 
@@ -3273,6 +3337,11 @@
 
       ! save for diagnostic purposes (hotp 5/24/10)
       BETANOSAVE(I,J,L) = BETANO
+
+      ! Save to State_Diag for output as netcdf diagnostic (ewl, 8/28/18)
+      IF ( State_Diag%Archive_BetaNO ) THEN
+         State_Diag%BetaNO(I,J,L) = BETANO
+      ENDIF
 
       ! update for new mtp lumping (hotp 5/22/10)
       NMVOC(1) = Spc(I,J,L,id_MTPA)
@@ -3531,6 +3600,7 @@
             ENDDO
             ENDDO
 
+#if defined( BPCH_DIAG )
             ! semivolpoa4: add diagnostic information on POG ox (hotp 3/28/09)
             ! units: kgC cumulative
             IF ( ND07 > 0 .and. L <= LD07 ) THEN
@@ -3539,7 +3609,7 @@
      &                                GLOB_POGRXN(I,J,L,1) +
      &                                GLOB_POGRXN(I,J,L,2)
             ENDIF
-
+#endif
 
          ENDIF 
 
@@ -3761,14 +3831,17 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE SOA_LUMP( I, J, L, GM0, AM0, State_Chm )
+      SUBROUTINE SOA_LUMP( I, J, L, GM0, AM0, State_Chm, State_Diag )
 !
 ! !USES:
 !
-      USE CMN_DIAG_MOD
       USE CMN_SIZE_MOD
+#if defined( BPCH_DIAG )
+      USE CMN_DIAG_MOD
       USE DIAG_MOD,           ONLY : AD07_HC 
+#endif
       USE State_Chm_Mod,      ONLY : ChmState
+      USE State_Diag_Mod,     ONLY : DgnState
 !
 ! !INPUT PARAMETERS: 
 !
@@ -3783,6 +3856,7 @@
 ! !INPUT/OUTPUT PARAMETERS: 
 !
       TYPE(ChmState), INTENT(INOUT) :: State_Chm      ! Chemistry State object
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag     ! Diagnostics State obj
 ! 
 ! !REVISION HISTORY:
 !  (1 ) Now references STT from "tracer_mod.f" (bmy, 7/20/04)
@@ -3798,6 +3872,7 @@
 !  20 Aug 2013 - M. Sulprizio- Added ProTeX headers
 !  30 Jun 2016 - R. Yantosca - Remove instances of STT.  Now get the advected
 !                              species ID from State_Chm%Map_Advect.
+!  02 Nov 2017 - R. Yantosca - Now accept State_Diag as an argument
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -3838,6 +3913,7 @@
       !-----------------------------
       ! SOA net production [kg]
       !-----------------------------
+#if defined( BPCH_DIAG )
       IF ( ND07 > 0 .and. L <= LD07 ) THEN
          AD07_HC(I,J,L,JSV) = AD07_HC(I,J,L,JSV)
      &                    + ( AERMASS - 
@@ -3846,6 +3922,7 @@
      &                        Spc(I,J,L,id_TSOA3) -
      &                        Spc(I,J,L,id_TSOA0)  )
       ENDIF
+#endif
 
       !-----------------------------
       ! Transient mass bal prod/evap
@@ -3929,6 +4006,7 @@
       !-----------------------------
       ! SOA net production [kg]
       !-----------------------------
+#if defined( BPCH_DIAG )
       IF ( ND07 > 0 .and. L <= LD07 ) THEN
          AD07_HC(I,J,L,JSV) = AD07_HC(I,J,L,JSV)
      &                    + ( AERMASS - 
@@ -3936,6 +4014,7 @@
      &                        Spc(I,J,L,id_ISOA2) -
      &                        Spc(I,J,L,id_ISOA3)   )
       ENDIF
+#endif
 
       !-----------------------------
       ! Transient mass bal prod/evap
@@ -4008,6 +4087,7 @@
       !-----------------------------
       ! SOA net production [kg]
       !-----------------------------
+#if defined( BPCH_DIAG )
       IF ( ND07 > 0 .and. L <= LD07 ) THEN
          AD07_HC(I,J,L,JSV) = AD07_HC(I,J,L,JSV)
      &                    + ( AERMASS - 
@@ -4016,6 +4096,7 @@
      &                        Spc(I,J,L,id_ASOA2) -
      &                        Spc(I,J,L,id_ASOA3)   )
       ENDIF
+#endif
 
       !-----------------------------
       ! Transient mass bal prod/evap
@@ -4108,11 +4189,13 @@
          !---------------------------
          ! POA net emission (kg)
          !---------------------------
+#if defined( BPCH_DIAG )
          IF ( ND07 > 0 .and. L <= LD07 ) THEN
             AD07_HC(I,J,L,JSV) = AD07_HC(I,J,L,JSV)
      &                         + ( AERMASS - Spc(I,J,L,id_POA1) -
      &                                       Spc(I,J,L,id_POA2) )
          ENDIF
+#endif
 
          !---------------------------
          ! Transient SOA PROD/EVAP
@@ -4175,11 +4258,13 @@
          !---------------------------
          ! OPOA net production (kg)
          !---------------------------
+#if defined( BPCH_DIAG )
          IF ( ND07 > 0 .and. L <= LD07 ) THEN
             AD07_HC(I,J,L,JSV) = AD07_HC(I,J,L,JSV)
      &                         + ( AERMASS - Spc(I,J,L,id_OPOA1) -
      &                                       Spc(I,J,L,id_OPOA2) )
          ENDIF
+#endif
 
          !---------------------------
          ! Transient SOA PROD/EVAP
@@ -4244,10 +4329,12 @@
 ! !USES:
 !
       USE CMN_SIZE_MOD
+#if defined( BPCH_DIAG )
       USE CMN_DIAG_MOD             ! ND59
       USE DIAG_MOD,           ONLY : AD59_ECIL,   AD59_ECOB
       USE DIAG_MOD,           ONLY : AD59_OCIL,   AD59_OCOB
       USE DIAG_MOD,           ONLY : AD59_NUMB
+#endif
       USE ERROR_MOD,          ONLY : IT_IS_NAN
       USE Input_Opt_Mod,      ONLY : OptInput
       USE PBL_MIX_MOD,        ONLY : GET_FRAC_OF_PBL,  GET_PBL_MAX_L
@@ -4480,6 +4567,7 @@ ccc
       !                 [kg/box/timestep] and the corresponding
       !                  number emission [no./box/timestep]
       !=======================================================================
+#if defined( BPCH_DIAG )
       IF ( ND59 > 0 ) THEN 
          DO L = 1, PBL_MAX
          DO K = 1, IBINS
@@ -4500,6 +4588,7 @@ ccc
          ENDDO
          ENDDO
       ENDIF
+#endif
 
  100  CONTINUE
 
@@ -4560,6 +4649,7 @@ ccc
 !
 ! !REVISION HISTORY:
 !  20 Aug 2013 - M. Sulprizio- Added ProTeX headers
+!  12 Sep 2018 - Pengfei Liu - fixed the bug of missing BB emission
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -4579,12 +4669,16 @@ ccc
               scalefactor(:) = ECSCALE30(:)
             CASE (2)
               scalefactor(:) = ECSCALE100(:)
+            CASE (3)
+              scalefactor(:) = ECSCALE100(:)
           END SELECT
         CASE (2)
           SELECT CASE (STYPE)
             CASE (1)
               scalefactor(:) = OCSCALE30(:)
             CASE (2)
+              scalefactor(:) = OCSCALE100(:)
+            CASE (3)
               scalefactor(:) = OCSCALE100(:)
           END SELECT
       END SELECT
@@ -4753,8 +4847,8 @@ ccc
             CALL GetHcoVal( SESQID, I, J, 1, FOUND, Emis=EMIS )
             IF ( FOUND ) THEN
                ! Units from HEMCO are kgC/m2/s. Convert to kgC/box here.
-               TMPFLX           = Emis        * GET_TS_EMIS()   * 
-     &                            60.0e+0_fp  * GET_AREA_M2(I,J,1)
+               TMPFLX           = Emis * GET_TS_EMIS() 
+     &                            * GET_AREA_M2(I,J,1)
                ORVC_SESQ(I,J,L) = ORVC_SESQ(I,J,L)
      &                          + ( F_OF_PBL  * TMPFLX )
             ENDIF
@@ -4773,13 +4867,13 @@ ccc
          IF ( HCOPOG1 > 0 ) THEN
             ! Units from HEMCO are kgC/m2/s. Convert to kgC/box here.
             TMPFLX = SUM(HcoState%Spc(HCOPOG1)%Emis%Val(I,J,:))
-     &               * GET_TS_EMIS() * 60.0e+0_fp  * GET_AREA_M2(I,J,1)
+     &               * GET_TS_EMIS() * GET_AREA_M2(I,J,1)
             POAEMISS(I,J,L,1) = F_OF_PBL * TMPFLX
          ENDIF 
          IF ( HCOPOG2 > 0 ) THEN
             ! Units from HEMCO are kgC/m2/s. Convert to kgC/box here.
             TMPFLX = SUM(HcoState%Spc(HCOPOG2)%Emis%Val(I,J,:))
-     &               * GET_TS_EMIS() * 60.0e+0_fp  * GET_AREA_M2(I,J,1)
+     &               * GET_TS_EMIS() * GET_AREA_M2(I,J,1)
             POAEMISS(I,J,L,2) = F_OF_PBL * TMPFLX
          ENDIF 
       ENDDO
@@ -4813,7 +4907,9 @@ ccc
 !
 ! !USES:
 !
+#if defined( BPCH_DIAG )
       USE CMN_DIAG_MOD
+#endif
       USE CMN_SIZE_MOD
       USE ErrCode_Mod
       USE ERROR_MOD
@@ -5112,6 +5208,13 @@ ccc
 
 !end anthro emissions
 
+#if defined( BPCH_DIAG )
+      !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+      !%%%% NOTE: BIOGENIC_SOAS is defined in hcoi_gc_diagn_mod.F90,   %%%%
+      !%%%% which is only called if BPCH_DIAG=y.  Wrap this block of   %%%%
+      !%%%% code with an #ifdef BPCH_DIAG to prvent compilation issues %%%%
+      !%%%% when NC_DIAG=y.  (bmy, 8/7/18)                             %%%%
+      !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
       ! READ IN directly emitted SOAS (sfarina / jkodros)
       Ptr2D => NULL()
       DgnName = 'BIOGENIC_SOAS'
@@ -5123,6 +5226,7 @@ ccc
       TERP_ORGC = Ptr2D(:,:)
       Ptr2D => NULL()
       TERP_ORGC = TERP_ORGC(:,:) * AREA(:,:) * DTSRCE
+#endif
 
 !$OMP PARALLEL DO
 !$OMP+DEFAULT( SHARED )
@@ -5361,7 +5465,7 @@ ccc
          TCOSZ(:,:) = 0e+0_fp
 
          ! NDYSTEP is # of chemistry time steps in this day
-         NDYSTEP = ( 24 - INT( GET_GMT() ) ) * 60 / GET_TS_CHEM()         
+         NDYSTEP = ( 24 - INT( GET_GMT() ) ) * 3600 / GET_TS_CHEM()         
 
          ! NT is the elapsed time [s] since the beginning of the run
          NT = GET_ELAPSED_SEC()
@@ -5421,7 +5525,7 @@ ccc
 !$OMP END PARALLEL DO
 
             ! Increment elapsed time [sec]
-            NT = NT + ( GET_TS_CHEM() * 60 )             
+            NT = NT + GET_TS_CHEM()             
          ENDDO
 
          ! Reset first-time flag
@@ -5449,7 +5553,6 @@ ccc
 !
 ! !USES:
 !
-      USE CHEMGRID_MOD,       ONLY : ITS_IN_THE_CHEMGRID
       USE CMN_SIZE_MOD
       USE ERROR_MOD,          ONLY : ERROR_STOP
       USE Input_Opt_Mod,      ONLY : OptInput
@@ -5501,7 +5604,7 @@ ccc
          !---------------------
 
          ! OH is defined only in the chemistry grid
-         IF ( ITS_IN_THE_CHEMGRID( I, J, L, State_Met ) ) THEN
+         IF ( State_Met%InChemGrid(I,J,L) ) THEN
 
             ! Get OH from State_Chm%Species [kg] and convert to [molec/cm3]
             MolecRatio = State_Chm%SpcData(id_OH)%Info%MolecRatio
@@ -5531,7 +5634,7 @@ ccc
             ! Impose a diurnal variation on OH during the day
             OH_MOLEC_CM3 = OH(I,J,L)                                *   
      &                     ( State_Met%SUNCOS(I,J) / TCOSZ(I,J) )   *
-     &                     ( 1440e+0_fp                / GET_TS_CHEM() )
+     &                     ( 86400e+0_fp / GET_TS_CHEM() )
 
             ! OH is in kg/m3 (from HEMCO), convert to molec/cm3 (mps, 9/18/14)
             OH_MOLEC_CM3 = OH_MOLEC_CM3 * XNUMOL_OH / CM3PERM3
@@ -5578,7 +5681,6 @@ ccc
 !
 ! !USES:
 !
-      USE CHEMGRID_MOD,       ONLY : ITS_IN_THE_CHEMGRID
       USE CMN_SIZE_MOD
       USE ERROR_MOD,          ONLY : ERROR_STOP
       USE Input_Opt_Mod,      ONLY : OptInput
@@ -5638,7 +5740,7 @@ ccc
          !----------------------
 
          ! NO3 is defined only in the chemistry grid
-         IF ( ITS_IN_THE_CHEMGRID( I, J, L, State_Met ) ) THEN
+         IF ( State_Met%InChemGrid(I,J,L) ) THEN
 
             ! Get NO3 from State_Chm%Species [kg] and convert to [molec/cm3]
             MolecRatio  = State_Chm%SpcData(id_NO3)%Info%MolecRatio
@@ -5732,7 +5834,6 @@ ccc
 !
 ! !USES:
 !
-      USE CHEMGRID_MOD,       ONLY : ITS_IN_THE_CHEMGRID
       USE CMN_SIZE_MOD
       USE ERROR_MOD,          ONLY : ERROR_STOP
       USE Input_Opt_Mod,      ONLY : OptInput
@@ -5794,8 +5895,8 @@ ccc
          !--------------------
 
          ! O3 is defined only in the chemistry grid
-         IF ( ITS_IN_THE_CHEMGRID( I, J, L, State_Met ) ) THEN
-            
+         IF ( State_Met%InChemGrid(I,J,L) ) THEN
+
             ! Get O3 from State_Chm%Species [kg] and convert to [molec/cm3]
             MolecRatio = State_Chm%SpcData(id_O3)%Info%MolecRatio
             O3_MW_kg   = State_Chm%SpcData(id_O3)%Info%emMW_g * 1.e-3_fp
@@ -5840,7 +5941,7 @@ ccc
             ! Impose a diurnal variation on OH during the day
             O3_MOLEC_CM3 = O3_MOLEC_CM3                             *  
      &                     ( State_Met%SUNCOS(I,J) / TCOSZ(I,J) )   *
-     &                     ( 1440e+0_fp            / GET_TS_CHEM() )
+     &                     ( 86400e+0_fp / GET_TS_CHEM() )
 
             ! Make sure OH is not negative
             O3_MOLEC_CM3 = MAX( O3_MOLEC_CM3, 0e+0_fp )
@@ -5881,7 +5982,6 @@ ccc
 !
 ! !USES:
 !
-      USE CHEMGRID_MOD,       ONLY : ITS_IN_THE_CHEMGRID
       USE CMN_O3_MOD
       USE CMN_SIZE_MOD
       USE ERROR_MOD,          ONLY : ERROR_STOP
@@ -5942,7 +6042,7 @@ ccc
          !--------------------
 
          ! Test if we are in the chemistry grid
-         IF ( ITS_IN_THE_CHEMGRID( I, J, L, State_Met ) ) THEN
+         IF ( State_Met%InChemGrid(I,J,L) ) THEN
 
             ! Get information on the 
             ! specified type of aromatic peroxy radical
@@ -6124,7 +6224,6 @@ ccc
 !
 ! !USES:
 !
-      USE CHEMGRID_MOD,       ONLY : ITS_IN_THE_CHEMGRID
       USE CMN_SIZE_MOD
       USE ERROR_MOD,          ONLY : ERROR_STOP
       USE Input_Opt_Mod,      ONLY : OptInput
@@ -6174,8 +6273,8 @@ ccc
          !--------------------
 
          ! Test if we are in the chemistry grid
-         IF ( ITS_IN_THE_CHEMGRID( I, J, L, State_Met ) ) THEN 
- 
+         IF ( State_Met%InChemGrid(I,J,L) ) THEN
+
             !-----------------------------------------------------------
             ! Get LISOPOH (ISOP lost to OH) from State_Chm%Species
             ! [kg LISOPOH] and convert to [kg C ISOP]
@@ -6320,10 +6419,10 @@ ccc
       ! Add primary material as appropriate
       IF ( id_POA1 > 0 ) THEN
          MOTEMP = MOTEMP              +
-     &            Spc(I,J,L,id_POA1 ) * OCFPOA  +
-     &            Spc(I,J,L,id_POA2 ) * OCFPOA  +
-     &            Spc(I,J,L,id_OPOA1) * OCFOPOA +
-     &            Spc(I,J,L,id_OPOA2) * OCFOPOA
+     &            Spc(I,J,L,id_POA1 ) * OCFPOA(I,J)  +
+     &            Spc(I,J,L,id_POA2 ) * OCFPOA(I,J)  +
+     &            Spc(I,J,L,id_OPOA1) * OCFOPOA(I,J) +
+     &            Spc(I,J,L,id_OPOA2) * OCFOPOA(I,J)
       ELSEIF ( id_OCPI > 0 ) THEN
          MOTEMP = MOTEMP +
      &           ( Spc(I,J,L,id_OCPI) + 
@@ -6728,7 +6827,6 @@ ccc
 !
 ! !USES:
 !
-      USE CHEMGRID_MOD,       ONLY : ITS_IN_THE_STRAT
       USE CMN_SIZE_MOD
       USE Input_Opt_Mod,      ONLY : OptInput
       USE State_Met_Mod,      ONLY : MetState
@@ -6903,7 +7001,7 @@ ccc
             print*,'DELSOGSAVE NOx=3',DELTASOGSAVE(I,J,L,3,5)
             print*,'Spc',Spc(I,J,L,id_ISOA1),Spc(I,J,L,id_ISOG1)
             print*,'NNOX',NNOX(JSV)
-            print*,'strat?',ITS_IN_THE_STRAT(I,J,L,State_Met)
+            print*,'strat?',State_Met%InStratosphere(I,J,L)
          ENDIF
 
          ! Product 2, C* = 10 ug/m3
@@ -6923,7 +7021,8 @@ ccc
             print*,'DELSOGSAVE NOx=3',DELTASOGSAVE(I,J,L,3,5)
             print*,'Spc',Spc(I,J,L,id_ISOA2),Spc(I,J,L,id_ISOG2)
             print*,'NNOX',NNOX(JSV)
-            print*,'strat?',ITS_IN_THE_STRAT(I,J,L,State_Met)
+            print*,'strat?',State_Met%InStratosphere(I,J,L)
+
          ENDIF
 
          ! Product 3, C* = 100 ug/m3
@@ -6943,7 +7042,7 @@ ccc
             print*,'DELSOGSAVE NOx=3',DELTASOGSAVE(I,J,L,3,5)
             print*,'Spc',Spc(I,J,L,id_ISOA3),Spc(I,J,L,id_ISOG3)
             print*,'NNOX',NNOX(JSV)
-            print*,'strat?',ITS_IN_THE_STRAT(I,J,L,State_Met)
+            print*,'strat?',State_Met%InStratosphere(I,J,L)
          ENDIF
 
          !----------------------------------------------------
@@ -6978,7 +7077,7 @@ ccc
 !            print*,'DELSOGSAVE NOx=2',DELTASOGSAVE(I,J,L,2,11)
 !            print*,'Spc',Spc(I,J,L,id_ASOAN)
 !            print*,'NNOX',NNOX(JSV)
-!            print*,'strat?',ITS_IN_THE_STRAT(I,J,L,State_Met)
+!            print*,'strat?',State_Met%InStratosphere(I,J,L)
          ENDIF
 
          ! Debug print to screen
@@ -6986,7 +7085,7 @@ ccc
 !            IF ( I == 37 .AND. J == 25 .AND. L == 4 ) THEN
 !               print*,'CK_MB ',NOX,IPR,JSV,
 !     &                TEMPSOAG,MBDIFF,OAGINITSAVE(I,J,L,NOX,IPR,JSV)
-!               print*,'strat?',ITS_IN_THE_STRAT(I,J,L,State_Met)
+!                print*,'strat?',State_Met%InStratosphere(I,J,L)
 !            ENDIF
 !         ENDIF
 
@@ -7262,7 +7361,6 @@ ccc
 !
 ! !USES:
 !
-      USE CHEMGRID_MOD,       ONLY : ITS_IN_THE_CHEMGRID
       USE CMN_SIZE_MOD
       USE ERROR_MOD,          ONLY : ERROR_STOP
       USE Input_Opt_Mod,      ONLY : OptInput
@@ -7311,7 +7409,7 @@ ccc
          !---------------------
 
          ! NO is defined only in the chemistry grid
-         IF ( ITS_IN_THE_CHEMGRID( I, J, L, State_Met ) ) THEN
+         IF ( State_Met%InChemGrid(I,J,L) ) THEN
 
             ! Get NO from State_Chm%Species [kg] and convert to [molec/cm3]
             MolecRatio = State_Chm%SpcData(id_NO)%Info%MolecRatio
@@ -7358,7 +7456,6 @@ ccc
 !
 ! !USES:
 !
-      USE CHEMGRID_MOD,       ONLY : ITS_IN_THE_CHEMGRID
       USE CMN_SIZE_MOD
       USE ERROR_MOD,          ONLY : ERROR_STOP
       USE Input_Opt_Mod,      ONLY : OptInput
@@ -7405,7 +7502,7 @@ ccc
          !---------------------
 
          ! HO2 is defined only in the chemistry grid
-         IF ( ITS_IN_THE_CHEMGRID( I, J, L, State_Met ) ) THEN
+         IF ( State_Met%InChemGrid(I,J,L) ) THEN
 
             ! Get HO2 from State_Chm%Species [kg] and convert to [molec/cm3]
             MolecRatio = State_Chm%SpcData(id_HO2)%Info%MolecRatio
@@ -7453,7 +7550,6 @@ ccc
 !
 ! !USES:
 !
-      USE CHEMGRID_MOD,       ONLY : ITS_IN_THE_CHEMGRID
       USE CMN_SIZE_MOD
       USE ERROR_MOD,          ONLY : ERROR_STOP
       USE Input_Opt_Mod,      ONLY : OptInput
@@ -7509,8 +7605,8 @@ ccc
          !--------------------
 
          ! Test if we are in the chemistry grid
-         IF ( ITS_IN_THE_CHEMGRID( I, J, L, State_Met ) ) THEN 
- 
+         IF ( State_Met%InChemGrid(I,J,L) ) THEN
+
             !-----------------------------------------------------------
             ! Get ISOPNO3 (ISOP list to NO3) from State_Chm%Species
             ! [kg ISOPNO3] and convert to [kg C ISOP]
@@ -7567,7 +7663,8 @@ ccc
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE INIT_CARBON( am_I_Root, Input_Opt, RC )
+      SUBROUTINE INIT_CARBON( am_I_Root, Input_Opt, 
+     &                        State_Chm, State_Diag, RC )
 !
 ! !USES:
 !
@@ -7576,15 +7673,18 @@ ccc
       USE ERROR_MOD,          ONLY : ALLOC_ERR, ERROR_STOP
       USE Input_Opt_Mod,      ONLY : OptInput
       USE State_Chm_Mod,      ONLY : Ind_
-      USE TIME_MOD,           ONLY : GET_NYMDb, GET_NHMSb, GET_TAUb
+      USE State_Chm_Mod,      ONLY : ChmState
+      USE State_Diag_Mod,     ONLY : DgnState
 #if defined( TOMAS )
       USE TOMAS_MOD,          ONLY : IBINS
 #endif
 !
 ! !INPUT PARAMETERS:
 !
-      LOGICAL,        INTENT(IN)  :: am_I_Root   ! Is this the root CPU?
-      TYPE(OptInput), INTENT(IN)  :: Input_Opt   ! Input Options object
+      LOGICAL,        INTENT(IN)    :: am_I_Root   ! Is this the root CPU?
+      TYPE(OptInput), INTENT(IN)    :: Input_Opt   ! Input Options object
+      TYPE(ChmState), INTENT(INOUT) :: State_Chm   ! Chemistry State object
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag  ! Diagnostics State object
 !
 ! !INPUT/OUTPUT PARAMETERS:
 !
@@ -7615,6 +7715,8 @@ ccc
 !  26 Sep 2013 - R. Yantosca - Renamed GEOS_57 Cpp switch to GEOS_FP
 !  11 Aug 2015 - R. Yantosca - Add support for MERRA2 data
 !  23 Sep 2015 - R. Yantosca - Remove reference to DRY* flags, they're obsolete
+!  02 Nov 2017 - R. Yantosca - Now accept State_Diag as an argument
+!  07 Aug 2018 - H.P. Lin    - Now accept State_Chm as an argument
 !EOP
 !------------------------------------------------------------------------------
 !BOC

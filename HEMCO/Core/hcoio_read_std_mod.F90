@@ -136,6 +136,8 @@ CONTAINS
     USE HCO_DIAGN_MOD,      ONLY : Diagn_Update
     USE HCO_EXTLIST_MOD,    ONLY : HCO_GetOpt
     USE HCO_TIDX_MOD,       ONLY : tIDx_IsInRange
+
+    include "netcdf.inc"
 !
 ! !INPUT PARAMETERS:
 !
@@ -174,6 +176,8 @@ CONTAINS
 !  24 Mar 2016 - C. Keller   - Simplified handling of file in buffer. Remove
 !                              args LUN and CloseFile.
 !  29 Apr 2016 - R. Yantosca - Don't initialize pointers in declaration stmts
+!  02 Nov 2018 - M. Sulprizio- Add option to skip variables when they're not
+!                              found in the file
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -186,6 +190,7 @@ CONTAINS
     INTEGER                       :: NX, NY
     INTEGER                       :: NCRC, Flag, AS
     INTEGER                       :: ncLun, ncLun2
+    INTEGER                       :: ierr,   v_id
     INTEGER                       :: nlon,   nlat,  nlev, nTime
     INTEGER                       :: lev1,   lev2,  dir 
     INTEGER                       :: tidx1,  tidx2,  ncYr,  ncMt
@@ -251,7 +256,6 @@ CONTAINS
     ! ($YYYY), etc., with valid values.
     ! ----------------------------------------------------------------
     CALL SrcFile_Parse ( am_I_Root, HcoState, Lct, srcFile, FOUND, RC )
-    IF ( RC /= HCO_SUCCESS ) RETURN
 
     ! If file not found, return w/ error. No error if cycling attribute is 
     ! select to range. In that case, just make sure that array is empty.
@@ -263,7 +267,7 @@ CONTAINS
           ! found
           IF ( Lct%Dct%Dta%MustFind ) THEN
              MSG = 'Cannot find file for current simulation time: ' // &
-                   TRIM(Lct%Dct%Dta%ncFile) // ' - Cannot get field ' // &
+                   TRIM(srcFile) // ' - Cannot get field ' // &
                    TRIM(Lct%Dct%cName) // '. Please check file name ' // &
                    'and time (incl. time range flag) in the config. file'
              CALL HCO_ERROR( HcoState%Config%Err, MSG, RC )
@@ -271,18 +275,18 @@ CONTAINS
 
           ! If MustFind flag is not enabled, ignore this field and return
           ! with a warning.
-          ELSE       
+          ELSE   
              CALL FileData_Cleanup( Lct%Dct%Dta, DeepClean=.FALSE. )
              MSG = 'No valid file found for current simulation time - data '// &
                    'will be ignored for time being - ' // TRIM(Lct%Dct%cName) 
-             CALL HCO_WARNING ( HcoState%Config%Err, MSG, RC, WARNLEV=1 )
+             CALL HCO_WARNING ( HcoState%Config%Err, MSG, RC, WARNLEV=3 )
              CALL HCO_LEAVE ( HcoState%Config%Err,  RC ) 
              RETURN
           ENDIF
 
        ELSE 
           MSG = 'Cannot find file for current simulation time: ' // &
-                TRIM(Lct%Dct%Dta%ncFile) // ' - Cannot get field ' // &
+                TRIM(srcFile) // ' - Cannot get field ' // &
                 TRIM(Lct%Dct%cName) // '. Please check file name ' // &
                 'and time (incl. time range flag) in the config. file'
           CALL HCO_ERROR( HcoState%Config%Err, MSG, RC )
@@ -383,7 +387,7 @@ CONTAINS
              CALL FileData_Cleanup( Lct%Dct%Dta, DeepClean=.FALSE.)
              MSG = 'Simulation time is outside of time range provided for '//&
                   TRIM(Lct%Dct%cName) // ' - field is ignored for the time being!'
-             CALL HCO_WARNING ( HcoState%Config%Err, MSG, RC, WARNLEV=1 )
+             CALL HCO_WARNING ( HcoState%Config%Err, MSG, RC, WARNLEV=3 )
              DoReturn = .TRUE.
              CALL HCO_LEAVE ( HcoState%Config%Err,  RC ) 
           ENDIF
@@ -395,6 +399,32 @@ CONTAINS
        ENDIF
     ENDIF
 
+    ! ----------------------------------------------------------------
+    ! Check if variable is in file
+    ! ----------------------------------------------------------------
+    ierr = Nf_Inq_Varid( ncLun, Lct%Dct%Dta%ncPara, v_id )
+    IF ( ierr /= NF_NOERR ) THEN
+
+       ! If MustFind flag is enabled, return with error if field is not
+       ! found
+       IF ( Lct%Dct%Dta%MustFind ) THEN
+          MSG = 'Cannot find field ' // TRIM(Lct%Dct%cName) // &
+                '. Please check variable name in the config. file'
+          CALL HCO_ERROR( HcoState%Config%Err, MSG, RC )
+          RETURN
+
+       ! If MustFind flag is not enabled, ignore this field and return
+       ! with a warning.
+       ELSE   
+          CALL FileData_Cleanup( Lct%Dct%Dta, DeepClean=.FALSE. )
+          MSG = 'Cannot find field ' // TRIM(Lct%Dct%cName) // &
+                '. Will be ignored for time being.'
+          CALL HCO_WARNING ( HcoState%Config%Err, MSG, RC, WARNLEV=3 )
+          CALL HCO_LEAVE ( HcoState%Config%Err,  RC ) 
+          RETURN
+       ENDIF
+    ENDIF
+          
     ! ----------------------------------------------------------------
     ! Read grid 
     ! ----------------------------------------------------------------
@@ -2553,7 +2583,6 @@ CONTAINS
 !
     USE HCO_TIDX_MOD,         ONLY : HCO_GetPrefTimeAttr
     USE HCO_TIDX_MOD,         ONLY : tIDx_IsInRange 
-    USE HCO_CHARTOOLS_MOD,    ONLY : HCO_CharParse
     USE HCO_CLOCK_MOD,        ONLY : HcoClock_Get
     USE HCO_CLOCK_MOD,        ONLY : Get_LastDayOfMonth
 !
@@ -3686,6 +3715,7 @@ CONTAINS
     USE HCO_EXTLIST_MOD,    ONLY : HCO_GetOpt
     USE HCO_UNIT_MOD,       ONLY : HCO_Unit_Change
     USE HCO_tIdx_Mod,       ONLY : HCO_GetPrefTimeAttr
+    USE HCO_CLOCK_MOD,      ONLY : HcoClock_Get
 !
 ! !INPUT PARAMTERS:
 !
@@ -3704,6 +3734,7 @@ CONTAINS
 !
 ! !REVISION HISTORY:
 !  22 Dec 2014 - C. Keller: Initial version
+!  08 Aug 2018 - C. Keller: Added check for range/exact dataon
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -3716,6 +3747,7 @@ CONTAINS
     INTEGER            :: IDX1, IDX2
     INTEGER            :: AreaFlag, TimeFlag, Check
     INTEGER            :: prefYr, prefMt, prefDy, prefHr, prefMn
+    INTEGER            :: cYr,    cMt,    cDy,    cHr 
     REAL(hp)           :: UnitFactor 
     REAL(hp)           :: FileVals(100)
     REAL(hp), POINTER  :: FileArr(:,:,:,:)
@@ -3772,6 +3804,12 @@ CONTAINS
        RETURN 
     ENDIF
 
+    ! Get the preferred times, i.e. the preferred year, month, day, 
+    ! or hour (as specified in the configuration file).
+    CALL HCO_GetPrefTimeAttr ( am_I_Root, HcoState, Lct, prefYr, &
+                               prefMt, prefDy, prefHr, prefMn, RC )
+    IF ( RC /= HCO_SUCCESS ) RETURN
+
     ! ---------------------------------------------------------------- 
     ! For masks, assume that values represent the corners of the mask
     ! box, e.g. there must be four values. Masks are time-independent
@@ -3821,12 +3859,6 @@ CONTAINS
           IDX2 = N
 
        ELSE
-          ! Get the preferred times, i.e. the preferred year, month, day, 
-          ! or hour (as specified in the configuration file).
-          CALL HCO_GetPrefTimeAttr ( am_I_Root, HcoState, Lct, prefYr, &
-                                     prefMt, prefDy, prefHr, prefMn, RC )
-          IF ( RC /= HCO_SUCCESS ) RETURN
-      
           ! Currently, data read directly from the configuration file can only
           ! represent one time dimension, i.e. it can only be yearly, monthly,
           ! daily (or hourly data, but this is read all at the same time). 
@@ -3901,7 +3933,35 @@ CONTAINS
           CALL HCO_ERROR( HcoState%Config%Err, MSG, RC, THISLOC=LOC )
           RETURN
        ENDIF
-    
+  
+       ! Check for range/exact flag
+       ! If range is given, the preferred Yr/Mt/Dy/Hr will be negative
+       ! if we are outside the desired range.
+       IF ( Lct%Dct%Dta%CycleFlag == HCO_CFLAG_RANGE ) THEN
+          IF ( prefYr == -1 .OR. prefMt == -1 .OR. prefDy == -1 ) IDX1 = -1
+          IF ( Lct%Dct%Dta%ncHrs(1) >= 0 .AND. prefHr == -1 )     IDX1 = -1 
+
+       ! If flag is exact, the preferred date must be equal to the current
+       ! simulation date. 
+       ELSEIF ( Lct%Dct%Dta%CycleFlag == HCO_CFLAG_EXACT ) THEN
+          IF ( Lct%Dct%Dta%ncYrs(1) > 0 ) THEN
+             IF ( prefYr < Lct%Dct%Dta%ncYrs(1) .OR. &
+                  prefYr > Lct%Dct%Dta%ncYrs(2) ) IDX1 = -1 
+          ENDIF
+          IF ( Lct%Dct%Dta%ncMts(1) > 0 ) THEN
+             IF ( prefMt < Lct%Dct%Dta%ncMts(1) .OR. &
+                  prefMt > Lct%Dct%Dta%ncMts(2) ) IDX1 = -1 
+          ENDIF
+          IF ( Lct%Dct%Dta%ncDys(1) > 0 ) THEN
+             IF ( prefDy < Lct%Dct%Dta%ncDys(1) .OR. &
+                  prefDy > Lct%Dct%Dta%ncDys(2) ) IDX1 = -1 
+          ENDIF
+          IF ( Lct%Dct%Dta%ncHrs(1) >= 0 ) THEN
+             IF ( prefHr < Lct%Dct%Dta%ncHrs(1) .OR. &
+                  prefHr > Lct%Dct%Dta%ncHrs(2) ) IDX1 = -1 
+          ENDIF
+       ENDIF
+
        ! IDX1 becomes -1 for data that is outside of the valid range
        ! (and no time cycling enabled). In this case, make sure that
        ! scale factor is set to zero.
@@ -3911,6 +3971,13 @@ CONTAINS
              MSG = 'Base field outside of range - set to zero: ' // &
                    TRIM(Lct%Dct%cName)
              CALL HCO_WARNING ( HcoState%Config%Err, MSG, RC, WARNLEV=1, THISLOC=LOC )
+#if defined( MODEL_GEOS )
+          ELSEIF ( Lct%Dct%DctType == HCO_DCTTYPE_MASK ) THEN
+             FileArr(1,1,1,:) = 0.0_hp
+             MSG = 'Mask outside of range - set to zero: ' // &
+                   TRIM(Lct%Dct%cName)
+             CALL HCO_WARNING ( HcoState%Config%Err, MSG, RC, WARNLEV=1, THISLOC=LOC )
+#endif
           ELSE
              FileArr(1,1,1,:) = 1.0_hp
              MSG = 'Scale factor outside of range - set to one: ' // &
@@ -4203,7 +4270,10 @@ CONTAINS
     INTEGER,          INTENT(  OUT)   :: N
 !
 ! !REVISION HISTORY:
-!  11 May 2017 - C. Keller: Initial version
+!  11 May 2017 - C. Keller - Initial version
+!  07 Jul 2017 - C. Keller - Parse function before evaluation to allow
+!                            the usage of user-defined tokens within the
+!                            function.
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -4256,6 +4326,12 @@ CONTAINS
     ! GetPrefTimeAttr can return -999 for hour. In this case set to current
     ! simulation hour
     IF ( prefHr < 0 ) prefHr = cHr
+
+    ! Parse function. This will replace any tokens in the function with the
+    ! actual token values. (ckeller, 7/7/17)
+    CALL HCO_CharParse ( HcoState%Config, func, &
+                         prefYr, prefMt, prefDy, prefHr, prefMn, RC )
+    IF ( RC /= HCO_SUCCESS ) RETURN
  
     ! Check which variables are in string. 
     ! Possible variables are YYYY, MM, DD, WD, HH, NN, SS, DOY 
@@ -4344,7 +4420,7 @@ CONTAINS
        RETURN
     ENDIF
 
-    ! N is the number of expressions. This is 1 or 24
+    ! N is the number of expressions.
     Vals(:) = -999.0_hp
     IF ( LHIDX > 0 ) THEN
        N = 24

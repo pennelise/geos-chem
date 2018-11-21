@@ -947,6 +947,9 @@
       ! READ_POINTS begins here!
       !=================================================================
 
+      ! Assume success
+      RC = GC_SUCCESS
+
       ! Read 4 header lines
       DO N = 1, 4
          READ( IU_FILE, '(a)', IOSTAT=IOS )
@@ -1205,6 +1208,7 @@
       ! Initialize 
       NPRO2   =  0
       SpcInfo => NULL()
+      RC = GC_SUCCESS
 
       ! We only need to proceed for full-chemistry simulations
       IF ( .not. Input_Opt%ITS_A_FULLCHEM_SIM ) RETURN
@@ -1319,6 +1323,7 @@
       ! Initialize 
       NPNOY   =  0
       SpcInfo => NULL()
+      RC = GC_SUCCESS
 
       ! We only need to proceed for full-chemistry simulations
       IF ( .not. Input_Opt%ITS_A_FULLCHEM_SIM ) RETURN
@@ -1432,6 +1437,7 @@
       ! Initialize 
       NPAN    =  0
       SpcInfo => NULL()
+      RC = GC_SUCCESS
 
       ! We only need to proceed for full-chemistry simulations
       IF ( .not. Input_Opt%ITS_A_FULLCHEM_SIM ) RETURN
@@ -1494,20 +1500,15 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE PLANEFLIGHT( am_I_Root, Input_Opt,
-     &                        State_Met, State_Chm, RC )
+      SUBROUTINE PLANEFLIGHT( am_I_Root, Input_Opt,  State_Met,
+     &                        State_Chm, State_Diag, RC         )
 !
 ! !USES:
 !
       USE BPCH2_MOD,          ONLY : GET_TAU0
-      USE CHEMGRID_MOD,       ONLY : ITS_IN_THE_CHEMGRID
-      USE CMN_DIAG_MOD,       ONLY : NDUST, NAER
       USE CMN_FJX_MOD,        ONLY : ODAER, QAA, QAA_AOD, ODMDUST
       USE CMN_FJX_MOD,        ONLY : IWVSELECT, ACOEF_WV, BCOEF_WV
       USE CMN_SIZE_MOD
-#if   defined( TOMAS )
-      USE DIAG_MOD,           ONLY : AD61_INST   ! (win, 7/28/09)
-#endif
       USE ErrCode_Mod
       USE ERROR_MOD,          ONLY : GEOS_CHEM_STOP  
       USE Input_Opt_Mod,      ONLY : OptInput
@@ -1515,9 +1516,14 @@
       USE OCEAN_MERCURY_MOD,  ONLY : OMMFp => Fp
       USE PhysConstants,      ONLY : CONSVAP, AIRMW
       USE State_Chm_Mod,      ONLY : ChmState
+      USE State_Diag_Mod,     ONLY : DgnState
       USE State_Met_Mod,      ONLY : MetState
       USE TIME_MOD
       USE UnitConv_Mod,       ONLY : Convert_Spc_Units
+      USE CMN_DIAG_MOD,       ONLY : NDUST, NAER
+#if defined( BPCH_DIAG ) && defined( TOMAS )
+      USE DIAG_MOD,           ONLY : AD61_INST   ! (win, 7/28/09)
+#endif
 !
 ! !INPUT PARAMETERS:
 !
@@ -1528,6 +1534,7 @@
 ! !INPUT/OUTPUT PARAMETERS:
 !
       TYPE(ChmState), INTENT(INOUT) :: State_Chm   ! Chemistry State object
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag  ! Diagnostics State object
 !
 ! !OUTPUT PARAMETERS:
 !
@@ -1574,6 +1581,9 @@
 !  17 May 2016 - M. Sulprizio- Remove PCHEM, IJLOOP and use IS_FULLCHEM instead
 !  22 Jun 2016 - M. Yannetti - Replaced references to TCVV with spec db
 !  28 Sep 2017 - E. Lundgren - Simplify unit conversions using wrapper routine
+!  03 Nov 2017 - R. Yantosca - Now accept State_Diag as an argument
+!  06 Feb 2018 - E. Lundgren - Change GET_ELAPSED_MIN to GET_ELAPSED_SEC to
+!                              match new timestep unit of seconds
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -1591,6 +1601,7 @@
       REAL*8              :: FLTGMT   ! eam (06/2015)
       REAL*8              :: XRH      ! MET field RH (eam, 08/2015)
       CHARACTER(LEN=63)   :: OrigUnit
+      CHARACTER(LEN=7)    :: NAME
 
       ! Aerosol types: SULF, BLKC, ORGC, SALA, SALC 
       INTEGER             :: IND(5) = (/ 22, 29, 36, 43, 50 /)
@@ -1625,8 +1636,8 @@
       IF ( .not. DO_PF ) RETURN
 
       ! Update from kyu (03/2015):
-      !print*, 'IN PLANEFLIGHT, ELAPSED_MIN', GET_ELAPSED_MIN()
-      CHEMSTEP = ( MOD(GET_ELAPSED_MIN(), GET_TS_DIAG() ) == 
+      !print*, 'IN PLANEFLIGHT, ELAPSED_SEC', GET_ELAPSED_SEC()
+      CHEMSTEP = ( MOD(GET_ELAPSED_SEC(), GET_TS_DIAG() ) == 
      &           ( GET_TS_DIAG() / 2) )
       !print*, 'CHEMSTEP', CHEMSTEP
 
@@ -1653,17 +1664,17 @@
          ! Starting & end times of transport timestep
          PTAUE = GET_TAU0( MONTH, DAY, YEAR, HOUR, MINUTE, 0 )
          ! Modification from kyu (eam, 03/2015)
-         !PTAUS = PTAUE - ( GET_TS_DIAG() / 60e+0_fp )
+         !PTAUS = PTAUE - ( GET_TS_DIAG() / 3600e+0_fp )
          ! If we just finished a chemistry timestep, write out one full
          ! diagnostic timestep's worth of data
          IF ( CHEMSTEP ) THEN
-            PTAUS = PTAUE - ( GET_TS_DIAG() / 60d0 )
+            PTAUS = PTAUE - ( GET_TS_DIAG() / 3600d0 )
          ! Otherwise write out only half a timestep's worth of data
          ELSE
             ! Write half hour only if we are on last time step, otherwise
             ! exit the subroutine
-            IF (MOD(GET_ELAPSED_MIN(), (GET_TS_DIAG()*24)) == 0) THEN 
-               PTAUS = PTAUE - ( GET_TS_DIAG() / (2.0 * 60d0) )
+            IF (MOD(GET_ELAPSED_SEC(), (GET_TS_DIAG()*1440)) == 0) THEN 
+               PTAUS = PTAUE - ( GET_TS_DIAG() / (2.0 * 3600d0) )
             ELSE
                EXIT
             ENDIF
@@ -1719,56 +1730,27 @@
             ! Return grid box indices for the chemistry region
             CALL TEST_VALID( M, I, J, L, Input_Opt, State_Met )
 
-            !kjw. if not INTEX-A observation, set L=1
-            ! Add calnx (mpayer, 1/8/13)
-            ! Add HIPPO (ajt, 5/23/13)
-            ! Add CCGG (ajt, 7/5/13)
-            ! Add NOAA towers (ajt, 4/2/15)
-            IF ( TRIM(ADJUSTL(PTYPE(M))) .NE. 'DC-8'  .AND.
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'ER2'   .AND.
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'calnx' .AND. ! Calnex
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'calne' .AND. ! Calnex
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Aacg'  .AND. ! NOAA Aircraft
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Abne'  .AND. ! NOAA Aircraft
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Acar'  .AND. ! NOAA Aircraft
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Acrv'  .AND. ! NOAA Aircraft
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Acma'  .AND. ! NOAA Aircraft
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Adnd'  .AND. ! NOAA Aircraft
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Aesp'  .AND. ! NOAA Aircraft
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Aetl'  .AND. ! NOAA Aircraft
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Ahil'  .AND. ! NOAA Aircraft
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Ahip'  .AND. ! NOAA Aircraft
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Alef'  .AND. ! NOAA Aircraft
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Anha'  .AND. ! NOAA Aircraft
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Apfa'  .AND. ! NOAA Aircraft
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Arta'  .AND. ! NOAA Aircraft
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Asca'  .AND. ! NOAA Aircraft
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Asgp'  .AND. ! NOAA Aircraft
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Atgc'  .AND. ! NOAA Aircraft
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Athd'  .AND. ! NOAA Aircraft
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Awbi'  .AND. ! NOAA Aircraft
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Tamt'  .AND. ! NOAA TOWER
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Tbao'  .AND. ! NOAA TOWER
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Tcrv'  .AND. ! NOAA TOWER
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Tlef'  .AND. ! NOAA TOWER
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Tlew'  .AND. ! NOAA TOWER
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Tmbo'  .AND. ! NOAA TOWER
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Tmvy'  .AND. ! NOAA TOWER
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Tmwo'  .AND. ! NOAA TOWER
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Tnwr'  .AND. ! NOAA TOWER
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Tsct'  .AND. ! NOAA TOWER
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Tsgp'  .AND. ! NOAA TOWER
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Tstr'  .AND. ! NOAA TOWER
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Twbi'  .AND. ! NOAA TOWER
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Twgc'  .AND. ! NOAA TOWER
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'Twkt'  .AND. ! NOAA TOWER
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'hipp1' .AND. ! HIPPO
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'hipp2' .AND. ! HIPPO
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'hipp3' .AND. ! HIPPO
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'hipp4' .AND. ! HIPPO
-     &           TRIM(ADJUSTL(PTYPE(M))) .NE. 'hipp5' ) THEN
-               print*,'WARNING: GMD Observation. forcing L=1'
+            ! If this is a surface observation, set L=1
+            !
+            ! NOAA Surface observations start with 'S' in Planeflight.dat
+            ! Other surface observation strings can be added here
+            NAME = ADJUSTL(PTYPE(M))
+            IF ( NAME(1:1)  .EQ. 'S' ) THEN
+
+               ! Make sure it is the users intention to set L=1
+               IF ( am_I_Root ) THEN
+                  WRITE( 6, '(a)') 'WARNING: NOAA Surface Observation. '
+                  WRITE( 6, '(a)') 'Forcing L=1. If this is intended, '
+                  WRITE( 6, '(a)') 'you may comment out the call to '
+                  WRITE( 6, '(a)') 'GEOS_CHEM_STOP in routine '
+                  WRITE( 6, '(a)') 'PLANEFLIGHT (planeflight_mod.f)'
+                  WRITE( 6, '(a)') REPEAT( '=', 79 )
+               ENDIF
+               CALL GEOS_CHEM_STOP
+
+               ! Force L=1
                L = 1
+
             ENDIF
 
             ! Initialize reaction counter
@@ -1798,7 +1780,7 @@
                   CASE ( 1:996) !( 1:998 )
 
                      ! Only archive where chemistry is done
-                     IF ( ITS_IN_THE_CHEMGRID(I,J,L,State_Met) ) THEN
+                     IF ( State_Met%InChemGrid(I,J,L) ) THEN
 
                         ! Species concentration [v/v] -> [molec/cm3]
                         VARI(V) = Spc(I,J,L,PVAR(V)) * 
@@ -1817,7 +1799,7 @@
                      VARI(V) = 0e+0_fp
 
                      IF ( IS_FULLCHEM .and. 
-     &                    ITS_IN_THE_CHEMGRID(I,J,L,State_Met) ) THEN
+     &                    State_Met%InChemGrid(I,J,L) ) THEN
 
                         DO N = 1, NPNOY
 
@@ -1839,7 +1821,7 @@
                      VARI(V) = 0e+0_fp
 
                      IF ( IS_FULLCHEM .and. 
-     &                    ITS_IN_THE_CHEMGRID(I,J,L,State_Met) ) THEN
+     &                    State_Met%InChemGrid(I,J,L) ) THEN
 
                         DO N = 1, NPAN
 
@@ -1860,7 +1842,7 @@
                      VARI(V) = 0e+0_fp
                            
                      IF ( IS_FULLCHEM .and. 
-     &                    ITS_IN_THE_CHEMGRID(I,J,L,State_Met) ) THEN
+     &                    State_Met%InChemGrid(I,J,L) ) THEN
 
                         DO N = 1, NPRO2
 
@@ -1884,7 +1866,7 @@
                      
                      ! Only archive where chemistry is done
                      ! Code skalooched from "calcrate.f"
-                     IF ( ITS_IN_THE_CHEMGRID(I,J,L,State_Met) ) THEN
+                     IF ( State_Met%InChemGrid(I,J,L) ) THEN
                         VARI(V)  = State_Met%AVGW(I,J,L) *
      &                             State_Met%AIRNUMDEN(I,J,L)
                         TK       = State_Met%T(I,J,L)
@@ -1907,7 +1889,7 @@
                      ! Only archive where chemistry is done
                      VARI(V) = 0e+0_fp
 
-                     IF ( ITS_IN_THE_CHEMGRID(I,J,L,State_Met) ) THEN
+                     IF ( State_Met%InChemGrid(I,J,L) ) THEN
                         DO N = 1, NDUST + NAER
                            VARI(V) = VARI(V) +
      &                               State_Chm%AeroArea(I,J,L,N)
@@ -2166,16 +2148,16 @@
                   ! ISORROPIA H+ and pH (eam, 06/2015)
                   !--------------------------
                   CASE( 5001 )
-                     VARI(V) = State_Chm%HPLUS_SAV(I,J,L)
+                     VARI(V) = State_Chm%HplusSav(I,J,L)
 
                   CASE( 5002 )
-                     VARI(V) = State_Chm%PH_SAV(I,J,L)
+                     VARI(V) = State_Chm%pHSaV(I,J,L)
 
                   CASE( 5003 )
-                     VARI(V) = State_Chm%WATER_SAV(I,J,L)
+                     VARI(V) = State_Chm%WaterSav(I,J,L)
 
                   CASE( 5004 )
-                     VARI(V) = State_Chm%BISUL_SAV(I,J,L)
+                     VARI(V) = State_Chm%BisulSav(I,J,L)
 
                   !--------------------------
                   ! Local Time (eam, 06/2015)
@@ -2266,7 +2248,7 @@
 
                      IF ( VARI(V) < TINY ) VARI(V) = 0.e+0_fp
 
-#if   defined( TOMAS )
+#if   defined( TOMAS ) && defined( BPCH_DIAG )
                   !-------------------------------
                   ! TOMAS microphysics rate [kg/s] or [no./cm3/s]
                   !-------------------------------
@@ -2498,7 +2480,7 @@
       WRITE( IU_PLANE, 110, IOSTAT=IOS ) 
      &     IND, PTYPE(IND), INT( PDATE(IND) ), INT( PTIME(IND) ),
      &     PLAT(IND), PLON(IND), PPRESS(IND), POBS(IND),
-     &     INT( GET_ELAPSED_MIN() / GET_TS_DYN() ),
+     &     INT( GET_ELAPSED_SEC() / GET_TS_DYN() ),
      &     LL, II, JJ,
      &     ( VARI(I), I=1,NPVAR )
       

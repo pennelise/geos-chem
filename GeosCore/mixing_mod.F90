@@ -36,7 +36,6 @@ MODULE MIXING_MOD
 !
 ! !PRIVATE TYPES:
 !
-  LOGICAL :: Archive_DryDepFlux_Mix   ! Is the DryDepFlux_Mix diag turned on?
 
 CONTAINS
 !EOC
@@ -53,20 +52,19 @@ CONTAINS
 !\\
 ! !INTERFACE:
 !
-  SUBROUTINE INIT_MIXING ( am_I_Root, Input_Opt,  State_Met,                 &
+  SUBROUTINE INIT_MIXING ( am_I_Root, Input_Opt, State_Met,                 &
                            State_Chm, State_Diag, RC                        )
 !
 ! !USES:
 !
     USE ErrCode_Mod
-    USE ERROR_MOD,      ONLY : ERROR_STOP
-    USE Input_Opt_Mod,  ONLY : OptInput
-    USE PBL_MIX_MOD,    ONLY : COMPUTE_PBL_HEIGHT
-    USE PBL_MIX_MOD,    ONLY : DO_PBL_MIX
-    USE State_Met_Mod,  ONLY : MetState
-    USE State_Chm_Mod,  ONLY : ChmState
-    USE State_Diag_Mod, ONLY : DgnState 
-    USE VDIFF_MOD,      ONLY : DO_PBL_MIX_2
+    USE Input_Opt_Mod,   ONLY : OptInput
+    USE PBL_MIX_MOD,     ONLY : COMPUTE_PBL_HEIGHT
+    USE PBL_MIX_MOD,     ONLY : DO_PBL_MIX
+    USE State_Met_Mod,   ONLY : MetState
+    USE State_Chm_Mod,   ONLY : ChmState
+    USE State_Diag_Mod,  ONLY : DgnState 
+    USE VDIFF_MOD,       ONLY : DO_PBL_MIX_2
 !
 ! !INPUT PARAMETERS:
 !
@@ -90,40 +88,77 @@ CONTAINS
 !  26 Oct 2016 - R. Yantosca - Now also call COMPUTE_PBL_HEIGHT so that we
 !                              populate PBL quantities w/ the initial met
 !  09 Mar 2017 - C. Keller   - Do not call COMPUTE_PBL_HEIGHT in ESMF env.
+!   6 Nov 2017 - R. Yantosca - Return error condition to calling program
 !EOP
 !------------------------------------------------------------------------------
 !BOC
+!
+! !LOCAL VARIABLES:
+!
+    CHARACTER(LEN=255) :: ErrMsg, ThisLoc
 
     !=======================================================================
-    ! DO_MIXING begins here!
+    ! INIT_MIXING begins here!
     !=======================================================================
 
     ! Assume success
-    RC = GC_SUCCESS
+    RC      = GC_SUCCESS
+    ErrMsg  = ''
+    ThisLoc = ' -> at INIT_MIXING (in module GeosCore/mixing_mod.F90)'
    
-    ! Is the drydep flux from mixing diagnostic turned on?
-    Archive_DryDepFlux_Mix = ASSOCIATED( State_Diag%DryDepFlux_Mix )
-    print*, '### INIT_MIXING: archive: ', Archive_DryDepFlux_Mix
-
     !-----------------------------------------------------------------------
     ! Initialize PBL mixing scheme
     !-----------------------------------------------------------------------
     IF ( Input_Opt%LNLPBL ) THEN
+
+       ! Initialize non-local PBL mixing scheme
        CALL DO_PBL_MIX_2( am_I_Root, .FALSE. ,  Input_Opt,                   &
                           State_Met, State_Chm, State_Diag, RC              )
+
+       ! Trap potential errors
+       IF ( RC /= GC_SUCCESS ) THEN
+          ErrMsg = 'Error encountered in "DO_PBL_MIX" at initialization!'
+          CALL GC_Error( ErrMsg, RC, ThisLoc )
+          RETURN
+       ENDIF
+
     ELSE 
+
+       ! Initialize full PBL mixing scheme
        CALL DO_PBL_MIX(   am_I_Root, .FALSE.,   Input_Opt,                   &
                           State_Met, State_Chm, State_Diag, RC              )
+       
+       ! Trap potential errors
+       IF ( RC /= GC_SUCCESS ) THEN
+          ErrMsg = 'Error encountered in "DO_PBL_MIX" at initialization!'
+          CALL GC_Error( ErrMsg, RC, ThisLoc )
+          RETURN
+       ENDIF
+
     ENDIF
 
+#if !defined( ESMF_ ) && !defined( MODEL_WRF )
+    !-----------------------------------------------------------------------
     ! Compute the various PBL quantities with the initial met fields.
     ! This is needed so that HEMCO won't be passed a zero PBL height
     ! (bmy, 10/26/16)
+    !
     ! In ESMF mode this routine should not be called during the init
     ! stage: the required met quantities are not yet defined.
     ! (ckeller, 11/23/16)
-#if !defined(ESMF_)
-    CALL COMPUTE_PBL_HEIGHT( State_Met )
+    !
+    ! In GC-WRF, which uses the same entry-point as the GEOS-5 GCM, the
+    ! required met quantities are also not defined until GIGC_Chunk_Run,
+    ! so also skip this here (hplin, 8/9/18)
+    !-----------------------------------------------------------------------
+    CALL COMPUTE_PBL_HEIGHT( am_I_Root, State_Met, RC )
+
+    ! Trap potential errors
+    IF ( RC /= GC_SUCCESS ) THEN
+       ErrMsg = 'Error encountered in "COMPUTE_PBL_HEIGHT" at initialization!'
+       CALL GC_Error( ErrMsg, RC, ThisLoc )
+       RETURN
+    ENDIF
 #endif
 
   END SUBROUTINE INIT_MIXING 
@@ -180,6 +215,7 @@ CONTAINS
 !  08 Aug 2016 - R. Yantosca - Remove temporary tracer-removal code
 !  26 Jun 2017 - R. Yantosca - GC_ERROR is now contained in errcode_mod.F90
 !  28 Sep 2017 - E. Lundgren - Move unit conversions to individual routines
+!  07 Nov 2017 - R. Yantosca - Now return error condition to calling routine
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -187,53 +223,117 @@ CONTAINS
 ! LOCAL VARIABLES:
 !
     ! Scalars
-    LOGICAL :: OnlyAbovePBL
+    LOGICAL            :: OnlyAbovePBL
+    CHARACTER(LEN=255) :: ErrMsg, ThisLoc
 
-    !=================================================================
+    !=======================================================================
     ! DO_MIXING begins here!
-    !=================================================================
+    !=======================================================================
 
-    ! Assume success
-    RC = GC_SUCCESS
+    ! Initialize
+    RC      = GC_SUCCESS
+    ErrMsg  = ''
+    ThisLoc = ' -> at DO_MIXING (in module GeosCore/mixing_mod.F90)'
 
-    ! ------------------------------------------------------------------
+    !-----------------------------------------------------------------------
     ! Do non-local PBL mixing. This will apply the species tendencies
     ! (emission fluxes and dry deposition rates) below the PBL.
     ! This is done for all species with defined emissions / dry
     ! deposition rates, including dust.
+    !
     ! Set OnlyAbovePBL flag (used below by DO_TEND) to indicate that
     ! fluxes within the PBL have already been applied. 
-    ! ------------------------------------------------------------------
+    ! ----------------------------------------------------------------------
     IF ( Input_Opt%LTURB .AND. Input_Opt%LNLPBL ) THEN
+
+#if defined( NC_DIAG )
+       !--------------------------------------------------------------------
+       ! %%%%% HISTORY (aka netCDF diagnostics) %%%%%
+       !
+       ! Initialize the diagnostic array for the History Component.  This will 
+       ! prevent leftover values from being carried over to this timestep.
+       ! (For example, if on the last iteration, the PBL height was higher than
+       ! it is now, then we will have stored drydep fluxes up to that height,
+       ! so we need to zero these out.)
+       !--------------------------------------------------------------------
+       IF ( State_Diag%Archive_DryDepMix .or.  &
+            State_Diag%Archive_DryDep        ) THEN
+          State_Diag%DryDepMix = 0.0_f4
+       ENDIF
+#endif
+
+       ! Non-local mixing
        CALL DO_PBL_MIX_2( am_I_Root, Input_Opt%LTURB, Input_Opt,             &
                           State_Met, State_Chm,       State_Diag,  RC       )
+ 
+       ! Trap potential error
+       IF ( RC /= GC_SUCCESS ) THEN
+          ErrMsg = 'Error encountred in "DO_PBL_MIX_2"!'
+          CALL GC_Error( ErrMsg, RC, ThisLoc )
+          RETURN
+       ENDIF
+
+       ! Fluxes in PBL have been applied (non-local PBL mixing)
        OnlyAbovePBL = .TRUE.
+
     ELSE
+
+       ! Fluxes in PBL have not been applied (full PBL mixing)
        OnlyAbovePBL = .FALSE.
+
     ENDIF
 
-    ! ------------------------------------------------------------------
+    !-----------------------------------------------------------------------
     ! Apply tendencies. This will apply dry deposition rates and 
     ! emission fluxes below the PBL if it has not yet been done
     ! via the non-local PBL mixing. It also adds the emissions above 
     ! the PBL to the species array. Emissions of some species may be 
     ! capped at the tropopause to avoid build-up in stratosphere.
-    ! ------------------------------------------------------------------
+    !-----------------------------------------------------------------------
 
     ! Apply tendencies
-    CALL DO_TEND ( am_I_Root,  Input_Opt,    State_Met, State_Chm,           &
-                   State_Diag, OnlyAbovePBL, RC                             )
+    CALL DO_TEND( am_I_Root,  Input_Opt,    State_Met, State_Chm,           &
+                  State_Diag, OnlyAbovePBL, RC                             )
 
-    ! ------------------------------------------------------------------
+    ! Trap potential error
+    IF ( RC /= GC_SUCCESS ) THEN
+       ErrMsg = 'Error encountred in "DO_TEND"!'
+       CALL GC_Error( ErrMsg, RC, ThisLoc )
+       RETURN
+    ENDIF
+
+    !-----------------------------------------------------------------------
     ! Do full pbl mixing. This fully mixes the updated species 
     ! concentrations within the PBL. 
     ! 
     ! Now also archive concentrations and calculate turbulence 
     ! tendencies (ckeller, 7/15/2015)
-    ! ------------------------------------------------------------------
+    !-----------------------------------------------------------------------
     IF ( Input_Opt%LTURB .AND. .NOT. Input_Opt%LNLPBL ) THEN
+
+#if defined( NC_DIAG )
+       ! Initialize the diagnostic array for the History Component. This 
+       ! will prevent leftover values from being carried over to this 
+       ! timestep. (For example, if on the last iteration, the PBL height 
+       ! was higher than it is now, then we will have stored drydep fluxes 
+       ! up to that height, so we need to zero these out.)
+       IF ( State_Diag%Archive_DryDepMix .or.  &
+            State_Diag%Archive_DryDep        ) THEN
+          State_Diag%DryDepMix = 0.0_f4
+       ENDIF
+#endif
+
+       ! Full PBL mixing
        CALL DO_PBL_MIX( am_I_Root, Input_Opt%LTURB, Input_Opt,               &
                         State_Met, State_Chm,       State_Diag, RC          )
+
+       ! Trap potential error
+       IF ( RC /= GC_SUCCESS ) THEN
+          ErrMsg = 'Error encountred in "DO_PBL_MIX"!'
+          CALL GC_Error( ErrMsg, RC, ThisLoc )
+          RETURN
+       ENDIF
+
     ENDIF
 
   END SUBROUTINE DO_MIXING 
@@ -251,19 +351,16 @@ CONTAINS
 !\\
 ! !INTERFACE:
 !
-  SUBROUTINE DO_TEND ( am_I_Root,  Input_Opt,    State_Met, State_Chm,       &
-                       State_Diag, OnlyAbovePBL, RC,        DT               ) 
+  SUBROUTINE DO_TEND( am_I_Root,  Input_Opt,    State_Met, State_Chm,        &
+                      State_Diag, OnlyAbovePBL, RC,        DT                ) 
 !
 ! !USES:
 !
-    USE CHEMGRID_MOD,       ONLY : GET_CHEMGRID_LEVEL
-    USE CMN_DIAG_MOD,       ONLY : ND44
     USE CMN_SIZE_MOD,       ONLY : IIPAR,   JJPAR,   LLPAR
     USE DRYDEP_MOD,         ONLY : DEPSAV
     USE ErrCode_Mod
-    USE ERROR_MOD,          ONLY : ERROR_STOP, SAFE_DIV
+    USE ERROR_MOD,          ONLY : SAFE_DIV
     USE GET_NDEP_MOD,       ONLY : SOIL_DRYDEP
-    USE Global_CH4_Mod,     ONLY : CH4_EMIS
     USE HCO_INTERFACE_MOD,  ONLY : GetHcoVal, GetHcoDiagn
     USE Input_Opt_Mod,      ONLY : OptInput
     USE PBL_MIX_MOD,        ONLY : GET_FRAC_UNDER_PBLTOP
@@ -276,10 +373,15 @@ CONTAINS
     USE TIME_MOD,           ONLY : GET_TS_DYN, GET_TS_CONV, GET_TS_CHEM
     USE UnitConv_Mod,       ONLY : Convert_Spc_Units
 #if defined( BPCH_DIAG )
+    USE CMN_DIAG_MOD,       ONLY : ND44
     USE DIAG_MOD,           ONLY : AD44
 #endif
 #if defined( USE_TEND )
     USE TENDENCIES_MOD
+#endif
+#if defined( NC_DIAG )
+    USE Diagnostics_Mod,    ONLY : Compute_Column_Mass
+    USE Diagnostics_Mod,    ONLY : Compute_Budget_Diagnostics
 #endif
 !
 ! !INPUT PARAMETERS:
@@ -329,6 +431,7 @@ CONTAINS
 !                              of in do_mixing
 !  05 Oct 2017 - R. Yantosca - Now accept State_Diag as an argument
 !  10 Oct 2017 - R. Yantosca - Archive drydep fluxes due to mixing for History
+!  19 Sep 2018 - E. Lundgren - Implement emis/drydep budget diagnostic
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -369,6 +472,10 @@ CONTAINS
     LOGICAL                 :: ITS_A_CH4_SIM
     REAL(fp)                :: total_ch4_pre_soil_absorp(IIPAR,JJPAR,LLPAR)
 
+#if defined( NC_DIAG )
+    CHARACTER(LEN=255) :: ErrMsg, ThisLoc
+#endif
+
     !=================================================================
     ! DO_TEND begins here!
     !=================================================================
@@ -376,28 +483,46 @@ CONTAINS
     ! Assume success
     RC = GC_SUCCESS
 
+#if defined( NC_DIAG )
+    ErrMsg  = ''
+    ThisLoc = ' -> at DO_TEND (in module GeosCore/mixing_mod.F90)'
+#endif
+
     ! Special case that there is no dry deposition and emissions
     IF ( .NOT. Input_Opt%LDRYD .AND. .NOT. Input_Opt%LEMIS ) RETURN
 
     ! Initialize
-    LSCHEM        = Input_Opt%LSCHEM
-    LEMIS         = Input_Opt%LEMIS
-    LDRYD         = Input_Opt%LDRYD
-    PBL_DRYDEP    = Input_Opt%PBL_DRYDEP
-    ITS_A_CH4_SIM = Input_Opt%ITS_A_CH4_SIM
-    nAdvect       = State_Chm%nAdvect
+    LSCHEM            = Input_Opt%LSCHEM
+    LEMIS             = Input_Opt%LEMIS
+    LDRYD             = Input_Opt%LDRYD
+    PBL_DRYDEP        = Input_Opt%PBL_DRYDEP
+    ITS_A_CH4_SIM     = Input_Opt%ITS_A_CH4_SIM
+    nAdvect           = State_Chm%nAdvect
 
     ! Initialize pointer
-    SpcInfo    => NULL()
+    SpcInfo           => NULL()
 
-    ! Initialize the diagnostic array for the History Component.  This will 
-    ! prevent leftover values from being carried over to this timestep.
-    ! (For example, if on the last iteration, the PBL height was higher than
-    ! it is now, then we will have stored drydep fluxes up to that height,
-    ! so we need to zero these out.)
-    IF ( Archive_DryDepFlux_Mix .and. DryDepID > 0 ) THEN
-       State_Diag%DryDepFlux_Mix = 0.0_f4
+#if defined( NC_DIAG )
+    !----------------------------------------------------------
+    ! Emissions/dry deposition budget diagnostics - Part 1 of 2
+    !----------------------------------------------------------
+    IF ( State_Diag%Archive_BudgetEmisDryDep ) THEN
+       ! Get initial column masses
+       CALL Compute_Column_Mass( am_I_Root,                               & 
+                                 Input_Opt, State_Met, State_Chm,         &
+                                 State_Chm%Map_Advect,                    &
+                                 State_Diag%Archive_BudgetEmisDryDepFull, &
+                                 State_Diag%Archive_BudgetEmisDryDepTrop, &
+                                 State_Diag%Archive_BudgetEmisDryDepPBL,  &
+                                 State_Diag%BudgetMass1,                  &
+                                 RC ) 
+       IF ( RC /= GC_SUCCESS ) THEN
+          ErrMsg = 'Emissions/dry deposition budget diagnostics error 1'
+          CALL GC_Error( ErrMsg, RC, ThisLoc )
+          RETURN
+       ENDIF
     ENDIF
+#endif
 
     ! DO_TEND previously operated in units of kg. The species arrays are in
     ! v/v for mixing, hence needed to convert before and after.
@@ -405,6 +530,8 @@ CONTAINS
     ! remove area-dependency (ewl, 9/30/15)
     CALL Convert_Spc_Units( am_I_Root, Input_Opt, State_Met, State_Chm, &
                             'kg/m2', RC, OrigUnit=OrigUnit )
+
+    ! Trap potential error
     IF ( RC /= GC_SUCCESS ) THEN
        MSG = 'Unit conversion error!'
        CALL GC_Error( MSG, RC, 'DO_TEND in mixing_mod.F90' )
@@ -415,7 +542,7 @@ CONTAINS
     IF ( PRESENT(DT) ) THEN
        TS = DT
     ELSE
-       TS = GET_TS_DYN() * 60.0_fp
+       TS = GET_TS_DYN()
     ENDIF
 
     ! First-time setup
@@ -464,21 +591,24 @@ CONTAINS
                       State_Chm, 'FLUX', RC )
 #endif
 
+    !-----------------------------------------------------------------------
     ! For tagged CH4 simulations
+    ! Save the total CH4 concentration before apply soil absorption
+    !-----------------------------------------------------------------------
     IF ( ITS_A_CH4_SIM .and. Input_Opt%LSPLIT ) THEN
-
-       ! Save the total CH4 concentration before apply soil absorption
-       total_ch4_pre_soil_absorp(:,:,:) = State_Chm%Species(:,:,:,1)
-
+       total_ch4_pre_soil_absorp = State_Chm%Species(:,:,:,1)
     ENDIF
 
+    !=======================================================================
     ! Do for every advected species and grid box
-!$OMP PARALLEL DO                                                    &
-!$OMP DEFAULT ( SHARED )                                             &
-!$OMP PRIVATE( I, J, L, L1, L2, N, D, PBL_TOP, FND, TMP, DRYDEPID  ) &
-!$OMP PRIVATE( FRQ, RKT, FRAC, FLUX, AREA_M2,   MWkg, ChemGridOnly ) & 
-!$OMP PRIVATE( DryDepSpec, EmisSpec, DRYD_TOP,  EMIS_TOP, PNOXLOSS ) &
-!$OMP PRIVATE( DENOM, SpcInfo, NA                                  )
+    !=======================================================================
+!$OMP PARALLEL DO                                                           &
+!$OMP DEFAULT( SHARED                                                     ) &
+!$OMP PRIVATE( I,        J,            L,          L1,       L2           ) &
+!$OMP PRIVATE( N,        PBL_TOP,      FND,        TMP,      DryDepId     ) &
+!$OMP PRIVATE( FRQ,      RKT,          FRAC,       FLUX,     Area_m2      ) &
+!$OMP PRIVATE( MWkg,     ChemGridOnly, DryDepSpec, EmisSpec, DRYD_TOP     ) &
+!$OMP PRIVATE( EMIS_TOP, PNOXLOSS,     DENOM,      SpcInfo,  NA           )
     DO NA = 1, nAdvect
 
        ! Get the species ID from the advected species ID
@@ -487,9 +617,9 @@ CONTAINS
        ! Get info about this species from the species database
        SpcInfo => State_Chm%SpcData(N)%Info
 
-       !----------------------------------------------------------------
+       !--------------------------------------------------------------------
        ! Check if we need to do dry deposition for this species 
-       !----------------------------------------------------------------
+       !--------------------------------------------------------------------
 
        ! Initialize
        DryDepSpec = .FALSE.
@@ -516,28 +646,28 @@ CONTAINS
                DryDepSpec = .TRUE. 
        ENDIF
 
-       !----------------------------------------------------------------
+       !--------------------------------------------------------------------
        ! Check if we need to do emissions for this species 
-       !----------------------------------------------------------------
+       !--------------------------------------------------------------------
        IF ( LEMIS ) THEN
           CALL GetHcoVal ( N, 1, 1, 1, EmisSpec, emis = TMP )
        ELSE
           EmisSpec = .FALSE.
        ENDIF
 
-       !----------------------------------------------------------------
+       !--------------------------------------------------------------------
        ! Can go to next species if this species does not have 
        ! dry deposition and/or emissions
-       !----------------------------------------------------------------
+       !--------------------------------------------------------------------
        IF ( .NOT. DryDepSpec .AND. .NOT. EmisSpec ) CYCLE
 
        ! Loop over all grid boxes
        DO J = 1, JJPAR    
        DO I = 1, IIPAR    
 
-          !------------------------------------------------------------
+          !-----------------------------------------------------------------
           ! Define various quantities before computing tendencies
-          !------------------------------------------------------------
+          !-----------------------------------------------------------------
 
           ! Get PBL_TOP at this grid box
           PBL_TOP = State_Met%PBL_TOP_L(I,J)
@@ -599,7 +729,7 @@ CONTAINS
 
           ! Restrict to chemistry grid
           IF ( ChemGridOnly ) THEN
-             EMIS_TOP = GET_CHEMGRID_LEVEL( I, J, State_Met )
+             EMIS_TOP = State_Met%ChemGridLev(I,J)
              EMIS_TOP = MIN(LLPAR,EMIS_TOP)
           ELSE
              EMIS_TOP = LLPAR
@@ -614,10 +744,10 @@ CONTAINS
           ! Loop over selected vertical levels 
           DO L = L1, L2
 
-             !----------------------------------------------------------
+             !--------------------------------------------------------------
              ! Apply dry deposition frequencies to all levels below the
              ! PBL top.
-             !----------------------------------------------------------
+             !--------------------------------------------------------------
              IF ( DryDepSpec .AND. ( L <= DRYD_TOP ) ) THEN
 
                 ! Init
@@ -695,7 +825,7 @@ CONTAINS
 
                    ! Eventually add to SOIL_DRYDEP
                    IF ( Input_Opt%LSOILNOX ) THEN
-                      CALL SOIL_DRYDEP( I, J, L, N, FLUX )
+                      CALL SOIL_DRYDEP( I, J, L, N, FLUX, State_Chm )
                    ENDIF
 
 #if defined( BPCH_DIAG )
@@ -720,7 +850,6 @@ CONTAINS
                                              * GET_TS_CONV() / GET_TS_CHEM() 
                    ENDIF
 #endif
-
 #if defined( NC_DIAG )
                    !--------------------------------------------------------
                    ! HISTORY: Archive drydep flux loss from mixing 
@@ -745,39 +874,22 @@ CONTAINS
                    !
                    !    -- Bob Yantosca (yantosca@seas.harvard.edu)
                    !--------------------------------------------------------
-                   IF ( Archive_DryDepFlux_Mix .and. DryDepID > 0 ) THEN
-                      State_Diag%DryDepFlux_Mix(I,J,L,DryDepId) = Flux
+                   IF ( ( State_Diag%Archive_DryDepMix .or.        &
+                          State_Diag%Archive_DryDep        ) .and. &
+                          DryDepID > 0 ) THEN
+                      State_Diag%DryDepMix(I,J,DryDepId) = Flux
                    ENDIF
 #endif
 
                 ENDIF ! apply drydep
              ENDIF ! L <= PBLTOP
 
-             !----------------------------------------------------------
+             !--------------------------------------------------------------
              ! Apply emissions.
-             !----------------------------------------------------------
-             IF ( ITS_A_CH4_SIM .and. Input_Opt%Analytical_Inv ) THEN
+             ! These are always taken from HEMCO
+             !--------------------------------------------------------------
+             IF ( EmisSpec .AND. ( L <= EMIS_TOP ) ) THEN
 
-                ! Only apply CH4 emissions to level 1
-                IF ( L == 1 ) THEN
-
-                   ! Overwrite emissions for offline CH4 simulation.
-                   ! CH4 emissions are stored in CH4_EMIS [kg/m2/s] in
-                   ! global_ch4_mod.F. We use CH4_EMIS here instead of
-                   ! the HEMCO internal emissions so that we can apply
-                   ! emission perturbations for analytical inversions.
-                   ! Convert to flux [kg/m2] here. (mps, 12/14/17)
-                   FLUX = CH4_EMIS(I,J,N) * TS
-
-                   ! Add to species array
-                   State_Chm%Species(I,J,L,N) = State_Chm%Species(I,J,L,N) &
-                                              + FLUX
-
-                ENDIF
-
-             ELSEIF ( EmisSpec .AND. ( L <= EMIS_TOP ) ) THEN
-
-                ! These are always taken from HEMCO
                 ! Get HEMCO emissions. Units are [kg/m2/s].
                 CALL GetHcoVal ( N, I, J, L, FND, emis=TMP )
            
@@ -795,14 +907,18 @@ CONTAINS
                 ENDIF
              ENDIF
 
-             !----------------------------------------------------------
-             ! For tagged CH4 simulations
-             !----------------------------------------------------------
+             !--------------------------------------------------------------
+             ! Special handling for tagged CH4 simulations
+             !
+             ! Tagged CH4 species are split off into a separate loop to
+             ! ensure we remove soil absorption from NA=1 (total CH4) first
+             !--------------------------------------------------------------
              IF ( ITS_A_CH4_SIM .and. Input_Opt%LSPLIT ) THEN
 
-                IF ( ( L <= EMIS_TOP ) ) THEN
+                ! If we are in the chemistry grid
+                IF ( L <= EMIS_TOP ) THEN
 
-                   ! Total CH4 tracer
+                   ! Total CH4 species
                    IF ( NA == 1 ) THEN
 
                       ! Get soil absorption from HEMCO. Units are [kg/m2/s].
@@ -816,21 +932,14 @@ CONTAINS
                          FLUX = TMP * TS
 
                          ! Apply soil absorption as loss
-                         State_Chm%Species(I,J,L,N)=State_Chm%Species(I,J,L,N) &
-                                                    - FLUX 
+                         State_Chm%Species(I,J,L,N) =                       &
+                         State_Chm%Species(I,J,L,N) - FLUX 
                       ENDIF
 
-                   ! Tagged CH4 tracers
-                   ELSEIF ( NA >= 2 .and. NA <= nAdvect-1 ) THEN
-
-                      ! Apply soil absorption (Xueying Yu, 12/08/2017)
-                      State_Chm%Species(I,J,L,N) = &
-                         SAFE_DIV(State_Chm%Species(I,J,L,N), &
-                                  total_ch4_pre_soil_absorp(I,J,L), &
-                                  0.e+0_fp) * &
-                                  State_Chm%Species(I,J,L,1)
                    ENDIF
+
                 ENDIF
+
              ENDIF
 
              ! Prevent negative concentrations. (ckeller, 3/29/16)
@@ -846,13 +955,55 @@ CONTAINS
     ENDDO !N
 !$OMP END PARALLEL DO
 
+    !--------------------------------------------------------------
+    ! Special handling for tagged CH4 simulations
+    !--------------------------------------------------------------
+    IF ( ITS_A_CH4_SIM .and. Input_Opt%LSPLIT ) THEN
+
+!$OMP PARALLEL DO               &
+!$OMP DEFAULT( SHARED         ) &
+!$OMP PRIVATE( I, J, L, N, NA )
+       DO NA = 1, nAdvect
+
+          ! Get the species ID from the advected species ID
+          N = State_Chm%Map_Advect(NA)
+
+          ! Loop over all grid boxes
+          DO L = 1, LLPAR
+          DO J = 1, JJPAR
+          DO I = 1, IIPAR
+
+             ! Tagged CH4 tracers
+             IF ( NA >= 2 .and. NA <= nAdvect-1 ) THEN
+
+                ! Apply soil absorption to each tagged CH4 species
+                ! (Xueying Yu, 12/08/2017)
+                State_Chm%Species(I,J,L,N) =                    &
+                     SAFE_DIV(State_Chm%Species(I,J,L,N),       &
+                              total_ch4_pre_soil_absorp(I,J,L), &
+                              0.e+0_fp) *                       &
+                     State_Chm%Species(I,J,L,1)
+
+             ENDIF
+
+             ! Prevent negative concentrations. (ckeller, 3/29/16)
+             State_Chm%Species(I,J,L,N) = MAX(State_Chm%Species(I,J,L,N),0.0_fp)
+
+          ENDDO
+          ENDDO
+          ENDDO
+       ENDDO
+!$OMP END PARALLEL DO
+
+    ENDIF
+
 #if defined( USE_TEND )
-      ! Calculate tendencies and write to diagnostics (ckeller, 7/15/2015)
-      CALL TEND_STAGE2( am_I_Root, Input_Opt, State_Met, &
-                        State_Chm, 'FLUX', TS, RC )
+    ! Calculate tendencies and write to diagnostics (ckeller, 7/15/2015)
+    CALL TEND_STAGE2( am_I_Root, Input_Opt, State_Met, &
+                      State_Chm, 'FLUX', TS, RC )
 #endif
 
-    ! Convert State_Chm%species back to original units
+    ! Convert State_Chm%Species back to original units
     CALL Convert_Spc_Units( am_I_Root, Input_Opt, State_Met, State_Chm, &
                             OrigUnit, RC )
     IF ( RC /= GC_SUCCESS ) THEN
@@ -860,6 +1011,40 @@ CONTAINS
        CALL GC_Error( MSG, RC, 'DO_TEND in mixing_mod.F90' )
        RETURN
     ENDIF  
+
+#if defined( NC_DIAG )
+    !----------------------------------------------------------
+    ! Emissions/dry deposition budget diagnostics - Part 2 of 2
+    !----------------------------------------------------------
+    IF ( State_Diag%Archive_BudgetEmisDryDep ) THEN
+       ! Get final column masses and compute diagnostics
+       CALL Compute_Column_Mass( am_I_Root,                                 &
+                                 Input_Opt, State_Met, State_Chm,           &
+                                 State_Chm%Map_Advect,                      &
+                                 State_Diag%Archive_BudgetEmisDryDepFull,   &
+                                 State_Diag%Archive_BudgetEmisDryDepTrop,   &
+                                 State_Diag%Archive_BudgetEmisDryDepPBL,    &
+                                 State_Diag%BudgetMass2,                    &
+                                 RC )  
+       CALL Compute_Budget_Diagnostics( am_I_Root,                            &
+                                     State_Chm%Map_Advect,                    &
+                                     TS,                                      &
+                                     State_Diag%Archive_BudgetEmisDryDepFull, &
+                                     State_Diag%Archive_BudgetEmisDryDepTrop, &
+                                     State_Diag%Archive_BudgetEmisDryDepPBL,  &
+                                     State_Diag%BudgetEmisDryDepFull,         &
+                                     State_Diag%BudgetEmisDryDepTrop,         &
+                                     State_Diag%BudgetEmisDryDepPBL,          &
+                                     State_Diag%BudgetMass1,                  &
+                                     State_Diag%BudgetMass2,                  &
+                                     RC )
+       IF ( RC /= GC_SUCCESS ) THEN
+          ErrMsg = 'Emissions/dry deposition budget diagnostics error 2'
+          CALL GC_Error( ErrMsg, RC, ThisLoc )
+          RETURN
+       ENDIF
+    ENDIF
+#endif
 
   END SUBROUTINE DO_TEND 
 !EOC

@@ -36,8 +36,6 @@ MODULE History_Mod
   PRIVATE :: History_ReadCollectionData
   PRIVATE :: History_AddItemToCollection
   PRIVATE :: History_Close_AllFiles
-  PRIVATE :: ReadOneLine ! consider putting in a general util file (ewl)
-  PRIVATE :: CleanText   ! consider putting in a general util file (ewl)
 !
 ! !REMARKS:
 !  
@@ -53,6 +51,7 @@ MODULE History_Mod
 !                              History_Close_AllFiles
 !  18 Aug 2017 - R. Yantosca - Added routine History_SetTime
 !  02 Oct 2017 - R. Yantosca - Added CollectionFileName
+!  01 Nov 2017 - R. Yantosca - Moved ReadOneLine, CleanText to charpak_mod.F90
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -60,21 +59,26 @@ MODULE History_Mod
 ! !LOCAL VARIABLES:
 !
   ! Scalars
-  INTEGER                          :: CollectionCount
+  INTEGER                              :: CollectionCount
 
   ! Strings
-  CHARACTER(LEN=255), ALLOCATABLE  :: CollectionName       (:)
-  CHARACTER(LEN=255), ALLOCATABLE  :: CollectionFileName   (:)
-  CHARACTER(LEN=255), ALLOCATABLE  :: CollectionTemplate   (:)
-  CHARACTER(LEN=255), ALLOCATABLE  :: CollectionSubsetDims (:)
-  CHARACTER(LEN=255), ALLOCATABLE  :: CollectionFormat     (:)
-  CHARACTER(LEN=255), ALLOCATABLE  :: CollectionFrequency  (:)
-  CHARACTER(LEN=255), ALLOCATABLE  :: CollectionAccInterval(:)
-  CHARACTER(LEN=255), ALLOCATABLE  :: CollectionDuration   (:)
-  CHARACTER(LEN=255), ALLOCATABLE  :: CollectionMode       (:)
+  CHARACTER(LEN=255),      ALLOCATABLE :: CollectionName       (:)
+  CHARACTER(LEN=255),      ALLOCATABLE :: CollectionFileName   (:)
+  CHARACTER(LEN=255),      ALLOCATABLE :: CollectionTemplate   (:)
+  CHARACTER(LEN=255),      ALLOCATABLE :: CollectionSubsetDims (:)
+  CHARACTER(LEN=255),      ALLOCATABLE :: CollectionFormat     (:)
+  CHARACTER(LEN=255),      ALLOCATABLE :: CollectionFrequency  (:)
+  CHARACTER(LEN=255),      ALLOCATABLE :: CollectionAccInterval(:)
+  CHARACTER(LEN=255),      ALLOCATABLE :: CollectionDuration   (:)
+  CHARACTER(LEN=255),      ALLOCATABLE :: CollectionMode       (:)
 
   ! Objects
-  TYPE(MetaHistContainer), POINTER :: CollectionList
+  TYPE(MetaHistContainer), POINTER     :: CollectionList
+!
+! !DEFINED PARAMETERS:
+!
+  ! Maximum number of collections (set to a ridiculously big number)
+  INTEGER,                 PARAMETER   :: MAX_COLLECTIONS = 500
 
 CONTAINS
 !EOC
@@ -105,8 +109,8 @@ CONTAINS
 !\\
 ! !INTERFACE:
 !
-  SUBROUTINE History_Init( am_I_root,  Input_Opt, State_Chm,                  &
-                           State_Diag, State_Met, RC                         )
+  SUBROUTINE History_Init( am_I_root, Input_Opt,  State_Met,                 &
+                           State_Chm, State_Diag, RC                        )
 !
 ! !USES:
 !
@@ -132,10 +136,12 @@ CONTAINS
 !
 ! !REMARKS:
 !  Calls internal routines History_ReadCollectionNames and
-!  History_Read_CollectionData
+!  History_ReadCollectionData
 !
 ! !REVISION HISTORY:
 !  06 Jan 2015 - R. Yantosca - Initial version
+!  06 Nov 2017 - R. Yantosca - Reorder arguments for consistency (Input_Opt, 
+!                              then State_Met, State_Chm, State_Diag).
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -158,7 +164,7 @@ CONTAINS
     !=======================================================================
     CALL History_Netcdf_Init( am_I_Root, RC )
     IF ( RC /= GC_SUCCESS ) THEN
-       ErrMsg = 'Error encountered in "HistoryNetCdfInit"!'
+       ErrMsg = 'Error encountered in "History_NetCdf_Init"!'
        CALL GC_Error( ErrMsg, RC, ThisLoc )
        RETURN
     ENDIF
@@ -169,6 +175,8 @@ CONTAINS
     !=======================================================================
     CALL History_ReadCollectionNames( am_I_root,  Input_Opt, State_Chm,      &
                                       State_Diag, State_Met, RC             )
+
+    ! Trap potential errors
     IF ( RC /= GC_SUCCESS ) THEN
        ErrMsg = 'Error encountered in "History_ReadCollectionNames"!'
        CALL GC_Error( ErrMsg, RC, ThisLoc )
@@ -180,8 +188,10 @@ CONTAINS
     !=======================================================================
     CALL History_ReadCollectionData( am_I_root,  Input_Opt, State_Chm,       &
                                      State_Diag, State_Met, RC              )
+
+    ! Trap potential errors
     IF ( RC /= GC_SUCCESS ) THEN
-       ErrMsg = 'Error encountered in "History_ReadCollectionNames"!'
+       ErrMsg = 'Error encountered in "History_ReadCollectionData"!'
        CALL GC_Error( ErrMsg, RC, ThisLoc )
        RETURN
     ENDIF
@@ -208,6 +218,7 @@ CONTAINS
 ! !USES:
 !
     USE Charpak_Mod
+    USe DiagList_Mod,      ONLY : CollList, ColItem
     USE ErrCode_Mod
     USE History_Util_Mod
     USE Input_Opt_Mod,     ONLY : OptInput
@@ -234,39 +245,39 @@ CONTAINS
 ! !REVISION HISTORY:
 !  16 Jun 2017 - R. Yantosca - Initial version
 !  15 Aug 2017 - R. Yantosca - Now initialize string arrays to UNDEFINED_STR
-!   2 Oct 2017 - R. Yantosca - Now initialize CollectionFileName
+!  02 Oct 2017 - R. Yantosca - Now initialize CollectionFileName
+!  28 Feb 2018 - R. Yantosca - Now use the CollList object from diaglist_mod
+!                              to get the collection names
 !EOP
 !------------------------------------------------------------------------------
 !BOC
 !
-! !DEFINED PARAMETERS:
-!
-    ! Ridiculously big number
-    INTEGER, PARAMETER :: MAX_COLLECTIONS = 500
-!
 ! !LOCAL VARIABLES:
 !
     ! Scalars
-    LOGICAL            :: EOF
-    INTEGER            :: fId,    IOS      
-    INTEGER            :: N,      nSubs1,  nSubs2
+    LOGICAL                :: EOF
+    INTEGER                :: fId,    IOS      
+    INTEGER                :: N,      nSubs1,  nSubs2
 
     ! Strings
-    CHARACTER(LEN=255) :: ErrMsg, ThisLoc, Line,  Line2
+    CHARACTER(LEN=255)     :: ErrMsg, ThisLoc, Line,  Line2
     
     ! String arrays
-    CHARACTER(LEN=255) :: Subs1(255)
-    CHARACTER(LEN=255) :: Subs2(255)
-    CHARACTER(LEN=255) :: TmpCollectionName(MAX_COLLECTIONS)
+    CHARACTER(LEN=255)     :: Subs1(255)
+    CHARACTER(LEN=255)     :: Subs2(255)
+    CHARACTER(LEN=255)     :: TmpCollectionName(MAX_COLLECTIONS)
+
+    ! Objects
+    TYPE(ColItem), POINTER :: Current
 
     !=======================================================================
     ! Initialize
     !=======================================================================
 
-    ! Assume success
+    ! Zero local variables
+    EOF     = .FALSE.
+    IOS     = 0
     RC      = GC_SUCCESS
-
-    ! For error output
     ErrMsg  = ''
     ThisLoc = &
      ' -> at History_ReadCollectionNames (in module History/history_mod.F90)'
@@ -276,89 +287,44 @@ CONTAINS
     TmpCollectionName = ''
 
     !=======================================================================
-    ! Open the file containing the list of requested diagnostics
+    ! Get the number of collections and list of collection names by
+    ! querying the collection list object (CollList, from diaglist_mod.F90).
+    !
+    ! NOTE: We are importing CollList from diaglist_mod.F90 via a USE
+    ! association.  This might not be the best way to share data (it 
+    ! violates data encapsulation).  But it works for now.  Maybe figure
+    ! out a more elegant method later. (bmy, 2/28/18)
     !=======================================================================
 
-    ! Find a free file unit
-    fId     = FindFreeLun()
+    ! Initialize
+    CollectionCount = 0
 
-    ! Open the file
-    OPEN( fId, FILE=TRIM(Input_Opt%HistoryInputFile), STATUS='OLD', IOSTAT=RC )
-    IF ( RC /= GC_SUCCESS ) THEN
-       ErrMsg = 'Could not open "' // TRIM(Input_Opt%HistoryInputFile) // '"!'
-       CALL GC_Error( ErrMsg, RC, ThisLoc )
-       RETURN
-    ENDIF
+    ! Point to head of collection list
+    Current => CollList%Head
 
-    !=======================================================================
-    ! Read data from the file
-    !=======================================================================
-    DO
+    ! While we are not at the end of the collection list
+    DO WHILE ( ASSOCIATED( Current ) ) 
+       
+       ! Increment the collection count
+       CollectionCount = CollectionCount + 1
+       
+       ! Save the collection name in a temporary arrayu
+       TmpCollectionName(CollectionCount) = TRIM( Current%CName )
 
-       ! Read a single line, and strip leading/trailing spaces
-       Line = ReadOneLine( fId, EOF, IOS, Squeeze=.TRUE. )
+       ! Point to next collection
+       Current => Current%Next
 
-       ! Exit the loop if it's the end of the file
-       IF ( EOF ) EXIT
-
-       ! If it's a real I/O error, quit w/ error message
-       IF ( IOS > 0 ) THEN
-          ErrMsg = 'Unexpected end-of-file in "'       // &
-                    TRIM( Input_Opt%HistoryInputFile ) // '"!'
-          CALL GC_Error( ErrMsg, RC, ThisLoc )
-          RETURN
-       ENDIF
-
-       ! Skip if the line is commented out
-       IF ( Line(1:1) == "#" ) CYCLE
-      
-       !-------------------------------------------------------------------
-       ! Get the list of collections
-       !-------------------------------------------------------------------
-       IF ( Line(1:12) == 'COLLECTIONS:' ) THEN
-
-          ! Start
-          CollectionCount                    = CollectionCount + 1
-          TmpCollectionName(CollectionCount) = CleanText( Line(14:) )
-          
-          ! Loop over all collections
-          DO
-
-             ! Read next line and strip leading/trailing blanks
-             Line2 = ReadOneLine( fId, EOF, IOS, Squeeze=.TRUE. )
-
-             ! Exit the loop if it's the end of the file
-             IF ( EOF ) EXIT
-
-             ! If it's a real I/O error, quit w/ error message
-             IF ( IOS > 0 ) THEN
-                ErrMsg = 'Unexpected error in "'        // &
-                     TRIM( Input_Opt%HistoryInputFile ) // '"!'
-                CALL GC_Error( ErrMsg, RC, ThisLoc )
-                RETURN
-             ENDIF
-
-             ! Skip if the line is commented out
-             IF ( Line2(1:1) == "#" ) CYCLE
-      
-             ! 2 colons signal the end of the collecto
-             IF ( Line2(1:2) == '::' ) EXIT
-
-             CollectionCount                    = CollectionCount + 1
-             TmpCollectionName(CollectionCount) = CleanText( Line2 )
-          ENDDO
-       ENDIF
     ENDDO
 
+    ! Free pointer
+    Current => NULL()
+
     !=======================================================================
-    ! Cleanup and quit
+    ! Now that we now the number of diagnostic collections, we can 
+    ! allocate the arrays that will hold various collection attributes
     !=======================================================================
 
-    ! Close the file
-    CLOSE( fId )
-
-    ! Now that we now the number of diagnostic collections, we can allocate
-    ! the array that will hold the name of each diagnostic collection.
+    ! Allocate CollectionName
     IF ( .not. ALLOCATED( CollectionName ) ) THEN
        ALLOCATE( CollectionName( CollectionCount ), STAT=RC )
        IF ( RC /= GC_SUCCESS ) THEN 
@@ -369,10 +335,11 @@ CONTAINS
     ENDIF
 
     ! Copy the collection names from the temporary array
+    ! NOTE: The linked-list stors in reverse order, so revert here
     DO N = 1, CollectionCount
-       CollectionName(N) = TmpCollectionName(N)
+       CollectionName(N) = TmpCollectionName(CollectionCount-N+1)
     ENDDO
-
+    
     ! Allocate CollectionFileName
     IF ( .not. ALLOCATED( CollectionFileName ) ) THEN
        ALLOCATE( CollectionFileName( CollectionCount ), STAT=RC )
@@ -484,6 +451,7 @@ CONTAINS
 ! !USES:
 !
     USE Charpak_Mod
+    USE DiagList_Mod,          ONLY : CollList, Search_CollList
     USE CMN_Size_Mod,          ONLY : IIPAR, JJPAR, LLPAR
     USE ErrCode_Mod
     USE HistContainer_Mod
@@ -522,6 +490,11 @@ CONTAINS
 !  18 Sep 2017 - R. Yantosca - Don't allow acc_interval for inst collections
 !  29 Sep 2017 - R. Yantosca - Now get the starting and ending date/time info
 !                              from the Input_Opt object
+!  24 Jan 2018 - E. Lundgren - Allow diagnostic names to include input params
+!  06 Feb 2018 - E. Lundgren - Change TS_DYN units from minutes to seconds
+!   9 Mar 2018 - R. Yantosca - Now accept "YYYYMMDD hhmmss" as the long format
+!                              for collection frequency and duration attrs
+!  12 Oct 2018 - M. Sulprizio- Add 'End' option for frequency and duration
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -529,12 +502,13 @@ CONTAINS
 ! !LOCAL VARIABLES:
 !
      ! Scalars
-    LOGICAL                      :: EOF   
+    LOGICAL                      :: EOF,            Found   
     INTEGER                      :: yyyymmdd,       hhmmss
     INTEGER                      :: yyyymmdd_end,   hhmmss_end
+    INTEGER                      :: DeltaYMD,       DeltaHMS
     INTEGER                      :: C,              N,             W
     INTEGER                      :: nX,             nY,            nZ
-    INTEGER                      :: fId,            IOS
+    INTEGER                      :: fId,            IOS,           LineNum
     INTEGER                      :: nSubs1,         nSubs2
     INTEGER                      :: Ind1,           Ind2
     INTEGER                      :: UpdateYmd,      UpdateHms    
@@ -545,24 +519,37 @@ CONTAINS
     INTEGER                      :: Ind_Dry,        Ind_Fix,       Ind_Gas
     INTEGER                      :: Ind_Kpp,        Ind_Pho,       Ind_Rst
     INTEGER                      :: Ind_Var,        Ind_Wet,       Ind
+    INTEGER                      :: HbHrs,          HbMin,         HbSec
+    INTEGER                      :: HeartBeatHms,   nTags
     REAL(f8)                     :: UpdateAlarm,    HeartBeatDtSec
     REAL(f8)                     :: FileWriteAlarm, FileCloseAlarm
     REAL(f8)                     :: JulianDate,     JulianDateEnd
+    REAL(f8)                     :: UpdateCheck,    FileWriteCheck
     REAL(f8)                     :: SimLengthSec
 
     ! Strings
+    CHARACTER(LEN=6  )           :: TStr
+    CHARACTER(LEN=8  )           :: DStr
+    CHARACTER(LEN=20 )           :: StartTimeStamp, EndTimeStamp
+    CHARACTER(LEN=63 )           :: CName
+    CHARACTER(LEN=80 )           :: ErrorLine
+    CHARACTER(LEN=255)           :: FileExpId
     CHARACTER(LEN=255)           :: Line,           FileName
-    CHARACTER(LEN=255)           :: ErrMsg,         ThisLoc
+    CHARACTER(LEN=255)           :: OutputName,     ThisLoc
     CHARACTER(LEN=255)           :: MetaData,       Reference
     CHARACTER(LEN=255)           :: Title,          Units
-    CHARACTER(LEN=255)           :: ItemName,       ItemTemplate
-    CHARACTER(LEN=255)           :: Description,    TmpMode
-    CHARACTER(LEN=255)           :: Contact,        Pattern
+    CHARACTER(LEN=255)           :: ItemTemplate,   ItemTemplateUC
+    CHARACTER(LEN=255)           :: ItemName,       Description
+    CHARACTER(LEN=255)           :: TmpMode,        Contact
+    CHARACTER(LEN=255)           :: Pattern,        ItemPrefix
+    CHARACTER(LEN=255)           :: tagId,          tagName
+    CHARACTER(LEN=512)           :: ErrMsg
 
     ! Arrays
     INTEGER                      :: SubsetDims(3)
     CHARACTER(LEN=255)           :: Subs1(255)
     CHARACTER(LEN=255)           :: Subs2(255)
+    CHARACTER(LEN=255)           :: SubStrs(255)
 
     ! Objects
     TYPE(HistContainer), POINTER :: Container
@@ -581,19 +568,31 @@ CONTAINS
     RC             =  GC_SUCCESS
 
     ! Initialize variables
+    EOF            =  .FALSE.
+    IOS            =  0   
     UpdateYmd      =  0 
     UpdateHms      =  0
     FileCloseYmd   =  0
     FileCloseHms   =  0
     FileWriteYmd   =  0
     FileWriteHms   =  0
+    LineNum        =  0
     SpaceDim       =  0
     SubsetDims     =  0 
-    HeartBeatDtSec =  DBLE( Input_Opt%TS_DYN ) * SECONDS_PER_MINUTE
+    HeartBeatDtSec =  DBLE( Input_Opt%TS_DYN )
     yyyymmdd       =  Input_Opt%NymdB
     hhmmss         =  Input_Opt%NhmsB
     yyyymmdd_end   =  Input_Opt%NymdE
     hhmmss_end     =  Input_Opt%NhmsE
+    deltaYMD       =  yyyymmdd_end - yyyymmdd
+    deltaHMS       =  hhmmss_end   - hhmmss
+
+    ! Convert the HeartBeatDtSec into hours:minutes:seconds
+    ! for defining the Update interval for time-averaged collections
+    HbMin          = HeartBeatDtSec / 60
+    HbHrs          = HbMin / 60
+    HbSec          = HeartBeatDtSec - ( HbMin * 60 ) - ( HbHrs * 3600 )
+    HeartBeatHms   = ( HbHrs * 10000 ) + ( HbMin * 100 ) + HbSec
 
     ! Initialize objects and pointers
     Container      => NULL()
@@ -611,6 +610,21 @@ CONTAINS
     ThisLoc        =  &
      ' -> at History_ReadCollectionData (in module History/history_mod.F90)'
     Units          =  ''
+    FileExpId      =  ''
+
+    ! Create the timestamp at the start of the simulation
+    WRITE( DStr,          '(i8.8)' ) yyyymmdd
+    WRITE( TStr,          '(i6.6)' ) hhmmss
+    WRITE( StartTimeStamp, 300     ) DStr(1:4), DStr(5:6), DStr(7:8),          &
+                                     TStr(1:2), TStr(3:4), TStr(5:6)
+    
+    ! Create the timestamp at the end of the simulation
+    WRITE( DStr,        '(i8.8)' ) yyyymmdd_end
+    WRITE( TStr,        '(i6.6)' ) hhmmss_end
+    WRITE( EndTimeStamp, 300     ) DStr(1:4), DStr(5:6), DStr(7:8),            &
+                                   TStr(1:2), TStr(3:4), TStr(5:6)
+    ! Format string
+300 FORMAT( a4, '-', a2, '-', a2, ' ', a2, ':', a2, ':', a2, 'z' )
 
     ! Compute the Astronomical Julian Date corresponding to the yyyymmdd 
     ! and hhmmss values at the start and end of the simulation, which are
@@ -642,30 +656,72 @@ CONTAINS
     DO
 
        ! Read a single line, and strip leading/trailing spaces
-       Line = ReadOneLine( fId, EOF, IOS, Squeeze=.TRUE. )
+       ! and keep track of the line number for error output
+ 500   CONTINUE
+       Line    = ReadOneLine( fId, EOF, IOS, Squeeze=.TRUE. )
+       LineNum = LineNum + 1
 
        ! Exit the loop if it's the end of the file
        IF ( EOF ) EXIT
 
        ! If it's a real I/O error, quit w/ error message
        IF ( IOS > 0 ) THEN
-          ErrMsg = 'Unexpected end-of-file in "'       // &
-                    TRIM( Input_Opt%HistoryInputFile ) // '"!'
-          CALL GC_Error( ErrMsg, RC, ThisLoc )
+          ErrMsg = 'Unexpected end-of-file in "'                          // &
+                    TRIM( Input_Opt%HistoryInputFile )
+          WRITE( ErrorLine, 250 ) LineNum
+ 250      FORMAT( ' -> ERROR occurred at (or near) line ', i6,               &
+                      ' of the HISTORY.rc file' )
+          CALL GC_Error( ErrMsg, RC, ThisLoc, ErrorLine )
           RETURN
        ENDIF
 
        ! Skip if the line is commented out
        IF ( Line(1:1) == "#" ) CYCLE
 
+       ! Zero variables
+       FileCloseYmd   = 0
+       FileCloseHms   = 0
+       FileWriteYmd   = 0
+       FileWriteHms   = 0
+       FileWriteCheck = 0.0_f8
+       UpdateYmd      = 0
+       UpdateHms      = 0
+       UpdateCheck    = 0.0_f8
+
+       !====================================================================
+       ! Get the EXPID string.  This is the "front part" of the netCDF
+       ! file path for each collection.  In other words, if EXPID is
+       ! "OutputDir/GEOSChem", then the default SpeciesConc collection file
+       ! names will be "OutputDir/GEOSChem.SpeciesConc_YYYYMMDD_hhmmz.nc4"
+       !====================================================================
+       IF ( INDEX( Line, 'EXPID' ) > 0  ) THEN
+
+          ! Split the line on the colon
+          CALL StrSplit( Line, ":", Subs1, nSubs1 )
+
+          ! Stop with error if there are more than 2 substrings
+          IF ( nSubs1 /= 2 ) THEN
+             ErrMsg = 'Error in extracting the EXPID value from the '     // &
+                      'HISTORY.rc file.  This forms the start of the '    // &
+                      'netCDF file name for each collection.  Please '    // &
+                      'check the HISTORY.rc file for typos.'
+             WRITE( ErrorLine, 250 ) LineNum
+             CALL GC_Error( ErrMsg, RC, ThisLoc, ErrorLine )
+          ENDIF
+
+          ! Save the EXPID parameter
+          FileExpId = Subs1(2)
+          CALL CStrip( FileExpId )
+       ENDIF
+
        !====================================================================
        ! The HISTORY.rc file specifies collection metadata as:
        !
-       !   instantaneous.filename:  './output/GEOSChem.inst.%y4%m2%d2.nc4'
-       !   instantaneous.template:  '%y4%m2%d2.nc4',
-       !   instantaneous.format:    'CFIO',
-       !   instantaneous.frequency:  010000,
-       !   instantaneous.duration:   240000
+       !   SpeciesConc.filename:  './output/GEOSChem.inst.%y4%m2%d2.nc4'
+       !   SpeciesConc.template:  '%y4%m2%d2_%h2%n2.nc4',
+       !   SpeciesConc.format:    'CFIO',
+       !   SpeciesConc.frequency:  010000,
+       !   SpeciesConc.duration:   240000
        !   etc.
        !
        ! where in this example, "instantaneous" is the collection name
@@ -701,34 +757,104 @@ CONTAINS
           IF ( C > 0 ) CollectionFormat(C) = Metadata
        ENDIF
 
-       ! "frequency": Specifies how often diagnostics are updated
+       ! "frequency": Specifies how often diagnostics are updated,
+       ! Must be either in "YYYYMMDD hhmmss" or "hhmmss" format.
        Pattern = 'frequency'
        IF ( INDEX( TRIM( Line ), TRIM( Pattern ) ) > 0 ) THEN
           CALL GetCollectionMetaData( Line, Pattern, MetaData, C )
-          IF ( C > 0 ) CollectionFrequency(C) = Metadata
+          IF ( C > 0 ) THEN 
+             IF ( LEN_TRIM( MetaData ) == 6     .or.                         &
+                  LEN_TRIM( MetaData ) == 14    .or.                         &
+                  TRIM(     MetaData ) == 'End' .or.                         &
+                  TRIM(     MetaData ) == 'end' ) THEN
+                CollectionFrequency(C) = Metadata
+             ELSE
+                ErrMsg = 'Error in defining "frequency" for collection "' // &
+                         TRIM( CollectionName(C) ) // '"!  This field '   // &
+                         'must either be of the format "YYYYMMDD '        // &
+                         'hhmmss", "hhmmss", or "End".  Please check the '// &
+                         '"frequency" setting in the HISTORY.rc file.'
+                WRITE( ErrorLine, 250 ) LineNum
+                CALL GC_Error( ErrMsg, RC, ThisLoc, ErrorLine )
+                RETURN
+             ENDIF
+          ENDIF
        ENDIF
 
        ! "acc_interval": Specifies how often time-averaged diagnostics
-       ! are updated.  Defaults to "frequncy"
+       ! are updated.   ! Must be either in "YYYYMMDD hhmmss" or "hhmmss" 
+       ! format.   If omitted, "acc_interval" will be set from "frequency"
+       !%%%%% NOTE: The "acc_interval" attribute is not really needed; 
+       !%%%%% we only really need "frequency" and "duration".  We will
+       !%%%%% leave this as an "undocumented feature". (bmy, 3/26/18)
        Pattern = 'acc_interval'
        IF ( INDEX( TRIM( Line ), TRIM( Pattern ) ) > 0 ) THEN
           CALL GetCollectionMetaData( Line, Pattern, MetaData, C )
-          IF ( C > 0 ) CollectionAccInterval(C) = Metadata
+          IF ( C > 0 ) THEN
+             IF ( LEN_TRIM( MetaData ) == 6   .or.                           &
+                  LEN_TRIM( MetaData ) == 14 ) THEN
+                CollectionAccInterval(C) = Metadata
+             ELSE
+                ErrMsg = 'Error in defining "acc_interval" for '          // &
+                         'collection "'// TRIM( CollectionName(C) )       // &
+                         '"!  This field must either be of the format '   // &
+                         '"YYYYMMDD hhmmss" or "hhmmss".  Please check '  // &
+                         'the "acc_interval" setting in the HISTORY.rc '  // &
+                         'file.'
+                WRITE( ErrorLine, 250 ) LineNum
+                CALL GC_Error( ErrMsg, RC, ThisLoc, ErrorLine )
+                RETURN
+              ENDIF
+          ENDIF
        ENDIF
 
-       ! "duration:: Specifies how often files will be written
-       ! Defaults to "frequency"
+       ! "duration:: Specifies how often files will be written.
+       ! Must be either in "YYYYMMDD hhmmss" or "hhmmss" format.
+       ! If omitted, "duration" will be set from "frequency"
        Pattern = 'duration'
        IF ( INDEX( TRIM( Line ), TRIM( Pattern ) ) > 0 ) THEN
           CALL GetCollectionMetaData( Line, Pattern, MetaData, C )
-          IF ( C > 0 ) CollectionDuration(C) = Metadata
+          IF ( C > 0 ) THEN
+             IF ( LEN_TRIM( MetaData ) == 6     .or.                         &
+                  LEN_TRIM( MetaData ) == 14    .or.                         &
+                  TRIM(     MetaData ) == 'End' .or.                         &
+                  TRIM(     MetaData ) == 'end' ) THEN
+                CollectionDuration(C) = Metadata
+             ELSE
+                ErrMsg = 'Error in defining "duration" for collection "'  // &
+                         TRIM( CollectionName(C) ) // '"!  This field '   // &
+                         'must either be of the format "YYYYMMDD '        // &
+                         'hhmmss", "hhmmss", or "End".  Please check the '// &
+                         '"duration" setting in the HISTORY.rc file.'
+                WRITE( ErrorLine, 250 ) LineNum
+                CALL GC_Error( ErrMsg, RC, ThisLoc, ErrorLine )
+                RETURN
+             ENDIF
+          ENDIF
        ENDIF
 
-       ! "mode": Specifies instantaneous or time-averaged archiving
+       ! "mode": Specifies instantaneous or time-averaged archiving.
+       ! Throw an error if anything else is specified
        Pattern = 'mode'
        IF ( INDEX( TRIM( Line ), TRIM( Pattern ) ) > 0 ) THEN
           CALL GetCollectionMetaData( Line, Pattern, MetaData, C )
-          IF ( C > 0 ) CollectionMode(C) = Metadata
+          IF ( C > 0 ) THEN
+             TmpMode = Metadata
+             CALL TranUc( TmpMode )
+             SELECT CASE( TmpMode )
+                CASE( 'INSTANTANEOUS', 'TIME-AVERAGED', 'TIMEAVERAGED' )
+                   CollectionMode(C) = Metadata
+                CASE DEFAULT
+                   ErrMsg = 'Error in defining "mode" for collection "'   // &
+                             TRIM( CollectionName(C) ) // '"!  The mode ' // &
+                            'value can either be "instantaneous" or '     // &
+                            '"time-averaged".  Please check the "mode" '  // &
+                            'setting in the HISTORY.rc file.'
+                   WRITE( ErrorLine, 250 ) LineNum
+                   CALL GC_Error( ErrMsg, RC, ThisLoc, ErrorLine )
+                   RETURN
+             END SELECT
+          ENDIF
        ENDIF
 
        ! "subsetdims": Specifies a subset of the data grid
@@ -762,16 +888,74 @@ CONTAINS
        !====================================================================
        IF ( INDEX( TRIM( Line ), 'fields' ) > 0 ) THEN
 
+          !-----------------------------------------------------------------
           ! If we can't find the metadata for the collection in HISTORY.rc,
           ! then this might point to a mismatch between names under the
           ! "COLLECTIONS:" list and the corresponding metadata section.
-          ! Quit with error if this occurs.
+          ! Do some further error checking.
+          !-----------------------------------------------------------------
           IF ( C == UNDEFINED_INT ) THEN
-             ErrMsg = 'Mismatch between listed collection names and the ' // &
-                      'metadata!  Please check HISTORY.rc for typos.'
-             CALL GC_Error( ErrMsg, RC, ThisLoc )
+
+             !--------------------------------------------------------------
+             ! If the collection corresponding to this ".fields" tag is
+             ! not active, then keep reading lines from HISTORY.rc 
+             ! until we reach the next collection definition section.
+             ! then cycle back to the top of the loop.
+             !--------------------------------------------------------------
+
+             ! Get the collection name (its to the left of the first ".")
+             N     = INDEX( TRIM( Line ), '.' )
+             CName = Line(1:N-1)
+
+             ! This means skipping over all of the fields listed under
+             ! this collection until we get to the :: separator
+             CALL Search_CollList( am_I_Root, CollList, CName, Found, RC )
+             IF ( .not. Found ) THEN
+                DO
+                   Line    = ReadOneLine( fId, EOF, IOS, Squeeze=.TRUE. )
+                   LineNum = LineNum + 1
+                   CALL StrSqueeze( Line )
+                   IF ( TRIM( Line ) == '::' ) GOTO 500
+                ENDDO
+             ENDIF
+             
+             !--------------------------------------------------------------
+             ! If we get to this point, then there is a true error 
+             ! condition.  Print an error message asking the user to
+             ! check the HISTORY.rc file for inconsistencies.
+             !--------------------------------------------------------------
+
+             ! List the defined collections
+             WRITE( 6, '(/,a)' ) REPEAT( '=', 79 )
+             WRITE( 6, 200   ) 
+ 200         FORMAT( 'GEOS-Chem ERROR: One or more collection ',             &
+                     'attributes do not correspond', /                       &
+                     'to any of these defined collection names '             &
+                     'in the "HISTORY.rc" input file:', /                   )
+
+             DO N = 1, CollectionCount
+                WRITE( 6, 210 ) N, TRIM( CollectionName(N) )
+ 210            FORMAT( i3, ') ', a )
+             ENDDO
+
+             WRITE( 6, 220 ) 
+ 220         FORMAT( /, 'Please check the HISTORY.rc file for any ',         &
+                     'missing ":" or "," characters', /,                     &
+                     'in the collection attributes.'                        )
+             WRITE( 6, '(a,/)' ) REPEAT( '=', 79 )
+             
+             ! Write error message and then return
+             ErrMsg = 'Inconsistency in collection names and attributes!' // &
+                      ' Please check "HISTORY.rc" for typos.'
+             WRITE( ErrorLine, 250 ) LineNum
+             CALL GC_Error( ErrMsg, RC, ThisLoc, ErrorLine )
              RETURN
-          ENDIF
+          ENDIF 
+
+          !=================================================================
+          ! At this point we are sure that the collection has been
+          ! defined, so we can continue to populate it with fields.
+          !=================================================================
 
           ! Zero the counter of items
           ItemCount = 0
@@ -797,95 +981,194 @@ CONTAINS
                 ! but the collection is instantaneous.
                 IF ( .not. TRIM( CollectionAccInterval(C) ) ==               &
                                  UNDEFINED_STR                 ) THEN
-                   ErrMsg = 'Acc_interval cannot be defined for ' //         &
-                            'instantaneous collection: "'         //         &
-                            TRIM( CollectionName(C) )             // '"!' 
-                   CALL GC_Error( ErrMsg, RC, ThisLoc )
+                   ErrMsg = 'Acc_interval cannot be defined for '         // &
+                            'instantaneous collection: "'                 // &
+                            TRIM( CollectionName(C) )                     // &
+                            '"!' 
+                   WRITE( ErrorLine, 250 ) LineNum
+                   CALL GC_Error( ErrMsg, RC, ThisLoc, ErrorLine )
                    RETURN
                 ENDIF
 
           END SELECT
 
           !-----------------------------------------------------------------
-          ! Define UpdateHms and UpdateYmd
+          ! %%%%% INSTANTANEOUS AND TIME-AVERAGED COLLECTIONS %%%%%
+          !
+          ! Define the "File Write" interval
+          !
+          ! The ".frequency" tag in HISTORY.rc specifies the interval at
+          ! which data will be written to the netCDF file.  Thus, we can 
+          ! set FileWriteYmd and FileWriteHms from CollectionFrequency.
           ! 
-          ! NOTE: If CollectionFrequency is 6 digits long, then assume that
-          ! to be UpdateHms.  If longer, then assume that it is specifying
-          ! both UpdateYmd and UpdateHms. (sde, bmy, 8/4/17)
+          ! NOTE: If CollectionFrequency is 6 digits long, then assume 
+          ! that to be FileWriteHms.  If longer, then assume that it is 
+          ! both FileWriteYmd and FileWriteHms.  This is a hack that we 
+          ! introduced for GEOS-Chem "Classic" only, as this feature is
+          ! not yet supported in MAPL.  (sde, bmy, 8/4/17, 10/26/17)
+          !
+          ! Add capability to set frequency to 'End'. In that case, the
+          ! data will be written to the netCDF file at the end of the
+          ! simulation. This is especially useful for the Restart collection
+          ! for saving fields needed for subsequent GEOS-Chem runs.
+          ! FileCloseYmd and FileCloseHms will be computed as the amount
+          ! of time between the start and end of the simulation.
+          ! (mps, 10/12/18)
           !-----------------------------------------------------------------
           IF ( LEN_TRIM( CollectionFrequency(C) ) == 6 ) THEN
-             READ( CollectionFrequency(C), '(i6.6)'  ) UpdateHms
-          ELSE
-             READ( CollectionFrequency(C), '(2i6.6)' ) UpdateYmd,            &
-                                                       UpdateHms
+             READ( CollectionFrequency(C), '(i6.6)'  ) FileWriteHms           
+          ELSE IF ( LEN_TRIM( CollectionFrequency(C) ) == 14 ) THEN
+             READ( CollectionFrequency(C), '(i8,i6)' ) FileWriteYmd,         &
+                                                       FileWriteHms
+          ELSE IF ( TRIM( CollectionFrequency(C) ) == 'End'   .or.         &
+                    TRIM( CollectionFrequency(C) ) == 'end' ) THEN
+             FileWriteYmd = DeltaYMD
+             FileWriteHms = DeltaHMS
           ENDIF
 
-          ! SPECIAL CASE: If UpdateHms is 240000 then set
-          ! and set UpdateYmd=000001 and UpdateHms=000000
-          IF ( UpdateHms == 240000 ) THEN
-             UpdateYmd = 000001
-             UpdateHms = 000000
-          ENDIF
-
-          !-----------------------------------------------------------------
-          ! Define FileWriteYmd and FileWriteHms
-          !-----------------------------------------------------------------
-          IF ( Operation == COPY_FROM_SOURCE ) THEN
-
-             ! Instantaneous data: this defaults to the frequency attribute
-             ! in the HISTORY.rc file, which is UpdateYmd, UpdateHms
-             FileWriteYmd = UpdateYmd
-             FileWriteHms = UpdateHms
-
-          ELSE
-             
-             ! Time-averaged data: Use the acc_interval field to denote
-             ! when it is time to write to disk.  If acc_interval is not
-             ! specified, then default to UpdateYmd and UpdateHms,
-             ! which are specified by the "frequency" attribute.
-             IF ( TRIM( CollectionAccInterval(C) ) == UNDEFINED_STR ) THEN
-                FileWriteYmd = UpdateYmd
-                FileWriteHms = UpdateHms
-             ELSE IF ( LEN_TRIM( CollectionAccInterval(C) ) == 6 ) THEN
-                READ( CollectionAccInterval(C), '(i6.6)'  ) FileWriteHms
-             ELSE
-                READ( CollectionAccInterval(C), '(2i6.6)' ) FileWriteYmd,    &
-                                                            FileWriteHms
-             ENDIF
-          ENDIF
-          
-          ! SPECIAL CASE: If FileWriteYmd is 240000 then set
-          ! and set FileWriteYmd=000001 and FileWriteHms=000000
+          ! SPECIAL CASE: If FileWriteHms is 240000, set
+          ! FileWriteYmd=000001 and FileWriteHms=000000
           IF ( FileWriteHms == 240000 ) THEN
-             FileWriteYmd = 000001
+             FileWriteYmd = 00000001
              FileWriteHms = 000000
           ENDIF
-   
+
           !-----------------------------------------------------------------
-          ! Define FileCloseHms and FileCloseYmd
+          ! %%%%% INSTANTANEOUS AND TIME-AVERAGED COLLECTIONS %%%%%
           !
-          ! NOTE: If CollectionDuration is 6 digits long, then assume that
-          ! to be UpdateHms.  If longer, then assume that it is specifying
-          ! both FileWriteYmd and FileWriteHms. (sde, bmy, 8/4/17)
+          ! Define the "File Close" interval
           !
-          ! ALSO NOTE: If "duration" is not found, then default to th
-          ! same values specified by the "frequency" attribute.
+          ! The ".duration" tag in HISTORY.rc denotes the interval when
+          ! each new netCDF file will be produced.  Thus, we can set
+          ! FileCloseYmd and FileCloseHms from CollectionDuration.
+          !
+          ! If ".duration" is not specified in HISTORY.rc, then both 
+          ! FileCloseYmd and FileCloseHms will both be defined from
+          ! the ".frequency" tag (stored in CollectionFrequency).
+          !
+          ! NOTE: If CollectionDuration is 6 digits long, then assume 
+          ! that to be FileCloseHms.  If longer, then assume that it is 
+          ! both FileCloseYmd and FileCloseHms.  This is a hack that we 
+          ! introduced for GEOS-Chem "Classic" only, as this feature is
+          ! not yet supported in MAPL.  (sde, bmy, 8/4/17, 10/26/17)
+          !
+          ! Add capability to set duration to 'End'. In that case, the
+          ! netCDF file will be closed at the end of the simulation.
+          ! This is especially useful for the Restart collection 
+          ! for saving fields needed for subsequent GEOS-Chem runs.
+          ! FileCloseYmd and FileCloseHms will be computed as the amount
+          ! of time between the start and end of the simulation.
+          ! (mps, 10/12/18)
           !-----------------------------------------------------------------
           IF ( TRIM( CollectionDuration(C) ) == UNDEFINED_STR ) THEN
-             FileCloseYmd = UpdateYmd
-             FileCloseHms = UpdateHms
+             FileCloseYmd = FileWriteYmd
+             FileCloseHms = FileWriteHms
           ELSE IF ( LEN_TRIM( CollectionDuration(C) ) == 6 ) THEN
              READ( CollectionDuration(C), '(i6.6)'  ) FileCloseHms
-          ELSE
-             READ( CollectionDuration(C), '(2i6.6)' ) FileCloseYmd,          &
+          ELSE IF ( LEN_TRIM( CollectionDuration(C) ) == 14 ) THEN
+             READ( CollectionDuration(C), '(i8,i6)' ) FileCloseYmd,          &
                                                       FileCloseHms
+          ELSE IF ( TRIM( CollectionDuration(C) ) == 'End'   .or.          &
+                    TRIM( CollectionDuration(C) ) == 'end' ) THEN
+             FileCloseYmd = DeltaYMD
+             FileCloseHms = DeltaHMS
           ENDIF
 
-          ! SPECIAL CASE: If FileCloseHms is 240000 then set
-          ! and set FileCloseYmd=000001 and FileCloseYmd=000000
+          ! SPECIAL CASE: If FileCloseHms is 240000, set
+          ! FileCloseYmd=000001 and FileCloseYmd=000000
           IF ( FileCloseHms == 240000 ) THEN
-             FileCloseYmd = 000001
+             FileCloseYmd = 00000001
              FileCloseHms = 000000
+          ENDIF
+
+          IF ( Operation == COPY_FROM_SOURCE ) THEN
+
+             !--------------------------------------------------------------
+             ! %%%%% INSTANTANEOUS COLLECTION %%%%%
+             !
+             ! Define the "Update" interval
+             !
+             ! Because there is no time-averaging, each field is written to 
+             ! the netCDF file as soon as it is updated.  Thus, we can set 
+             ! UpdateYmd and UpdateHms from the ".frequency" tag in 
+             ! HISTORY.rc (stored in CollectionFrequency).
+             !--------------------------------------------------------------
+             UpdateYmd = FileWriteYmd
+             UpdateHms = FileWriteHms
+
+          ELSE
+
+             !--------------------------------------------------------------
+             ! %%%% TIME-AVERAGED COLLECTION %%%%
+             !
+             ! Define the "Update" interval
+             !
+             ! Normally, we will set UpdateYmd and UpdateHms directly from
+             ! the "heartbeat" timestep of the simulation in seconds.
+             !
+             ! If the ".acc_interval" tag is specified in HISTORY.rc,
+             ! then we will set UpdateYmd and UpdateHms from 
+             ! CollectionAccInterval.  But if using this option, note
+             ! that the ".acc_interval" tag must not specify an interval
+             ! that is longer than the interval specified by ".frequency".
+             !
+             ! NOTE: If CollectionAccInterval is 6 digits long, then assume 
+             ! that to be UpdateHms.  If longer, then assume that it is 
+             ! both UpdateYmd and UpdateHms.  This is a hack that we 
+             ! introduced for GEOS-Chem "Classic" only, as this feature is
+             ! not supported in MAPL.  (sde, bmy, 8/4/17, 10/26/17)
+             !--------------------------------------------------------------
+             IF ( TRIM( CollectionAccInterval(C) ) == UNDEFINED_STR ) THEN
+
+                ! Set UpdateYmd and UpdateHms from the HeartBeat timestep
+                UpdateYmd = 00000000
+                UpdateHms = HeartBeatHms
+             
+                ! SPECIAL CASE: If FileWriteYmd is 240000 then set
+                ! and set FileWriteYmd=000001 and FileWriteHms=000000
+                IF ( UpdateHms == 240000 ) THEN
+                   UpdateYmd = 00000001
+                   UpdateHms = 000000
+                ENDIF
+
+             ELSE
+                
+                ! Set UpdateYmd and UpdateHms from the ".acc_interval" tag
+                IF ( LEN_TRIM( CollectionAccInterval(C) ) == 6 ) THEN
+                   READ( CollectionAccInterval(C), '(i6.6)'  ) UpdateHms
+                ELSE IF ( LEN_TRIM( CollectionAccInterval(C) ) == 14 ) THEN
+                   READ( CollectionAccInterval(C), '(i8,i6)' ) UpdateYmd,    &
+                                                               UpdateHms
+                ENDIF
+
+                ! SPECIAL CASE: If FileWriteYmd is 240000 then set
+                ! and set FileWriteYmd=000001 and FileWriteHms=000000
+                IF ( UpdateHms == 240000 ) THEN
+                   UpdateYmd = 00000001
+                   UpdateHms = 000000
+                ENDIF
+
+                ! Combine UpdateYmd and UpdateHms
+                UpdateCheck    = ( DBLE( UpdateYmd    ) * 1.0e6_f8 )         &
+                               + ( DBLE( UpdateHms    )            )
+
+                ! Combine FileWriteYmd and FileWriteHms
+                FileWriteCheck = ( DBLE( FileWriteYmd ) * 1.0e6_f8 )         & 
+                               + ( DBLE( FileWriteHMs )            )
+
+                ! Error check: If using acc_interval, then the Update interval
+                ! has to be smaller or equal to the File Write interval
+                IF ( UpdateCheck > FileWriteCheck ) THEN
+                   ErrMsg = 'Update interval is greater than File Write ' // &
+                            'interval for collection: '                   // &
+                            TRIM( CollectionName(C) ) 
+                   WRITE( ErrorLine, 250 ) LineNum
+                   CALL GC_Error( ErrMsg, RC, ThisLoc, ErrorLine )
+                   RETURN
+                ENDIF
+
+             ENDIF
+
           ENDIF
           
           !=================================================================
@@ -906,6 +1189,7 @@ CONTAINS
                                      UpdateHms      = UpdateHms,             &
                                      Operation      = Operation,             &
                                      HeartBeatDtSec = HeartBeatDtSec,        &
+                                     FileExpId      = FileExpId,             &
                                      FileWriteYmd   = FileWriteYmd,          &
                                      FileWriteHms   = FileWriteHms,          &
                                      FileCloseYmd   = FileCloseYmd,          &
@@ -917,13 +1201,19 @@ CONTAINS
                                      Reference      = Reference,             &
                                      Title          = Title,                 &
                                      Contact        = Contact,               &
+                                     StartTimeStamp = StartTimeStamp,        &
+                                     EndTimeStamp   = EndTimeStamp,          &
                                      RC             = RC                    )
+
+          ! Update CollectionFileName
+          CollectionFileName(C) = TRIM( Container%FileName )
 
           ! Trap potential error
           IF ( RC /= GC_SUCCESS ) THEN
              ErrMsg = 'Could not create Collection: ' // &
                       TRIM( CollectionName(C) ) 
-             CALL GC_Error( ErrMsg, RC, ThisLoc )
+             WRITE( ErrorLine, 250 ) LineNum
+             CALL GC_Error( ErrMsg, RC, ThisLoc, ErrorLine )
              RETURN
           ENDIF
 
@@ -938,7 +1228,8 @@ CONTAINS
           IF ( RC /= GC_SUCCESS ) THEN
              ErrMsg = 'Error encountered in "HistContainer_SetTime"'      // &
                       ' for collection: ' // TRIM( CollectionName(C) ) 
-             CALL GC_Error( ErrMsg, RC, ThisLoc )
+             WRITE( ErrorLine, 250 ) LineNum
+             CALL GC_Error( ErrMsg, RC, ThisLoc, ErrorLine )
              RETURN
           ENDIF
 
@@ -949,26 +1240,20 @@ CONTAINS
           !-----------------------------------------------------------------
           IF ( SimLengthSec < Container%FileWriteAlarm ) THEN
 
-             ! Construct first part of error message
+             ! Construct error message
              ErrMsg =                                                        &
                 'No diagnostic output will be created for collection: "'  // &
-                 TRIM( CollectionName(C) ) // '"!  Make sure that the'
-
-             ! Then add the correct text for instantaneous or time-averaged
-             IF ( Container%Operation == COPY_FROM_SOURCE ) THEN
-                ErrMsg = TRIM ( ErrMsg ) // ' "frequency"'
-             ELSE
-                ErrMsg = TRIM ( ErrMsg ) // ' "acc_interval"'
-             ENDIF
-
-             ! Then continue the message
-             ErrMsg = TRIM( ErrMsg )                                      // &
-                ' interval in HISTORY.rc is not shorter than the length ' // &
-                'of the simulation (check start & end times in '          // &
-                'input.geos).'
+                 TRIM( CollectionName(C) ) // '"!  Make sure that the '   // &
+                'length of the simulation as specified in "input.geos" '  // &
+                '(check the start and end times) is not shorter than '    // &
+                'the frequency setting in HISTORY.rc!  For example, if '  // &
+                'the frequency is 010000 (1 hour) but the simulation '    // &
+                'is set up to run for only 20 minutes, then this error '  // &
+                'will occur.'
 
              ! Return error
-             CALL GC_Error( ErrMsg, RC, ThisLoc )
+             WRITE( ErrorLine, 250 ) LineNum
+             CALL GC_Error( ErrMsg, RC, ThisLoc, ErrorLine )
              RETURN
           ENDIF
 
@@ -998,7 +1283,8 @@ CONTAINS
                 !----------------------------------------------------------
 
                 ! Read a single line, and strip leading/trailing spaces
-                Line = ReadOneLine( fId, EOF, IOS, Squeeze=.TRUE. )
+                Line    = ReadOneLine( fId, EOF, IOS, Squeeze=.TRUE. )
+                LineNum = LineNum + 1
 
                 ! IF we have hit the end of file then 
                 iF ( EOF ) GOTO 999
@@ -1007,7 +1293,8 @@ CONTAINS
                 IF ( IOS > 0 ) THEN
                    ErrMsg = 'Unexpected end-of-file in '        // &
                              TRIM( Input_Opt%HistoryInputFile ) //'!'
-                   CALL GC_Error( ErrMsg, RC, ThisLoc )
+                   WRITE( ErrorLine, 250 ) LineNum
+                   CALL GC_Error( ErrMsg, RC, ThisLoc, ErrorLine )
                    RETURN
                 ENDIF
                              
@@ -1031,81 +1318,54 @@ CONTAINS
              ! entry read from HISTORY.rc and add to the given COLLECTION
              !--------------------------------------------------------------
 
-             ! Save the item name in a temporary variable
-             ! so that we can parse it for wild cards
-             ItemTemplate = ItemName
+             ! Save the item name in temporary variables
+             ! so that we can parse for wildcards
+             ItemTemplate   = ItemName
+             ItemTemplateUC = To_UpperCase( ItemTemplate )
 
-             ! Test if there are wild cards present, otherwise skip
+             ! Test if there are wildcards present, otherwise skip
              IF ( INDEX( ItemTemplate, '?' ) >  0 ) THEN 
 
-                !-----------------------------------------------------------
-                ! Item name contains wild cards; fill in species names
-                !-----------------------------------------------------------
-                Ind_Adv = INDEX( ItemTemplate, '?ADV?' ) ! Advected species
-                Ind_All = INDEX( ItemTemplate, '?ALL?' ) ! All species
-                Ind_Aer = INDEX( ItemTemplate, '?AER?' ) ! Aerosol species
-                Ind_Dry = INDEX( ItemTemplate, '?DRY?' ) ! Drydep species
-                Ind_Fix = INDEX( ItemTemplate, '?FIX?' ) ! KPP fixed species
-                Ind_Gas = INDEX( ItemTemplate, '?GAS?' ) ! Gas-phase species
-                Ind_Kpp = INDEX( ItemTemplate, '?KPP?' ) ! KPP species
-                Ind_Pho = INDEX( ItemTemplate, '?PHO?' ) ! Photolysis species
-                Ind_Var = INDEX( ItemTemplate, '?VAR?' ) ! KPP active species
-                Ind_Wet = INDEX( ItemTemplate, '?WET?' ) ! Wetdep species
+                ! Split the name to get wildcard and string prior to wildcard
+                CALL StrSplit( ItemTemplate, '?', SubStrs, N )
+                tagId = SubStrs(N-1)
+                ItemPrefix = SubStrs(1)
 
-                ! Loop over all species
-                DO N = 1, State_Chm%nSpecies
+                ! Get number of tags for this wildcard
+                CALL Get_TagInfo( am_I_Root, tagId, State_Chm, Found, RC,    &
+                                  nTags=nTags )
+                IF ( RC /= GC_SUCCESS ) THEN
+                   ErrMsg = 'Error retrieving # of tags for' //              &
+                            ' wildcard ' // TRIM(tagId)
+                   WRITE( ErrorLine, 250 ) LineNum
+                   CALL GC_Error( ErrMsg, RC, ThisLoc, ErrorLine )
+                   RETURN
+                ENDIF
+                
+                ! Add each tagged name as a separate item in the collection
+                DO N = 1, nTags
+                   ! Construct the item name
 
-                   ! Point to this entry of the species database 
-                   ThisSpc => State_Chm%SpcData(N)%Info
-
-                   ! For a given wild card, skip the unnecessary species
-                   IF ( Ind_All > 0 ) THEN
-                      Ind = Ind_All
-                   ELSE IF ( Ind_Adv > 0 ) THEN
-                      IF ( .not. ThisSpc%Is_Advected   ) CYCLE
-                      Ind = Ind_Adv
-                   ELSE IF ( Ind_Aer > 0 ) THEN
-                      IF ( ThisSpc%Is_Gas              ) CYCLE
-                      Ind = Ind_Aer
-                   ELSE IF ( Ind_Dry > 0 ) THEN
-                      IF ( .not. ThisSpc%Is_DryDep     ) CYCLE
-                      Ind = Ind_Dry
-                   ELSE IF ( Ind_Fix > 0 ) THEN
-                      IF ( .not. ThisSpc%Is_FixedChem  ) CYCLE
-                      Ind = Ind_Fix
-                   ELSE IF ( Ind_Gas > 0 ) THEN
-                      IF ( .not. ThisSpc%Is_Gas        ) CYCLE
-                      Ind = Ind_Gas
-                   ELSE IF ( Ind_Kpp > 0 ) THEN
-                      IF ( .not. ThisSpc%Is_Kpp        ) CYCLE
-                      Ind = Ind_Kpp
-                   ELSE IF ( Ind_Pho > 0 ) THEN
-                      IF ( .not. ThisSpc%Is_Photolysis ) CYCLE
-                      Ind = Ind_Pho
-                   ELSE IF ( Ind_Var > 0 ) THEN
-                      IF ( .not. ThisSpc%Is_ActiveChem ) CYCLE
-                      Ind = Ind_Var
-                   ELSE IF ( Ind_Wet > 0 ) THEN
-                      IF ( .not. ThisSpc%Is_WetDep     ) CYCLE
-                      Ind = Ind_Wet
-                   ELSE
-                      Ind = -1
+                   ! Get tag, if any
+                   CALL Get_TagInfo( am_I_Root, tagId, State_Chm, Found, RC, &
+                                     N=N, tagName=tagName )
+                   IF ( RC /= GC_SUCCESS ) THEN
+                      ErrMsg = 'Error retrieving tag name for' //            &
+                               ' wildcard ' // TRIM(tagId)
+                      WRITE( ErrorLine, 250 ) LineNum
+                      CALL GC_Error( ErrMsg, RC, ThisLoc, ErrorLine )
+                      RETURN
                    ENDIF
 
-                   IF ( Ind <= 0 ) THEN
-                      ErrMsg = 'Could not find wild card!'
-                      CALL GC_Error( ErrMsg, RC, ThisLoc )
-                      RETURN
-                   ENDIF 
+                   ! Append the tag name to the output name
+                   ItemName = TRIM( ItemPrefix ) // TRIM( tagName )
 
-                   ! Construct the item name
-                   ItemName    = ItemTemplate( 1:Ind-1 ) // &
-                                 TRIM( ThisSpc%Name    ) // &
-                                 ItemTemplate( Ind+5:  ) 
+                   ! Update the ItemName if dependent on input parameters
+                   CALL Get_NameInfo( am_I_Root, ItemName, OutputName, RC )
 
                    ! Increment the item count
                    ItemCount   = ItemCount + 1
-
+                   
                    ! Create the a HISTORY ITEM object for this diagnostic
                    ! and add it to the given DIAGNOSTIC COLLECTION
                    CALL History_AddItemToCollection(                         &
@@ -1117,28 +1377,29 @@ CONTAINS
                             Collection   = Container,                        &
                             CollectionId = C,                                &
                            !SubsetDims   = CollectionSubsetDims(C),          &
-                            ItemName     = ItemName,                         &
+                            ItemName     = OutputName,                       &
                             ItemCount    = ItemCount,                        &
                             RC           = RC                               )
-
-                   ! Trap potential error
+                
+                   ! Error checking
                    IF ( RC /= GC_SUCCESS ) THEN
-                      ErrMsg = 'Could not add diagnostic :'            //     &
-                               TRIM( ItemName ) // '" to collection: ' //    &
+                      ErrMsg = 'Could not add diagnostic "'               // &
+                               TRIM( OutputName ) // '" to collection: '  // &
                                TRIM( CollectionName(C) ) 
-                      CALL GC_Error( ErrMsg, RC, ThisLoc )
+                      WRITE( ErrorLine, 250 ) LineNum
+                      CALL GC_Error( ErrMsg, RC, ThisLoc, ErrorLine )
                       RETURN
                    ENDIF
-         
-                   ! Free the species database pointer
-                   ThisSpc => NULL()
                 ENDDO
 
              ELSE
 
                 !-----------------------------------------------------------
-                ! Item name does not have wild cards; no special handling
+                ! Item name does not have wildcards; no special handling
                 !-----------------------------------------------------------
+
+                ! Update the ItemName if dependent on input parameters
+                CALL Get_NameInfo( am_I_Root, ItemName, OutputName, RC )
 
                 ! Increment the number of HISTORY items
                 ItemCount = ItemCount + 1
@@ -1154,15 +1415,16 @@ CONTAINS
                          Collection   = Container,                           &
                          CollectionId = C,                                   &
                         !SubsetDims   = CollectionSubsetDims(C),             &
-                         ItemName     = ItemName,                            &
+                         ItemName     = OutputName,                          &
                          ItemCount    = ItemCount,                           &
                          RC           = RC                                  )
 
                 ! Trap potential error
                 IF ( RC /= GC_SUCCESS ) THEN
-                   ErrMsg = 'Could not add diagnostic :' // TRIM( ItemName ) &
+                   ErrMsg = 'Could not add diagnostic "' // TRIM( OutputName ) &
                             // '" to collection: ' // TRIM( CollectionName(C) ) 
-                   CALL GC_Error( ErrMsg, RC, ThisLoc )
+                   WRITE( ErrorLine, 250 ) LineNum
+                   CALL GC_Error( ErrMsg, RC, ThisLoc, ErrorLine )
                    RETURN
                 ENDIF
              ENDIF
@@ -1182,7 +1444,64 @@ CONTAINS
              ErrMsg = 'Could not add Container' //                           &
                       TRIM( CollectionName(C) ) //                           &
                       ' to the list of collections!'
-             CALL GC_Error( ErrMsg, RC, ThisLoc )
+             WRITE( ErrorLine, 250 ) LineNum
+             CALL GC_Error( ErrMsg, RC, ThisLoc, ErrorLine )
+             RETURN
+          ENDIF
+
+       ELSE
+
+          !=================================================================
+          ! If the we have gotten this far tthrough a collection definition 
+          ! section, but still haven't found the ".fields" tag, then we 
+          ! need to do some further error checking.
+          !=================================================================
+          IF ( C == UNDEFINED_INT ) THEN
+
+             !-------------------------------------------------------------- 
+             ! First, check if the collection isn't activated.  If that
+             ! is the case, then skip over all of the lines in the 
+             ! collection definition section until we hit the "::" 
+             ! termination character.  Then cycle up to the top of the
+             ! loop to read the next collection definition section.
+             !--------------------------------------------------------------
+
+             ! Get the collection name (its to the left of the first ".")
+             N     = INDEX( TRIM( Line ), '.' )
+             CName = Line(1:N-1)
+
+             ! Search for this collection in the list of active collections
+             ! and skip to the next collection if not found
+             CALL Search_CollList( am_I_Root, CollList, CName, Found, RC )
+             IF ( .not. Found ) THEN
+                DO
+                   Line    = ReadOneLine( fId, EOF, IOS, Squeeze=.TRUE. )
+                   LineNum = LineNum + 1
+                   CALL StrSqueeze( Line )
+                   IF ( TRIM( Line ) == '::' ) GOTO 500
+                ENDDO
+             ENDIF
+
+             !-------------------------------------------------------------- 
+             ! If we have gotten down to this point, then a true error 
+             ! condition exists.  Print an error message asking the user 
+             ! to check the HISTORY.rc file for inconsistencies.
+             !-------------------------------------------------------------- 
+
+             ! List the defined collections
+             WRITE( 6, '(/,a)' ) REPEAT( '=', 79 )
+             WRITE( 6, 200   ) 
+             DO N = 1, CollectionCount
+                WRITE( 6, 210 ) N, TRIM( CollectionName(N) )
+             ENDDO
+             WRITE( 6, 220 )
+             WRITE( 6, '(a,/)' ) REPEAT( '=', 79 )
+
+             ! Write error message and then return
+             ErrMsg = 'Inconsistency in collection names and attributes!' // &
+                      ' Please check "HISTORY.rc" for typos.'
+             WRITE( ErrorLine, 250 ) LineNum
+             CALL GC_Error( ErrMsg, RC, ThisLoc, ErrorLine )
              RETURN
           ENDIF
        ENDIF
@@ -1213,19 +1532,22 @@ CONTAINS
 !         print*, '  -> Subset Dims  ', TRIM( CollectionSubsetDims (C) )
           print*, '  -> Mode         ', TRIM( CollectionMode       (C) )
 
-          ! Trap error if the collection freuency is undefined
+          ! Trap error if the collection frequency is undefined
           ! This indicates an error in parsing the file
           IF ( TRIM( CollectionFrequency(C) ) == UNDEFINED_STR ) THEN
              ErrMsg = 'Collection: ' // TRIM( CollectionName(C) ) //         &
                       ' is undefined!'
-             CALL GC_Error( ErrMsg, RC, ThisLoc )
+             WRITE( ErrorLine, 250 ) LineNum
+             CALL GC_Error( ErrMsg, RC, ThisLoc, ErrorLine )
              RETURN
           ENDIF
        ENDDO
     ENDIF
 
-    ! Print information about each diagnostic collection
-    CALL MetaHistContainer_Print( am_I_Root, CollectionList, RC )
+    IF ( Input_Opt%LPRT .and. am_I_Root ) THEN
+       ! Print information about each diagnostic collection
+       CALL MetaHistContainer_Print( am_I_Root, CollectionList, RC )
+    ENDIF
 
     ! Write spacer
     WRITE( 6, '(a,/)' ) REPEAT( '=', 79 )   
@@ -1256,7 +1578,7 @@ CONTAINS
 !
 ! !USES:
 !
-    USE Charpak_Mod,           ONLY : TranUc
+    USE Charpak_Mod,           ONLY : To_UpperCase
     USE ErrCode_Mod
     USE HistContainer_Mod
     USE HistItem_Mod
@@ -1301,6 +1623,7 @@ CONTAINS
 !  03 Aug 2017 - R. Yantosca - Inherit operation code from the Collection
 !  26 Sep 2017 - E. Lundgren - Replace Lookup_State_xx calls with direct
 !                              calls to Registry_Lookup
+!  01 Nov 2017 - R. Yantosca - Make the registry lookup case-insensitive
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -1318,16 +1641,28 @@ CONTAINS
     INTEGER                      :: ItemDims(3)
 
     ! Strings
+    CHARACTER(LEN=4  )           :: StateMetUC
+    CHARACTER(LEN=5  )           :: StateChmUC
+    CHARACTER(LEN=255)           :: ItemNameUC
     CHARACTER(LEN=255)           :: Description
-    CHARACTER(LEN=255)           :: ErrMsg
     CHARACTER(LEN=255)           :: ThisLoc
     CHARACTER(LEN=255)           :: Units
+    CHARACTER(LEN=512)           :: ErrMsg
 
     ! Objects
     TYPE(HistItem),      POINTER :: Item
 
     ! Pointer arrays
+    REAL(fp),            POINTER :: Ptr0d
+    REAL(f8),            POINTER :: Ptr0d_8
+    REAL(f4),            POINTER :: Ptr0d_4
+    INTEGER,             POINTER :: Ptr0d_I
+    REAL(fp),            POINTER :: Ptr1d  (:    )
+    REAL(f8),            POINTER :: Ptr1d_8(:    )
+    REAL(f4),            POINTER :: Ptr1d_4(:    )
+    INTEGER,             POINTER :: Ptr1d_I(:    )
     REAL(fp),            POINTER :: Ptr2d  (:,:  )
+    REAL(f8),            POINTER :: Ptr2d_8(:,:  )
     REAL(f4),            POINTER :: Ptr2d_4(:,:  )
     INTEGER,             POINTER :: Ptr2d_I(:,:  )
     REAL(fp),            POINTER :: Ptr3d  (:,:,:)
@@ -1347,7 +1682,19 @@ CONTAINS
     ErrMsg      =  ''
     ThisLoc     =  &
                 ' -> History_AddItemToCollection (in History/history_mod.F90)'
+    ItemNameUC  = To_UpperCase( ItemName )
+    StateMetUC  = State_Met%State // '_'   ! State_Met%State is uppercase
+    StateChmUC  = State_Chm%State // '_'   ! State_Chm%State is uppercase
+    Ptr0d       => NULL()
+    Ptr0d_8     => NULL()
+    Ptr0d_4     => NULL()
+    Ptr0d_I     => NULL()
+    Ptr1d       => NULL()
+    Ptr1d_8     => NULL()
+    Ptr1d_4     => NULL()
+    Ptr1d_I     => NULL()
     Ptr2d       => NULL()
+    Ptr2d_8     => NULL()
     Ptr2d_4     => NULL()
     Ptr2d_I     => NULL()
     Ptr3d       => NULL()
@@ -1360,7 +1707,7 @@ CONTAINS
     ! registry (in State_Chm, State_Diag, State_Met) and get a pointer
     ! to the data source 
     !=======================================================================
-    IF ( INDEX( ItemName, State_Chm%State ) > 0 ) THEN
+    IF ( ItemNameUC(1:5) == StateChmUC ) THEN
 
        !--------------------------------------------------------------------
        ! Chemistry State
@@ -1375,8 +1722,22 @@ CONTAINS
                              Rank         = Rank,                            &
                              Units        = Units,                           &
                              OnLevelEdges = OnLevelEdges,                    &
+                             Ptr0d        = Ptr0d,                           &
+                             Ptr1d        = Ptr1d,                           &
+                             Ptr2d        = Ptr2d,                           &
                              Ptr3d        = Ptr3d,                           &
+                             Ptr0d_8      = Ptr0d_8,                         &
+                             Ptr1d_8      = Ptr1d_8,                         &
+                             Ptr2d_8      = Ptr2d_8,                         &
+                             Ptr3d_8      = Ptr3d_8,                         &
+                             Ptr0d_4      = Ptr0d_4,                         &
+                             Ptr1d_4      = Ptr1d_4,                         &
+                             Ptr2d_4      = Ptr2d_4,                         &
                              Ptr3d_4      = Ptr3d_4,                         &
+                             Ptr0d_I      = Ptr0d_I,                         &
+                             Ptr1d_I      = Ptr1d_I,                         &
+                             Ptr2d_I      = Ptr2d_I,                         &
+                             Ptr3d_I      = Ptr3d_I,                         &
                              RC           = RC                                 )
 
        ! Trap potential not found error
@@ -1387,26 +1748,38 @@ CONTAINS
           RETURN
        ENDIF
 
-    ELSE IF ( INDEX( ItemName, State_Met%State ) > 0 ) THEN
+    ELSE IF ( ItemNameUC(1:4) == StateMetUC ) THEN
 
        !--------------------------------------------------------------------
        ! Meteorology State
        !--------------------------------------------------------------------
-       CALL Registry_Lookup( am_I_Root    = am_I_Root,                      &
-                             Registry     = State_Met%Registry,             &
-                             State        = State_Met%State,                &
-                             Variable     = ItemName,                       &
-                             Description  = Description,                    &
-                             Dimensions   = Dimensions,                     &
-                             KindVal      = KindVal,                        &
-                             Rank         = Rank,                           &
-                             Units        = Units,                          &
-                             OnLevelEdges = OnLevelEdges,                   &
-                             Ptr2d        = Ptr2d,                          &
-                             Ptr3d        = Ptr3d,                          &
-                             Ptr2d_I      = Ptr2d_I,                        &
-                             Ptr3d_I      = Ptr3d_I,                        &
-                             RC           = RC                                )
+       CALL Registry_Lookup( am_I_Root    = am_I_Root,                       &
+                             Registry     = State_Met%Registry,              &
+                             State        = State_Met%State,                 &
+                             Variable     = ItemName,                        &
+                             Description  = Description,                     &
+                             Dimensions   = Dimensions,                      &
+                             KindVal      = KindVal,                         &
+                             Rank         = Rank,                            &
+                             Units        = Units,                           &
+                             OnLevelEdges = OnLevelEdges,                    &
+                             Ptr0d        = Ptr0d,                           &
+                             Ptr1d        = Ptr1d,                           &
+                             Ptr2d        = Ptr2d,                           &
+                             Ptr3d        = Ptr3d,                           &
+                             Ptr0d_8      = Ptr0d_8,                         &
+                             Ptr1d_8      = Ptr1d_8,                         &
+                             Ptr2d_8      = Ptr2d_8,                         &
+                             Ptr3d_8      = Ptr3d_8,                         &
+                             Ptr0d_4      = Ptr0d_4,                         &
+                             Ptr1d_4      = Ptr1d_4,                         &
+                             Ptr2d_4      = Ptr2d_4,                         &
+                             Ptr3d_4      = Ptr3d_4,                         &
+                             Ptr0d_I      = Ptr0d_I,                         &
+                             Ptr1d_I      = Ptr1d_I,                         &
+                             Ptr2d_I      = Ptr2d_I,                         &
+                             Ptr3d_I      = Ptr3d_I,                         &
+                             RC           = RC                                 )
 
        ! Trap potential not found error
        IF ( RC /= GC_SUCCESS ) THEN
@@ -1431,9 +1804,20 @@ CONTAINS
                              Rank         = Rank,                            &
                              Units        = Units,                           &
                              OnLevelEdges = OnLevelEdges,                    &
-                             Ptr2d_4      = Ptr2d_4,                         &
+                             Ptr0d        = Ptr0d,                           &
+                             Ptr1d        = Ptr1d,                           &
+                             Ptr2d        = Ptr2d,                           &
+                             Ptr3d        = Ptr3d,                           &
+                             Ptr0d_8      = Ptr0d_8,                         &
+                             Ptr1d_8      = Ptr1d_8,                         &
+                             Ptr2d_8      = Ptr2d_8,                         &
                              Ptr3d_8      = Ptr3d_8,                         &
+                             Ptr0d_4      = Ptr0d_4,                         &
+                             Ptr1d_4      = Ptr1d_4,                         &
+                             Ptr2d_4      = Ptr2d_4,                         &
                              Ptr3d_4      = Ptr3d_4,                         &
+                             Ptr0d_I      = Ptr0d_I,                         &
+                             Ptr1d_I      = Ptr1d_I,                         &
                              Ptr2d_I      = Ptr2d_I,                         &
                              Ptr3d_I      = Ptr3d_I,                         &
                              RC           = RC                                 )
@@ -1479,7 +1863,13 @@ CONTAINS
                           SpaceDim       = Rank,                             &
                           Operation      = Collection%Operation,             &
                           Source_KindVal = KindVal,                          &
+                          Source_0d_8    = Ptr0d_8,                          &
+                          Source_1d      = Ptr1d,                            &
+                          Source_1d_8    = Ptr1d_8,                          &
+                          Source_1d_4    = Ptr1d_4,                          &
+                          Source_1d_I    = Ptr1d_I,                          &
                           Source_2d      = Ptr2d,                            &
+                          Source_2d_8    = Ptr2d_8,                          &
                           Source_2d_4    = Ptr2d_4,                          &
                           Source_2d_I    = Ptr2d_I,                          &
                           Source_3d      = Ptr3d,                            &
@@ -1575,9 +1965,15 @@ CONTAINS
     !=======================================================================
     IF ( Item%SpaceDim == 3 ) THEN
        IF ( Collection%OnLevelEdges .neqv. Item%OnLevelEdges ) THEN
-          ErrMsg = TRIM( Item%Name )                                    //   &
-                   ' has the wrong vertical alignment for collection> ' //   &
-                   TRIM( Collection%Name )
+          ErrMsg = TRIM( Item%Name )                                      // &
+                   ' has the wrong vertical alignment for collection: "'  // &
+                   TRIM( Collection%Name )  // '".  Please check your '   // &
+                   'HISTORY.rc file to make sure that this collection '   // &
+                   'only contains 3-D diagnostics with the same vertical '// &
+                   'alignment.  You cannot add diagnostics that are '     // &
+                   'defined on level centers and diagnostics that are '   // &
+                   'defined on level edges in the same collection, as '   // &
+                   'per netCDF conventions.'
           CALL GC_Error( ErrMsg, RC, ThisLoc )
           RETURN
        ENDIF
@@ -1591,7 +1987,16 @@ CONTAINS
     Collection%nHistItems = Collection%nHistItems + 1
 
     ! Free pointers
+    Ptr0d   => NULL()
+    Ptr0d_8 => NULL()
+    Ptr0d_4 => NULL()
+    Ptr0d_I => NULL()
+    Ptr1d   => NULL()
+    Ptr1d_8 => NULL()
+    Ptr1d_4 => NULL()
+    Ptr1d_I => NULL()
     Ptr2d   => NULL()
+    Ptr2d_8 => NULL()
     Ptr2d_4 => NULL()
     Ptr2d_I => NULL()
     Ptr3d   => NULL()
@@ -2261,127 +2666,6 @@ CONTAINS
 !------------------------------------------------------------------------------
 !BOP
 !
-! !IROUTINE: CleanText
-!
-! !DESCRIPTION: Strips commas, apostrophes, spaces, and tabs from a string.
-!\\
-!\\
-! !INTERFACE:
-!
-  FUNCTION CleanText( Str ) RESULT( CleanStr )
-!
-! !USES:
-!
-    USE Charpak_Mod, ONLY : CStrip, StrRepl, StrSqueeze
-!
-! !INPUT PARAMETERS: 
-!
-    CHARACTER(LEN=*), INTENT(IN) :: Str        ! Original string
-!
-! !RETURN VALUE
-!
-    CHARACTER(LEN=255)           :: CleanStr   ! Cleaned-up string
-!
-! !REMARKS:
-!
-! !REVISION HISTORY:
-!  06 Jan 2015 - R. Yantosca - Initial version
-!  21 Jun 2017 - R. Yantosca - Now call CSTRIP to remove tabs etc.
-!EOP
-!------------------------------------------------------------------------------
-!BOC
-
-    ! Initialize
-    CleanStr = Str
-
-    ! Strip out non-printing characters (e.g. tabs)
-    CALL CStrip    ( CleanStr           )
-
-    ! Remove commas and quotes
-    CALL StrRepl   ( CleanStr, ",", " " )
-    CALL StrRepl   ( CleanStr, "'", " " )
-    
-    ! Remove leading and trailing spaces
-    CALL StrSqueeze( CleanStr           ) 
-
-  END FUNCTION CleanText
-!EOC
-!------------------------------------------------------------------------------
-!                  GEOS-Chem Global Chemical Transport Model                  !
-!------------------------------------------------------------------------------
-!BOP
-!
-! !IROUTINE: ReadOneLine
-!
-! !DESCRIPTION: Subroutine READ\_ONE\_LINE reads a line from the input file.  
-!  If the global variable VERBOSE is set, the line will be printed to stdout.  
-!  READ\_ONE\_LINE can trap an unexpected EOF if LOCATION is passed.  
-!  Otherwise, it will pass a logical flag back to the calling routine, 
-!  where the error trapping will be done.
-!\\
-!\\
-! !INTERFACE:
-!
-  FUNCTION ReadOneLine( fId, EndOfFile, IoStatus, Squeeze ) RESULT( Line )
-!
-! !USES:
-!
-    USE Charpak_Mod, ONLY : StrSqueeze
-!
-! !INPUT PARAMETERS:
-!
-    INTEGER, INTENT(IN)  :: fId        ! File unit number
-    LOGICAL, OPTIONAL    :: Squeeze    ! Call Strsqueeze?
-!
-! !OUTPUT PARAMETERS:
-!
-    LOGICAL, INTENT(OUT) :: EndOfFile  ! Denotes EOF condition
-    INTEGER, INTENT(OUT) :: IoStatus   ! I/O status code
-!
-! !RETURN VALUE:
-!
-    CHARACTER(LEN=255)   :: Line       ! Single line from the input file
-! 
-! !REVISION HISTORY: 
-!  16 Jun 2017 - R. Yantosca - Initial version, based on GEOS-Chem
-!EOP
-!------------------------------------------------------------------------------
-!BOC
-
-    !=================================================================
-    ! Initialize
-    !=================================================================
-    EndOfFile = .FALSE.
-    IoStatus  = 0
-    Line      = ''
-
-    !=================================================================
-    ! Read data from the file
-    !=================================================================
-
-    ! Read a line from the file
-    READ( fId, '(a)', IOSTAT=IoStatus ) Line
-
-    ! IO Status < 0: EOF condition
-    IF ( IoStatus < 0 ) THEN 
-       EndOfFile = .TRUE.
-       RETURN
-    ENDIF
-
-    ! If desired, call StrSqueeze to strip leading and trailing blanks
-    IF ( PRESENT( Squeeze ) ) THEN
-       IF ( Squeeze ) THEN
-          CALL StrSqueeze( Line )
-       ENDIF
-    ENDIF
-
-  END FUNCTION ReadOneLine
-!EOC
-!------------------------------------------------------------------------------
-!                  GEOS-Chem Global Chemical Transport Model                  !
-!------------------------------------------------------------------------------
-!BOP
-!
 ! !IROUTINE: GetCollectionMetaData
 !
 ! !DESCRIPTION: Parses a line of the HISTORY.rc file and returns metadata
@@ -2394,7 +2678,8 @@ CONTAINS
 !
 ! !USES:
 !
-    USE Charpak_Mod,       ONLY: StrSplit
+    USE Charpak_Mod,      ONLY: CleanText, StrSplit
+    USE DiagList_Mod,     ONLY: CollList,  Search_CollList
     USE History_Util_Mod
 !
 ! !INPUT PARAMETERS: 
@@ -2414,6 +2699,8 @@ CONTAINS
 !  14 Aug 2017 - R. Yantosca - Initialize MetaData and nCollection
 !  15 Aug 2017 - R. Yantosca - Bug fix: TRIM string arguments to INDEX, and
 !                              initialize output arguments to undefined values
+!  01 Nov 2017 - R. Yantosca - Now get CleanText from charpak_mod.F90
+!  18 Jan 2018 - R. Yantosca - Bug fix: now DO N = 1, CollectionCount
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -2421,16 +2708,13 @@ CONTAINS
 ! !LOCAL VARIABLES:
 !
     ! Scalars
-    INTEGER                  :: C, Ind, nSubStr, N, P
+    LOGICAL                  :: Found
+    INTEGER                  :: C, Ind, nSubStr, N, P, RC
 
     ! Strings
     CHARACTER(LEN=255)       :: Name
     CHARACTER(LEN=255)       :: SubStr(255)
 
-    ! SAVEd variables
-    INTEGER,            SAVE :: CollectionStart = 0
-    CHARACTER(LEN=255), SAVE :: LastName        = ''
-     
     !=======================================================================
     ! Initialize
     !=======================================================================
@@ -2445,19 +2729,20 @@ CONTAINS
     Ind  = INDEX( TRIM( Line ), '.' )
     Name = Line(1:Ind-1) 
 
+    ! Exit if the collection name is not in the list of active collections
+    CALL Search_CollList( .TRUE., CollList, Name, Found, RC )
+    IF ( .not. Found ) RETURN
+
     ! Non-white-space lengths of the collection cname and search pattern
     N = LEN_TRIM( Name    )
     P = LEN_TRIM( Pattern )
 
-    ! Increment the number of the collection that we'll search from
-    ! if the current collection name is different from the prior one.
-    IF ( TRIM( Name ) /= TRIM( LastName ) ) THEN
-       LastName        = Name
-       CollectionStart = CollectionStart + 1
-    ENDIF
-
     ! Loop over all collection names
-    DO C = CollectionStart, CollectionCount
+    ! NOTE: This algorithm may not be the most efficient, as it will
+    ! not skip collections that we have already encountered.  But it
+    ! only gets done during the init phase, so it might not be a huge
+    ! expenditure of time anyway.  Worry about this later. (bmy, 1/18/18)
+    DO C = 1, CollectionCount
 
        ! Check to see if the current line matches the collection name
        ! Then check to see which collection this is in

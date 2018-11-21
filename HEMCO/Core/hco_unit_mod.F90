@@ -50,6 +50,7 @@ MODULE HCO_Unit_Mod
 !  07 Jan 2016 - E. Lundgren - Update Avogadro's # to NIST 2014 value
 !  19 Sep 2016 - R. Yantosca - Make sure all strings are the same length in
 !                              the array constructor or Gfortran will choke
+!  10 Jun 2018 - C. Keller   - Add mol/mol to unitless quantities
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -71,7 +72,7 @@ MODULE HCO_Unit_Mod
   ! add more units if you don't want HEMCO to attempt to convert data
   ! in these units.
   ! All characters in this list should be lower case!
-  INTEGER,           PARAMETER :: NUL = 37
+  INTEGER,           PARAMETER :: NUL = 38
   CHARACTER(LEN=15), PARAMETER :: UL(NUL) = (/ '1          ',   &
                                                'count      ',   &
                                                'unitless   ',   &
@@ -79,6 +80,7 @@ MODULE HCO_Unit_Mod
                                                'factor     ',   &
                                                'scale      ',   &
                                                'hours      ',   &
+                                               'mol/mol    ',   &
                                                'v/v        ',   &
                                                'v/v/s      ',   &
                                                's-1        ',   &
@@ -896,7 +898,7 @@ CONTAINS
     ! km2
     ELSEIF ( IsInWord(unt,'/km2' ) .OR. IsInWord(unt,'km-2' ) .OR. & 
              IsInWord(unt,'/km^2') .OR. IsInWord(unt,'km^-2')       ) THEN 
-       Scal = 1e6_hp
+       Scal = 1.0_hp / 1e6_hp
        Flag = 2
 
     ! m2
@@ -912,13 +914,13 @@ CONTAINS
     ! cm3
     ELSEIF ( IsInWord(unt,'/cm3')  .OR. IsInWord(unt,'cm-3' ) .OR. &
              IsInWord(unt,'/cm^3') .OR. IsInWord(unt,'cm^-3')       ) THEN 
-       Scal = 1e-6_hp
+       Scal = 1.0_hp / 1e-6_hp
        Flag = 3
 
     ! dm3
     ELSEIF ( IsInWord(unt,'/dm3')  .OR. IsInWord(unt,'dm-3' ) .OR. & 
              IsInWord(unt,'/dm^3') .OR. IsInWord(unt,'dm^-3')       ) THEN 
-       Scal = 1e-3_hp
+       Scal = 1.0_hp / 1e-3_hp
        Flag = 3
 
     ! m3
@@ -930,7 +932,7 @@ CONTAINS
     ! L
     ELSEIF ( IsInWord(unt,'/l') .OR. IsInWord(unt,'l-1') .OR. & 
              IsInWord(unt,'l^-1')                              ) THEN 
-       Scal = 1e-3_hp
+       Scal = 1.0_hp / 1e-3_hp
        Flag = 3
     ENDIF
 

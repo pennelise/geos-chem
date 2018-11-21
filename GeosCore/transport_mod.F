@@ -28,7 +28,6 @@
       PUBLIC  :: DO_TRANSPORT
       PUBLIC  :: INIT_TRANSPORT
       PUBLIC  :: INIT_WINDOW_TRANSPORT
-      PUBLIC  :: SET_TRANSPORT
 !
 ! !PRIVATE MEMBER FUNCTIONS:
 !
@@ -96,15 +95,12 @@
       ! (1 ) Ap     (REAL(fp) ) : Vertical coordinate array for TPCORE
       ! (2 ) A_M2   (REAL(fp) ) : Grid box surface areas [m2]
       ! (3 ) Bp     (REAL(fp) ) : Vertical coordinate array for TPCORE
-      ! (4 ) IORD   (REAL(fp) ) : TPCORE E/W option flag
-      ! (5 ) JORD   (REAL(fp) ) : TPCORE N/S option flag
-      ! (6 ) KORD   (REAL(fp) ) : TPCORE vertical option flag
       ! (7 ) JLAST  (INTEGER)   : For fvDAS TPCORE
       ! (8 ) MG     (INTEGER)   : For fvDAS TPCORE
       ! (9 ) NG     (INTEGER)   : For fvDAS TPCORE
       ! (10) N_ADJ  (INTEGER)   : For fvDAS TPCORE
       !=================================================================
-      INTEGER                       :: IORD,  JORD, KORD, JFIRST 
+      INTEGER                       :: JFIRST 
       INTEGER                       :: JLAST, NG,   MG,   N_ADJ
       REAL(fp), ALLOCATABLE         :: Ap(:)
       REAL(fp), ALLOCATABLE         :: Bp(:)
@@ -125,19 +121,24 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE DO_TRANSPORT( am_I_Root, Input_Opt,
-     &                         State_Met, State_Chm, RC )
+      SUBROUTINE DO_TRANSPORT( am_I_Root, Input_Opt,  State_Met,
+     &                         State_Chm, State_Diag, RC         )
 !
 ! !USES:
 !
       USE CMN_SIZE_MOD
+#if defined( NC_DIAG )
+      USE Diagnostics_Mod, ONLY : Compute_Column_Mass
+      USE Diagnostics_Mod, ONLY : Compute_Budget_Diagnostics
+#endif
       USE ErrCode_Mod
-      USE GC_GRID_MOD,        ONLY : ITS_A_NESTED_GRID
-      USE Input_Opt_Mod,      ONLY : OptInput
-      USE State_Chm_Mod,      ONLY : ChmState
-      USE State_Met_Mod,      ONLY : MetState
-      USE TPCORE_BC_MOD,      ONLY : INIT_TPCORE_BC
-      USE TIME_MOD,           ONLY : GET_TS_DYN
+      USE GC_GRID_MOD,    ONLY : ITS_A_NESTED_GRID
+      USE Input_Opt_Mod,  ONLY : OptInput
+      USE State_Chm_Mod,  ONLY : ChmState
+      USE State_Diag_Mod, ONLY : DgnState
+      USE State_Met_Mod,  ONLY : MetState
+      USE TPCORE_BC_MOD,  ONLY : INIT_TPCORE_BC
+      USE TIME_MOD,       ONLY : GET_TS_DYN
 #if defined( USE_TEND )
       USE TENDENCIES_MOD
 #endif
@@ -150,6 +151,7 @@
 ! !INPUT/OUTPUT PARAMETERS:
 !
       TYPE(ChmState), INTENT(INOUT) :: State_Chm   ! Chemistry State object
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag  ! Diagnostics State object
       TYPE(MetState), INTENT(INOUT) :: State_Met   ! Meteorology State object
 !
 ! !OUTPUT PARAMETERS:
@@ -172,34 +174,82 @@
 !  25 Mar 2013 - R. Yantosca - Now accept am_I_Root, Input_Opt, State_Chm, RC
 !  31 Mar 2015 - E. Lundgren - Make State_Met INTENT(INOUT) for AIRQNT calls
 !  19 Jul 2016 - R. Yantosca - Now bracket DO_TEND calls with #ifdef USE_TEND
+!  03 Nov 2017 - R. Yantosca - Now accept State_Diag as an argument
+!  09 Nov 2017 - R. Yantosca - Return error condition to calling program
+!  27 Aug 2018 - E. Lundgren - Implement budget diagnostics
 !EOP
 !------------------------------------------------------------------------------
 !BOC
 !
 ! !LOCAL VARIABLES:
 !
-      REAL(fp)          :: DT
-      LOGICAL, SAVE     :: FIRST = .TRUE.
+      ! Scalars
+      LOGICAL, SAVE      :: FIRST = .TRUE.
+      CHARACTER(LEN=255) :: ErrMsg, ThisLoc
+
+#if defined ( USE_TEND ) || defined ( NC_DIAG )
+      REAL(fp)           :: DT_Dyn
+#endif
 
       !=================================================================
       ! DO_TRANSPORT begins here!
       !=================================================================
+
+      ! Initialize
+      RC      = GC_SUCCESS
+      ErrMsg  = ''
+      ThisLoc = 
+     &   ' -> at Do_Transport  (in module GeosCore/transport_mod.F)'
+
+#if defined( NC_DIAG )
+      !----------------------------------------------------------
+      ! Transport (advection) budget diagnostics - Part 1 of 2
+      !----------------------------------------------------------
+      IF ( State_Diag%Archive_BudgetTransport ) THEN
+         ! Get initial column masses
+         CALL Compute_Column_Mass( am_I_Root, 
+     &                          Input_Opt, State_Met, State_Chm, 
+     &                          State_Chm%Map_Advect,        
+     &                          State_Diag%Archive_BudgetTransportFull, 
+     &                          State_Diag%Archive_BudgetTransportTrop, 
+     &                          State_Diag%Archive_BudgetTransportPBL,  
+     &                          State_Diag%BudgetMass1, 
+     &                          RC )
+         IF ( RC /= GC_SUCCESS ) THEN
+            ErrMsg = 'Transport budget diagnostics error 1'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
+      ENDIF
+#endif
 
       ! First-time initialization
       IF ( FIRST ) THEN 
 
 #if defined( GRID05x0625 ) || defined( GRID025x03125 )
 
-      ! All nested grid simulations
-      CALL INIT_WINDOW_TRANSPORT
-     &     ( am_I_Root, Input_Opt, RC ) 
+         ! All nested grid simulations
+         CALL INIT_WINDOW_TRANSPORT( am_I_Root,  Input_Opt, 
+     &                               State_Diag, RC         )
+
+         ! Trap potential errors
+         IF ( RC /= GC_SUCCESS ) THEN
+            ErrMsg = 'Error encountered in "Init_Window_Transport"!'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
 
 #else
 
-      ! All global simulations
-      CALL INIT_TRANSPORT                   
-     &     ( am_I_Root, Input_Opt, RC )    
+         ! All global simulations
+         CALL INIT_TRANSPORT( am_I_Root, Input_Opt, State_Diag, RC )
 
+         ! Trap potential errors
+         IF ( RC /= GC_SUCCESS ) THEN
+            ErrMsg = 'Error encountered in "Init_Transport"!'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
 #endif
 
          FIRST = .FALSE.
@@ -211,7 +261,14 @@
       ! Archive tracer concentrations for tendencies (ckeller,7/15/2015)
       !=================================================================
       CALL TEND_STAGE1( am_I_Root, Input_Opt, State_Met, 
-     &                  State_Chm, 'ADV', RC )
+     &                  State_Chm, 'ADV',     RC         )
+
+      ! Trap potential errors
+      IF ( RC /= GC_SUCCESS ) THEN
+         ErrMsg = 'Error encountered in "Tend_Stage1"!'
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
 #endif
 
       !=================================================================
@@ -223,8 +280,15 @@
 #if defined( GRID05x0625 ) || defined( GRID025x03125 )
 
          ! Nested-grid simulation with GEOS-FP/MERRA2 met
-         CALL DO_WINDOW_TRANSPORT
-     &      ( am_I_Root, Input_Opt, State_Met, State_Chm, RC )
+         CALL DO_WINDOW_TRANSPORT( am_I_Root, Input_Opt,  State_Met,
+     &                             State_Chm, State_Diag, RC         )
+
+         ! Trap potential errors
+         IF ( RC /= GC_SUCCESS ) THEN
+            ErrMsg = 'Error encountered in "Do_Window_Transport"!'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
 
 #endif
 
@@ -234,19 +298,71 @@
       ELSE
 
          ! Call TPCORE w/ proper settings for the GEOS-FP/MERRA2 met fields
-         CALL DO_GLOBAL_ADV
-     &      ( am_I_Root, Input_Opt, State_Met, State_Chm, RC )
+         CALL DO_GLOBAL_ADV( am_I_Root, Input_Opt,  State_Met,
+     &                       State_Chm, State_Diag, RC         )
+
+         ! Trap potential errors
+         IF ( RC /= GC_SUCCESS ) THEN
+            ErrMsg = 'Error encountered in "Do_Global_Adv"!'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
 
       ENDIF
+
+#if defined ( USE_TEND ) || defined ( NC_DIAG )
+      ! Dynamic timestep [s]
+      DT_Dyn = GET_TS_DYN()
+#endif
 
 #if defined( USE_TEND )
       !=================================================================
       ! Calculate tendencies and write to diagnostics 
       ! (ckeller,7/15/2015)
       !=================================================================
-      DT = GET_TS_DYN() * 60.0_fp
       CALL TEND_STAGE2( am_I_Root, Input_Opt, State_Met, 
-     &                  State_Chm, 'ADV', DT, RC )
+     &                  State_Chm, 'ADV', DT_Dyn, RC )
+
+      ! Trap potential errors
+      IF ( RC /= GC_SUCCESS ) THEN
+         ErrMsg = 'Error encountered in "Tend_Stage2"!'
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+#endif
+
+#if defined( NC_DIAG )
+      !----------------------------------------------------------
+      ! Transport (advection) budget diagnostics - Part 2 of 2
+      !----------------------------------------------------------
+      IF ( State_Diag%Archive_BudgetTransport ) THEN
+         ! Get final column masses and compute diagnostics
+         CALL Compute_Column_Mass( am_I_Root, 
+     &                          Input_Opt, State_Met, State_Chm, 
+     &                          State_Chm%Map_Advect,        
+     &                          State_Diag%Archive_BudgetTransportFull, 
+     &                          State_Diag%Archive_BudgetTransportTrop, 
+     &                          State_Diag%Archive_BudgetTransportPBL,  
+     &                          State_Diag%BudgetMass2, 
+     &                          RC ) 
+         CALL Compute_Budget_Diagnostics( am_I_Root, 
+     &                          State_Chm%Map_Advect,
+     &                          DT_Dyn,                                
+     &                          State_Diag%Archive_BudgetTransportFull, 
+     &                          State_Diag%Archive_BudgetTransportTrop, 
+     &                          State_Diag%Archive_BudgetTransportPBL,  
+     &                          State_Diag%BudgetTransportFull,         
+     &                          State_Diag%BudgetTransportTrop,         
+     &                          State_Diag%BudgetTransportPBL,          
+     &                          State_Diag%BudgetMass1,          
+     &                          State_Diag%BudgetMass2,          
+     &                          RC )
+         IF ( RC /= GC_SUCCESS ) THEN
+            ErrMsg = 'Transport budget diagnostics error 2'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
+      ENDIF
 #endif
 
       ! Return to calling program
@@ -265,21 +381,23 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE DO_GLOBAL_ADV( am_I_Root, Input_Opt,
-     &                       State_Met, State_Chm, RC )
+      SUBROUTINE DO_GLOBAL_ADV( am_I_Root, Input_Opt,  State_Met,
+     &                          State_Chm, State_Diag, RC )
 !
 ! !USES:
 !
-      USE CMN_DIAG_MOD             ! NDxx flags
       USE CMN_SIZE_MOD             ! Size parameters        
       USE DAO_MOD,            ONLY : AIRQNT
 #if defined( BPCH_DIAG )
+      USE CMN_DIAG_MOD             ! NDxx flags
       USE DIAG_MOD,           ONLY : MASSFLEW,  MASSFLNS,  MASSFLUP
 #endif
       USE ErrCode_Mod
       USE ERROR_MOD
       USE Input_Opt_Mod,      ONLY : OptInput
       USE State_Chm_Mod,      ONLY : ChmState
+      USE State_Diag_Mod,     ONLY : DgnState
+
       USE State_Met_Mod,      ONLY : MetState
       USE State_Met_Mod,      ONLY : MetState
       USE PhysConstants            ! Physical constants
@@ -295,8 +413,9 @@
 !
 ! !INPUT/OUTPUT PARAMETERS:
 !
-      TYPE(ChmState), INTENT(INOUT) :: State_Chm   ! Chemistry State object
       TYPE(MetState), INTENT(INOUT) :: State_Met   ! Meteorology State object
+      TYPE(ChmState), INTENT(INOUT) :: State_Chm   ! Chemistry State object
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag  ! Diagnostics State object
 !
 ! !OUTPUT PARAMETERS:
 !
@@ -341,6 +460,7 @@
 !  20 Jul 2016 - R. Yantosca - Now replace NNPAR with State_Chm%nAdvect
 !  20 Jul 2016 - R. Yantosca - Now pass State_Chm to DiagnUpdate_Transport_Flux
 !  03 Aug 2016 - R. Yantosca - Removed temporary tracer-removal code
+!  03 Nov 2017 - R. Yantosca - Now accept State_Diag as an argument
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -351,7 +471,9 @@
       LOGICAL            :: LFILL
       LOGICAL            :: LPRT
       LOGICAL            :: LWINDO
+      INTEGER            :: IORD, JORD, KORD
       INTEGER            :: I, J, L, L2, N, N_DYN, NA, nAdvect
+      INTEGER            :: ND24x, ND25x, ND26x
       REAL(fp)           :: D_DYN
 
       ! Arrays
@@ -382,14 +504,28 @@
       LFILL       =  Input_Opt%LFILL
       LPRT        =  Input_Opt%LPRT
       LWINDO      =  Input_Opt%LWINDO
+      IORD        =  Input_Opt%TPCORE_IORD
+      JORD        =  Input_Opt%TPCORE_JORD
+      KORD        =  Input_Opt%TPCORE_KORD
       nAdvect     =  State_Chm%nAdvect
       p_MFLEW     => NULL()
       p_MFLNS     => NULL()
       p_MFLUP     => NULL()
 
       ! Dynamic timestep [s]
-      N_DYN       =  GET_TS_DYN() * 60
+      N_DYN       =  GET_TS_DYN()
       D_DYN       =  DBLE( N_DYN )
+
+      ! Define shadow variables for ND24, ND25, ND26
+#if defined( BPCH_DIAG )
+      ND24x       = ND24
+      ND25x       = ND25
+      ND26x       = ND26
+#else
+      ND24x       = 0
+      ND25x       = 0
+      ND26x       = 0
+#endif
 
       !=================================================================
       ! Prepare variables for calls to PJC pressure-fixer and TPCORE
@@ -464,14 +600,15 @@
 #endif
 
       ! Do the advection
-      CALL TPCORE_FVDAS( D_DYN,    Re,       IIPAR,    JJPAR,
-     &                   LLPAR,    JFIRST,   JLAST,    NG,
-     &                   MG,       nAdvect,  Ap,       Bp,
-     &                   p_UWND,   p_VWND,   P_TP1,    P_TP2,
-     &                   P_TEMP,   p_Spc,    IORD,     JORD,      
-     &                   KORD,     N_ADJ,    p_XMASS,  p_YMASS, 
-     &                   LFILL,    p_MFLEW,  p_MFLNS,  p_MFLUP,
-     &                   A_M2,     ND24,     ND25,     ND26 )
+      CALL TPCORE_FVDAS( D_DYN,     Re,       IIPAR,    JJPAR,
+     &                   LLPAR,     JFIRST,   JLAST,    NG,
+     &                   MG,        nAdvect,  Ap,       Bp,
+     &                   p_UWND,    p_VWND,   P_TP1,    P_TP2,
+     &                   P_TEMP,    p_Spc,    IORD,     JORD,      
+     &                   KORD,      N_ADJ,    p_XMASS,  p_YMASS, 
+     &                   LFILL,     p_MFLEW,  p_MFLNS,  p_MFLUP,
+     &                   A_M2,      ND24x,    ND25x,    ND26x,
+     &                   State_Diag                            )
 
       ! Free pointer memory
       p_UWND  => NULL()
@@ -521,15 +658,15 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE DO_WINDOW_TRANSPORT( am_I_Root, Input_Opt,
-     &                                State_Met, State_Chm, RC )
+      SUBROUTINE DO_WINDOW_TRANSPORT( am_I_Root, Input_Opt,  State_Met,
+     &                                State_Chm, State_Diag, RC        )
 !
 ! !USES:
 !
-      USE CMN_DIAG_MOD               ! NDxx flags
       USE CMN_SIZE_MOD               ! Size parameters
       USE DAO_MOD,              ONLY : AIRQNT
 #if defined( BPCH_DIAG )
+      USE CMN_DIAG_MOD               ! NDxx flags
       USE DIAG_MOD,             ONLY : MASSFLEW, MASSFLNS, MASSFLUP
 #endif
       USE ErrCode_Mod
@@ -538,6 +675,7 @@
       USE Input_Opt_Mod,        ONLY : OptInput
       USE State_Chm_Mod,        ONLY : ChmState
       USE State_Met_Mod,        ONLY : MetState
+      USE State_Diag_Mod,       ONLY : DgnState
       USE PhysConstants              ! Physical constants
       USE PJC_PFIX_WINDOW_MOD,  ONLY : DO_PJC_PFIX_WINDOW
       USE TIME_MOD,             ONLY : GET_TS_DYN
@@ -554,8 +692,9 @@
 !
 ! !INPUT/OUTPUT PARAMETERS:
 !
-      TYPE(ChmState), INTENT(INOUT) :: State_Chm   ! Chemistry State object
       TYPE(MetState), INTENT(INOUT) :: State_Met   ! Meteorology State object
+      TYPE(ChmState), INTENT(INOUT) :: State_Chm   ! Chemistry State object
+      TYPE(DgnState), INTENT(INOUT) :: State_Diag  ! Diagnostics State object
 !
 ! !OUTPUT PARAMETERS:
 !
@@ -596,6 +735,7 @@
 !  20 Jul 2016 - R. Yantosca - Now pass State_Chm to DiagnUpdate_Transport_Flux
 !  03 Aug 2016 - R. Yantosca - Removed temporary tracer-removal code
 !  11 Jul 2017 - R. Yantosca - Prevent segfault if ND24, ND25, or ND26 are off
+!  03 Nov 2017 - R. Yantosca - Now accept State_Diag as an argument
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -606,9 +746,11 @@
       LOGICAL            :: LFILL
       LOGICAL            :: LPRT
       LOGICAL            :: LWINDO
+      INTEGER            :: IORD,  JORD,  KORD
       INTEGER            :: I0,    J0,    NA,    nAdvect, N_DYN 
       INTEGER            :: IM_W1, JM_W1, I0_W1, J0_W1,   BUFF_SIZE
       INTEGER            :: I,     J,     L,     L2,      N
+      INTEGER            :: ND24x, ND25x, ND26x
       REAL(fp)           :: D_DYN
 
       ! Arrays
@@ -643,6 +785,9 @@
       LFILL       =  Input_Opt%LFILL
       LPRT        =  Input_Opt%LPRT
       LWINDO      =  Input_Opt%LWINDO
+      IORD        =  Input_Opt%TPCORE_IORD
+      JORD        =  Input_Opt%TPCORE_JORD
+      KORD        =  Input_Opt%TPCORE_KORD
       nAdvect     =  State_Chm%nAdvect
 
       ! Initialize pointers
@@ -664,7 +809,7 @@
       J0          =  GET_YOFFSET( GLOBAL=.TRUE. )
 
       ! Dynamic timestep [s]
-      N_DYN       =  GET_TS_DYN() * 60
+      N_DYN       =  GET_TS_DYN()
       D_DYN       =  DBLE( N_DYN )
 
       ! (lzh, 09/01/2014)
@@ -673,6 +818,17 @@
       JM_W1       =  JM_W + 2 * BUFF_SIZE
       I0_W1       =  I0_W     - BUFF_SIZE
       J0_W1       =  J0_W     - BUFF_SIZE
+
+      ! Define shadow variables for ND24, ND25, ND26
+#if defined( BPCH_DIAG )
+      ND24x       = ND24
+      ND25x       = ND25
+      ND26x       = ND26
+#else
+      ND24x       = 0
+      ND25x       = 0
+      ND26x       = 0
+#endif
 
       !=================================================================
       ! Prepare variables for calls to PJC pressure-fixer and TPCORE
@@ -811,9 +967,11 @@
      &      JFIRST,  JLAST,    NG,      MG,      nAdvect, 
      &      Ap,      Bp,       p_UWND,  p_VWND,  p_P_TP1, 
      &      p_P_TP2, p_P_TEMP, p_Spc,   IORD,    JORD, 
-     &      KORD,    N_ADJ,    p_XMASS, p_YMASS, p_MFLEW, 
-     &      p_MFLNS, p_MFLUP,  p_A_M2,  ND24,    ND25,    
-     &      ND26                                          ) 
+     &      KORD,    N_ADJ,    p_XMASS, p_YMASS,
+#if defined( BPCH_DIAG )
+     &      p_MFLEW, p_MFLNS,  p_MFLUP,
+#endif
+     &      p_A_M2,  ND24x,    ND25x,   ND26x                    ) 
 
       ! Free pointer memory
       p_UWND   => NULL()  
@@ -858,39 +1016,6 @@
 !------------------------------------------------------------------------------
 !BOP
 !
-! !IROUTINE: set_transport
-!
-! !DESCRIPTION: Subroutine SET\_TRANSPORT passes IORD, JORD, KORD values 
-!  from "input\_mod.f".
-!\\
-!\\
-! !INTERFACE:
-!
-      SUBROUTINE SET_TRANSPORT( I_ORD, J_ORD, K_ORD )
-!
-! !INPUT PARAMETERS:
-!
-      INTEGER, INTENT(IN) :: I_ORD  ! IORD option for E/W advection
-      INTEGER, INTENT(IN) :: J_ORD  ! JORD option for N/S advection
-      INTEGER, INTENT(IN) :: K_ORD  ! KORD option for vertical diffusion
-! 
-! !REVISION HISTORY: 
-!  20 Jul 2004 - R. Yantosca - Initial version
-!  26 Feb 2010 - R. Yantosca - Added ProTeX headers
-!EOP
-!------------------------------------------------------------------------------
-!BOC
-      IORD = I_ORD
-      JORD = J_ORD
-      KORD = K_ORD 
-
-      END SUBROUTINE SET_TRANSPORT
-!EOC
-!------------------------------------------------------------------------------
-!                  GEOS-Chem Global Chemical Transport Model                  !
-!------------------------------------------------------------------------------
-!BOP
-!
 ! !IROUTINE: init_transport
 !
 ! !DESCRIPTION: Subroutine INIT\_TRANSPORT initializes all module variables 
@@ -899,23 +1024,25 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE INIT_TRANSPORT( am_I_Root, Input_Opt, RC )
+      SUBROUTINE INIT_TRANSPORT( am_I_Root, Input_Opt, State_Diag, RC )
 !
 ! !USES:
 !
-      USE CMN_SIZE_MOD             ! Size parameters
+      USE CMN_SIZE_MOD           ! Size parameters
       USE ErrCode_Mod
-      USE ERROR_MOD,          ONLY : ALLOC_ERR
-      USE GC_GRID_MOD,        ONLY : GET_AREA_M2, GET_YMID_R
-      USE Input_Opt_Mod,      ONLY : OptInput
-      USE PhysConstants            ! Re
-      USE TIME_MOD,           ONLY : GET_TS_DYN
-      USE TPCORE_FVDAS_MOD,   ONLY : INIT_TPCORE
+      USE ERROR_MOD,        ONLY : ALLOC_ERR
+      USE GC_GRID_MOD,      ONLY : GET_AREA_M2, GET_YMID_R
+      USE Input_Opt_Mod,    ONLY : OptInput
+      USE State_Diag_Mod,   ONLY : DgnState
+      USE PhysConstants          ! Re
+      USE TIME_MOD,         ONLY : GET_TS_DYN
+      USE TPCORE_FVDAS_MOD, ONLY : INIT_TPCORE
 !
 ! !INPUT PARAMETERS:
 !
       LOGICAL,        INTENT(IN)  :: am_I_Root   ! Are we on the root CPU?
       TYPE(OptInput), INTENT(IN)  :: Input_Opt   ! Input Options object
+      TYPE(DgnState), INTENT(IN)  :: State_Diag  ! Diagnostics State object
 !
 ! !OUTPUT PARAMETERS:
 !
@@ -940,28 +1067,30 @@
 !  01 Mar 2012 - R. Yantosca - Now use GET_YMID_R_W(I,J,L) from grid_mod.F90
 !  25 Mar 2013 - R. Yantosca - Now accept am_I_Root, Input_Opt, RC
 !  05 Dec 2014 - M. Yannetti - Added REAL_N_DYN
+!  03 Nov 2017 - R. Yantosca - Now accept State_Diag as an argument
+!  09 Nov 2017 - R. Yantosca - Return error condition to calling program
 !EOP
 !------------------------------------------------------------------------------
 !BOC
 !
 ! !LOCAL VARIABLES:
 !
-      INTEGER  :: J, K, L, N_DYN
-      REAL(fp) :: YMID_R(JJPAR)
-      REAL(fp) :: REAL_N_DYN
+      ! Scalars
+      LOGICAL            :: LTRAN
+      INTEGER            :: J, K, L, N_DYN
+      REAL(fp)           :: YMID_R(JJPAR)
+      REAL(fp)           :: REAL_N_DYN
 
-      ! For fields from Input_Opt
-      LOGICAL  :: LTRAN
+      ! Strings
+      CHARACTER(LEN=255) :: ErrMsg, ThisLoc
 
       !=================================================================
       ! Initialize
       !=================================================================
-
-      ! Assume success
-      RC        =  GC_SUCCESS
-
-      ! Copy values from Input_Opt
-      LTRAN     = Input_Opt%LTRAN
+      RC      = GC_SUCCESS
+      ErrMsg  = ''
+      ThisLoc = 
+     &   ' -> at Init_Transport  (in module GeosCore/transport_mod.F)'
 
       !=================================================================
       ! Allocate arrays for TPCORE vertical coordinates 
@@ -974,10 +1103,12 @@
       ! index levels from the atm. top downwards (bdf, bmy, 10/30/07)
       !=================================================================
       ALLOCATE( Ap( LLPAR+1 ), STAT=RC )
-      IF ( RC /= 0 ) CALL ALLOC_ERR( 'Ap' )
+      CALL GC_CheckVar( 'transport_mod.F:Ap', 0, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
  
       ALLOCATE( Bp( LLPAR+1 ), STAT=RC )
-      IF ( RC /= 0 ) CALL ALLOC_ERR( 'Bp' )
+      CALL GC_CheckVar( 'transport_mod.F:Bp', 0, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
 
       ! Flip Ap and Bp for TPCORE
       DO L = 1, LLPAR+1 
@@ -994,7 +1125,8 @@
       ! Allocate arrays for surface area and layer thickness
       !=================================================================
       ALLOCATE( A_M2( JJPAR ), STAT=RC )
-      IF ( RC /= 0 ) CALL ALLOC_ERR( 'A_M2' )
+      CALL GC_CheckVar( 'transport_mod.F:A_m2', 0, RC )
+      IF ( RC /= GC_SUCCESS ) RETURN
 
       ! Surface area [m2]
       DO J = 1, JJPAR
@@ -1006,7 +1138,7 @@
       !=================================================================
 
       ! Initialize
-      N_DYN = GET_TS_DYN() * 60
+      N_DYN = GET_TS_DYN()
       N_ADJ = 0
       NG    = 0
       MG    = 0
@@ -1019,8 +1151,16 @@
       REAL_N_DYN = N_DYN
 
       ! Call INIT routine from "tpcore_fvdas_mod.f" 
-      CALL INIT_TPCORE( IIPAR,  JJPAR, LLPAR,  JFIRST, JLAST, 
-     &                  NG, MG, REAL_N_DYN, Re,     YMID_R )
+      CALL INIT_TPCORE( IIPAR, JJPAR,  LLPAR,      JFIRST, 
+     &                  JLAST, NG,     MG,         REAL_N_DYN, 
+     &                  Re,    YMID_R, State_Diag, RC          )
+
+      ! Trap potential errors
+      IF ( RC /= GC_SUCCESS ) THEN
+         ErrMsg = 'Error encountered in "Init_Tpcore"!'
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
 
       END SUBROUTINE INIT_TRANSPORT
 !EOC
@@ -1038,28 +1178,31 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE INIT_WINDOW_TRANSPORT( am_I_Root,Input_Opt,RC )
+      SUBROUTINE INIT_WINDOW_TRANSPORT( am_I_Root,  Input_Opt,
+     &                                  State_Diag, RC         )
 !
 ! !USES:    
 !
-      USE CMN_SIZE_MOD                  ! Size parameters
+      USE CMN_SIZE_MOD             ! Size parameters
       USE ErrCode_Mod
-      USE ERROR_MOD,               ONLY : ALLOC_ERR
-      USE GC_GRID_MOD,             ONLY : GET_AREA_M2
-      USE GC_GRID_MOD,             ONLY : GET_YMID_R_W
-      USE Input_Opt_Mod,           ONLY : OptInput
-      USE PhysConstants                 ! Re
-      USE TIME_MOD,                ONLY : GET_TS_DYN
-      USE TPCORE_FVDAS_MOD,        ONLY : INIT_TPCORE
-      USE TPCORE_BC_MOD,           ONLY : I0_W, J0_W, I1_W, J1_W
-      USE TPCORE_BC_MOD,           ONLY : I2_W, J2_W, IM_W, JM_W
-      USE TPCORE_BC_MOD,           ONLY : IGZD, INIT_TPCORE_BC
-      USE TPCORE_WINDOW_MOD,       ONLY : INIT_WINDOW
+      USE ERROR_MOD,          ONLY : ALLOC_ERR
+      USE GC_GRID_MOD,        ONLY : GET_AREA_M2
+      USE GC_GRID_MOD,        ONLY : GET_YMID_R_W
+      USE Input_Opt_Mod,      ONLY : OptInput
+      USE PhysConstants            ! Re
+      USE State_Diag_Mod,     ONLY : DgnState
+      USE TIME_MOD,           ONLY : GET_TS_DYN
+      USE TPCORE_FVDAS_MOD,   ONLY : INIT_TPCORE
+      USE TPCORE_BC_MOD,      ONLY : I0_W, J0_W, I1_W, J1_W
+      USE TPCORE_BC_MOD,      ONLY : I2_W, J2_W, IM_W, JM_W
+      USE TPCORE_BC_MOD,      ONLY : IGZD, INIT_TPCORE_BC
+      USE TPCORE_WINDOW_MOD,  ONLY : INIT_WINDOW
 !
 ! !INPUT PARAMETERS:
 !
       LOGICAL,        INTENT(IN)  :: am_I_Root   ! Are we on the root CPU?
       TYPE(OptInput), INTENT(IN)  :: Input_Opt   ! Input Options object
+      TYPE(DgnState), INTENT(IN)  :: State_Diag  ! Diagnostics State object
 !
 ! !OUTPUT PARAMETERS:
 !
@@ -1078,6 +1221,7 @@
 !                              INIT_WINDOW_TRANSPORT for use with all nested
 !                              grids
 !  26 Jun 2017 - R. Yantosca - GC_ERROR is now contained in errcode_mod.F90
+!  03 Nov 2017 - R. Yantosca - Now accept State_Diag as an argument
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -1155,7 +1299,7 @@
       !=================================================================
 
       ! Initialize
-      N_DYN = GET_TS_DYN() * 60
+      N_DYN = GET_TS_DYN()
       N_ADJ = 0
       NG    = 0
       MG    = 0
