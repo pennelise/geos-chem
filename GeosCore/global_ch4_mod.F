@@ -162,6 +162,7 @@
 ! !USES:
 !
       USE CMN_SIZE_MOD
+      USE HCO_EMISLIST_MOD,   ONLY : HCO_GetPtr
       USE HCO_INTERFACE_MOD,  ONLY : HcoState, GetHcoDiagn
       USE ErrCode_Mod
       USE Input_Opt_Mod,      ONLY : OptInput
@@ -277,10 +278,17 @@
       ENDIF
 
       IF ( FIRST .and. Input_Opt%Analytical_Inv ) THEN
+
+         ! Get pointer to CH4_CLUSTERS
          CALL HCO_GetPtr( am_I_Root, HcoState, 'CH4_CLUSTERS', CLUSTERS,
      &                    RC)
-         IF ( RC /= HCO_SUCCESS ) 
-     &      CALL ERROR_STOP ( 'Cannot get pointer to CLUSTERS', LOC )
+
+         ! Trap potential errors
+         IF ( RC /= HCO_SUCCESS ) THEN
+            ErrMsg = 'Cannot get pointer to HEMCO field CH4_CLUSTERS'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
 
          FIRST = .FALSE.
       ENDIF
@@ -679,33 +687,6 @@
 
       ENDIF
 
-!$OMP PARALLEL DO
-!$OMP+DEFAULT( SHARED )
-!$OMP+PRIVATE( I, J, N, AREA_M2 )
-      DO J = 1, JJPAR
-      DO I = 1, IIPAR
-
-         ! Grid box surface area [m2]
-         AREA_M2 = HcoState%Grid%AREA_M2%Val(I,J)
-
-         ! Update diagnostics
-         IF ( ND58 > 0 ) THEN
-
-            ! All emission sources excluding soil absorption [kg]
-            AD58(I,J,1) = AD58(I,J,1) + 
-     &                    ( CH4_EMIS(I,J,1) + CH4_EMIS(I,J,15) )
-     &                    * DTSRCE * AREA_M2
-
-            DO N = 2, PD58
-               AD58(I,J,N) = AD58(I,J,N) + 
-     &                       CH4_EMIS(I,J,N) * DTSRCE * AREA_M2
-            ENDDO
-         ENDIF
-
-      ENDDO
-      ENDDO
-!$OMP END PARALLEL DO
-
       IF ( ITS_A_CH4_SIM .and. LPRT ) THEN
          print*,'END SUBROUTINE: EMISSCH4'
       ENDIF
@@ -1047,12 +1028,16 @@
 ! !USES:
 !
       USE CMN_SIZE_MOD
-      USE CHEMGRID_MOD,       ONLY : ITS_IN_THE_CHEMGRID
-      USE DIAG_MOD,           ONLY : AD19   	      
-      USE State_Chm_Mod,      ONLY : ChmState
-      USE State_Met_Mod,      ONLY : MetState
-      USE TIME_MOD,           ONLY : GET_TS_CHEM, ITS_A_NEW_YEAR
-      USE TIME_MOD,           ONLY : GET_MONTH, GET_YEAR
+#if defined( BPCH_DIAG )
+      USE CMN_DIAG_MOD
+      USE DIAG_MOD,       ONLY : AD19   	      
+#endif
+      USE ErrCode_Mod
+      USE Input_Opt_Mod,  ONLY : OptInput
+      USE State_Chm_Mod,  ONLY : ChmState
+      USE State_Diag_Mod, ONLY : DgnState
+      USE State_Met_Mod,  ONLY : MetState
+      USE TIME_MOD
 !
 ! !INPUT PARAMETERS: 
 !

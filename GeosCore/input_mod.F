@@ -7333,6 +7333,30 @@
       ENDIF
       READ( SUBSTRS(1:N), * ) Input_Opt%TCCON_CH4_OBS
                                  
+      ! Do analytical inversion?
+      CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'ANALYTICAL_INV', RC )
+      IF ( RC /= GC_SUCCESS ) THEN
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+      READ( SUBSTRS(1:N), * ) Input_Opt%Analytical_Inv
+
+      ! Emission perturbation
+      CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'EMIS_PERT', RC )
+      IF ( RC /= GC_SUCCESS ) THEN
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+      READ( SUBSTRS(1:N), * ) Input_Opt%Emis_Pert
+
+      ! Current cluster number
+      CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'EMIS_PERT_NUM', RC )
+      IF ( RC /= GC_SUCCESS ) THEN
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+      READ( SUBSTRS(1:N), * ) Input_Opt%Emis_Pert_Num
+
       ! Separator line   
       CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'separator', RC )
       IF ( RC /= GC_SUCCESS ) THEN
@@ -7350,10 +7374,18 @@
      &                        Input_Opt%GOSAT_CH4_OBS
          WRITE( 6, 100     ) 'Use TCCON obs operator: ',
      &                        Input_Opt%TCCON_CH4_OBS
+         WRITE( 6, 100     ) 'Do analytical inversion: ',
+     &                        Input_Opt%Analytical_Inv
+         WRITE( 6, 110     ) 'Emission perturbation: ',
+     &                        Input_Opt%Emis_Pert
+         WRITE( 6, 120     ) 'Current cluster number: ',
+     &                        Input_Opt%Emis_Pert_Num
       END IF
 
       ! FORMAT statements
  100  FORMAT( A, L5  )
+ 110  FORMAT( A, f6.2  )
+ 120  FORMAT( A, I5  )
 
       ! Return success
       RC = GC_SUCCESS         
