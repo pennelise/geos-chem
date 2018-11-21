@@ -384,7 +384,7 @@
          WRITE( IU_PLANE, 110 ) 'POINT', 'TYPE',  'YYYYMMDD', 'HHMM',
      &                          'LAT',   'LON',   'PRESS',    'OBS', 
      &                          'T-IND', 'P-IND', 'I-IND',    'J-IND',
-     &                          ( PNAME(I), I=1,NPVAR )
+     &                          'TROP', ( PNAME(I), I=1,NPVAR )
       ENDIF
 
       ! FORMAT string
@@ -393,7 +393,7 @@
      &        A9,X,A3,X,A5,X,A5,X,250(a10,x) )
 #else
  110  FORMAT( A5,X,A7,X,A8,X,A4,X,A7,X,A7,X,A7,X,A10,X,
-     &        A9,X,A3,X,A5,X,A5,X,200(a11,x) )
+     &        A9,X,A3,X,A5,X,A5,X,A4,X,200(a11,x) )
 #endif
 
       END SUBROUTINE SETUP_PLANEFLIGHT
@@ -2446,6 +2446,7 @@
       INTEGER       :: I, IOS
       INTEGER       :: IIJJ(2), II, JJ, L, LL
       REAL*4        :: LON_TMP, LAT_TMP
+      CHARACTER(LEN=1) :: TROP
 
       !=================================================================
       ! WRITE_VARS_TO_FILE begins here!
@@ -2474,6 +2475,11 @@
      &        ( PPRESS(IND) .GT. State_Met%PEDGE(II,JJ,L+1) ) ) LL = L
       ENDDO
       IF (LL .EQ. 0) LL = LLPAR
+      IF ( State_Met%InTroposphere(II,JJ,LL) ) THEN 
+	TROP = 'T'
+      ELSE 
+	TROP = 'F'
+      ENDIF
 
 
       ! Write data to file
@@ -2481,7 +2487,7 @@
      &     IND, PTYPE(IND), INT( PDATE(IND) ), INT( PTIME(IND) ),
      &     PLAT(IND), PLON(IND), PPRESS(IND), POBS(IND),
      &     INT( GET_ELAPSED_SEC() / GET_TS_DYN() ),
-     &     LL, II, JJ,
+     &     LL, II, JJ, TROP,
      &     ( VARI(I), I=1,NPVAR )
       
       ! Format string
@@ -2493,7 +2499,7 @@
      $       X,I9.9,X,I3.3,X,I5.5,X,I5.5,X,250(es11.3e3,x))
 #else
  110  FORMAT(I5,X,A7,X,I8.8,X,I4.4,X,F7.2,X,F7.2,X,F7.2,X,F10.3,
-     $       X,I9.9,X,I3.3,X,I5.5,X,I5.5,X,200(es11.3e3,x))
+     $       X,I9.9,X,I3.3,X,I5.5,X,I5.5,X,A4,X,200(es11.3e3,x))
 #endif
 
       ! Error check
