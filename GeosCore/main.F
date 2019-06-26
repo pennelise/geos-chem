@@ -101,6 +101,7 @@
       USE HISTORY_MOD           ! Updated netCDF diagnostics
       USE PLANEFLIGHT_MOD       ! For ND40  (plane flight track  ) diag
       USE GOSAT_CH4_MOD         ! For GOSAT observation operator
+      USE TROPOMI_CH4_MOD       ! For TROPOMI observation operator
       USE TCCON_CH4_MOD         ! For TCCON observation operator
       USE HCOI_GC_MAIN_MOD      ! Writes out HEMCO diagnostics (C. Keller)
 
@@ -2076,58 +2077,32 @@
          ENDIF
 #endif
 
-#if defined( BPCH_DIAG )
          !--------------------------------------------------------------
          ! **** C H 4   S I M U L A T I O N   D I A G N O S I C S ****
-         !
-         ! CH4 columns from the GOSAT instrument (mps, 6/16/17)
          !--------------------------------------------------------------
+         ! CH4 columns from the GOSAT instrument (mps, 6/16/17)
          IF ( Input_Opt%GOSAT_CH4_OBS ) THEN
             IF ( ITS_A_NEW_HOUR() ) THEN
-      
-!------------------------------------------------------------------------------
-! For adjoint model only:
-!            ! Track cost function contributions
-!            CF_PRIOR = COST_FUNC
-!------------------------------------------------------------------------------
-
                CALL CALC_GOSAT_CH4_FORCE( Input_Opt, State_Chm,
      &                                    State_Met, COST_FUNC )
-
-!------------------------------------------------------------------------------
-! For adjoint model only:
-!            ! Track cost function contributions
-!            CF_GOSCH4 = CF_GOSCH4 + COST_FUNC - CF_PRIOR
-!------------------------------------------------------------------------------
             ENDIF
          ENDIF
 
-         !--------------------------------------------------------------
-         ! **** C H 4   S I M U L A T I O N   D I A G N O S I C S ****
-         !
+         ! CH4 columns from the TROPOMI instrument (mps, 6/20/19)
+         IF ( Input_Opt%TROPOMI_CH4_OBS ) THEN
+            IF ( ITS_A_NEW_HOUR() ) THEN
+               CALL CALC_GOSAT_CH4_FORCE( Input_Opt, State_Chm,
+     &                                    State_Met, COST_FUNC )
+            ENDIF
+         ENDIF
+
          ! CH4 columns from the TCCON instrument (mps, 8/17/17)
-         !--------------------------------------------------------------
          IF ( Input_Opt%TCCON_CH4_OBS ) THEN
             IF ( ITS_A_NEW_HOUR() ) THEN
-      
-!------------------------------------------------------------------------------
-! For adjoint model only:
-!            ! Track cost function contributions
-!            CF_PRIOR = COST_FUNC
-!------------------------------------------------------------------------------
-
                CALL CALC_TCCON_CH4_FORCE( Input_Opt, State_Chm,
      &                                    State_Met, COST_FUNC )
-
-!------------------------------------------------------------------------------
-! For adjoint model only:
-!            ! Track cost function contributions
-!            CF_GOSCH4 = CF_GOSCH4 + COST_FUNC - CF_PRIOR
-!------------------------------------------------------------------------------
             ENDIF
          ENDIF
-
-#endif
 
          !==============================================================
          !   ***** I N C R E M E N T   E L A P S E D   T I M E *****

@@ -7292,6 +7292,7 @@
 !  17 Aug 2017 - M. Sulprizio- Add option for TCCON CH4 observation operator
 !  18 Oct 2017 - M. Sulprizio- Remove CH4 budget option
 !  08 Nov 2017 - R. Yantosca - Return error condition to calling program
+!  20 Jun 2019 - M. Sulprizio- Add option for TROPOMI CH4 observation operator
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -7324,6 +7325,14 @@
          RETURN
       ENDIF
       READ( SUBSTRS(1:N), * ) Input_Opt%GOSAT_CH4_OBS
+
+      ! Use TROPOMI CH4 observation operator?
+      CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'TROPOMI_CH4_OBS', RC )
+      IF ( RC /= GC_SUCCESS ) THEN
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+      READ( SUBSTRS(1:N), * ) Input_Opt%TROPOMI_CH4_OBS
 
       ! Use TCCON CH4 observation operator?
       CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'TCCON_CH4_OBS', RC )
@@ -7372,6 +7381,8 @@
          WRITE( 6, '(  a)' ) '-----------'
          WRITE( 6, 100     ) 'Use GOSAT obs operator: ',
      &                        Input_Opt%GOSAT_CH4_OBS
+         WRITE( 6, 100     ) 'Use TROPOMI obs oper. : ',
+     &                        Input_Opt%TROPOMI_CH4_OBS
          WRITE( 6, 100     ) 'Use TCCON obs operator: ',
      &                        Input_Opt%TCCON_CH4_OBS
          WRITE( 6, 100     ) 'Do analytical inversion: ',
