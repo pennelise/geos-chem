@@ -2091,7 +2091,7 @@
          ! CH4 columns from the TROPOMI instrument (mps, 6/20/19)
          IF ( Input_Opt%TROPOMI_CH4_OBS ) THEN
             IF ( ITS_A_NEW_HOUR() ) THEN
-               CALL CALC_GOSAT_CH4_FORCE( Input_Opt, State_Chm,
+               CALL CALC_TROPOMI_CH4_FORCE( Input_Opt, State_Chm,
      &                                    State_Met, COST_FUNC )
             ENDIF
          ENDIF

@@ -37,7 +37,7 @@
 !
       ! Parameters
       INTEGER,  PARAMETER  :: MaxLev = 13
-      INTEGER,  PARAMETER  :: MaxObs = 100000
+      INTEGER,  PARAMETER  :: MaxObs = 1e7
       INTEGER,  PARAMETER  :: NT_FD = 335 !1055 ! Index for the FD test
       REAL(fp), PARAMETER  :: GC_XCH4_ERROR = 0e+0_fp !ppb
       REAL(fp), PARAMETER  :: PMAG = 1e+0_fp ! Perturbation magnitude (%)
@@ -57,7 +57,7 @@
          INTEGER           :: Hour(1)
          INTEGER           :: Minute(1)
          INTEGER           :: Second(1)
-         REAL(fp)          :: Time(1)
+         INTEGER           :: Time(1)
          REAL(fp)          :: CH4(1)
          REAL(fp)          :: CH4_Error(1)
          REAL(fp)          :: QFlag(1)
@@ -66,7 +66,7 @@
          REAL(fp)          :: Avg_Kernel(MaxLev)
       ENDTYPE TROP_CH4_OBS  
 
-      TYPE(TROP_CH4_OBS)    :: TROP(MaxTrop)
+      TYPE(TROP_CH4_OBS)    :: TROP(MaxObs)
 
       CONTAINS
 !EOC
@@ -108,12 +108,11 @@
 !
 ! !LOCAL VARIABLES:
 !
-      INTEGER              :: MaxLev
-      INTEGER              :: N, M, AS
+      INTEGER              :: L, M, N, AS
       INTEGER              :: nLev, nScan, nPixel
       LOGICAL              :: EXIST_VAR
-      REAL*4,  ALLOCATABLE :: ak(:,:)
-      REAL*4,  ALLOCATABLE :: time(:)
+      INTEGER, ALLOCATABLE :: time(:)
+      REAL*8,  ALLOCATABLE :: delta_time(:,:)
       REAL*4,  ALLOCATABLE :: lat(:,:)
       REAL*4,  ALLOCATABLE :: lon(:,:)
       INTEGER, ALLOCATABLE :: qflag(:,:)
@@ -122,175 +121,246 @@
       REAL*4,  ALLOCATABLE :: psurf(:,:)
       REAL*4,  ALLOCATABLE :: dp(:,:)
       REAL*4,  ALLOCATABLE :: prior(:,:,:)
+      REAL*4,  ALLOCATABLE :: ak(:,:,:)
 
       ! For reading netCDF file
       INTEGER            :: fId              ! netCDF file ID
-      INTEGER            :: Status           ! 0 means variable in file
-      INTEGER            :: X, Y, Z, T       ! netCDF file dimensions
-      INTEGER            :: time_index       ! Read this slice of data
       INTEGER            :: st1d(1), ct1d(1) ! Start + count for 1D arrays
       INTEGER            :: st2d(2), ct2d(2) ! Start + count for 2D arrays
-      INTEGER            :: st3d(3), ct2d(3) ! Start + count for 3D arrays
-      INTEGER            :: st4d(4), ct2d(4) ! Start + count for 4D arrays
-      CHARACTER(LEN=16)  :: stamp            ! Time and date stamp
+      INTEGER            :: st3d(3), ct3d(3) ! Start + count for 3D arrays
+      INTEGER            :: st4d(4), ct4d(4) ! Start + count for 4D arrays
       CHARACTER(LEN=255) :: nc_file          ! netCDF file name
       CHARACTER(LEN=255) :: v_name           ! netCDF variable name
       CHARACTER(LEN=255) :: dir              ! Data directory path
-      CHARACTER(LEN=255) :: errMsg           ! Error message
-      CHARACTER(LEN=255) :: caller           ! Name of this routine
+      CHARACTER(LEN=255) :: prefix
+      INTEGER                         :: I, nFiles, Count
+      CHARACTER(LEN=255)              :: cmd
+      CHARACTER(LEN=255), ALLOCATABLE :: Files(:) 
 
       !=================================================================
       ! READ_TROP_CH4_OBS begins here!
       !=================================================================
 
-      caller = 'READ_TROP_CH4_OBS in tropomi_ch4_mod.F'
-
       ! Filename
-      nc_file = 'S5P_RPRO_L2__CH4____20180727T162346_20180727T180704_'\\
-     &          '04076_01_010202_20181230T002655.nc'
-      CALL Expand_Date( nc_file, YYYYMMDD, 9999 ) 
+      dir    = '/n/scratchlfs/jacob_lab/msulprizio/CH4/TROPOMI/' //
+     &         'processed_20190801/'
+      prefix = 'S5P_RPRO_L2__CH4____YYYYMMDD'
+      CALL Expand_Date( prefix, YYYYMMDD, 9999 ) 
 
-      ! Construct complete file path
-      dir = '/n/seasasfs02/hnesser/TROPOMI/downloads_20190318/' 
-      nc_file = TRIM( dir ) // TRIM( nc_file )
-      WRITE( 6, 10 ) TRIM( nc_file )
- 10   FORMAT( '     - Reading ', a)
-
-      ! Make sure the file exists (ajt, 03/31/2013)
-      INQUIRE( FILE=TRIM( nc_file ), EXIST=EXIST_VAR )
-      IF ( .not. EXIST_VAR ) THEN
-         nTrop = -1
-         RETURN
-      ENDIF
-
-      ! Open netCDF file
-      CALL NcOp_Rd( fId, TRIM( nc_file ) )
-
-      ! Read the dimensions from the netCDF file
-      CALL NcGet_DimLen( fId, 'level',        nLev   )
-      CALL NcGet_DimLen( fId, 'scanline',     nScan  )
-      CALL NcGet_DimLen( fId, 'ground_pixel', nPixel )
-
-      IF ( nLev > MaxLev ) THEN
-         print*, ' # Levels this day = ', nLev
-         print*, 'WARNING: nLev > MaxLev. Need to increase'
-         print*, ' MaxLev in tropomi_ch4_mod.f.'
-         CALL GEOS_CHEM_STOP
-      ENDIF
-
-      print*, ' # TROPOMI scan lines on this day    = ', nScan
-      print*, ' # TROPOMI ground pixels on this day = ', nPixel
-      print*, ' # TROPOMI levels on this day        = ', nLev
-
-      !--------------------------------
-      ! Read Data
-      !--------------------------------
-
-      ALLOCATE( lat(          nPixel, nScan ), STAT=AS )
-      ALLOCATE( lon(          nPixel, nScan ), STAT=AS )
-      ALLOCATE( qflag(        nPixel, nScan ), STAT=AS )
-      ALLOCATE( xch4(         nPixel, nScan ), STAT=AS )
-      ALLOCATE( xch4_error(   nPixel, nScan ), STAT=AS )
-      ALLOCATE( psurf(        nPixel, nScan ), STAT=AS )
-      ALLOCATE( dp(           nPixel, nScan ), STAT=AS )
-      ALLOCATE( prior(  nLev, nPixel, nScan ), STAT=AS )
-      ALLOCATE( ak(     nLev, nPixel, nScan ), STAT=AS )
-
-      ! Time [seconds since 2010-01-01 00:00:00]
-      v_name = 'time'
-      st1d   = (/ 1 /)
-      ct1d   = (/ 1 /)
-      CALL NcRd( time, fId, TRIM(v_name), st1d, ct1d )
-
-      ! Latitude
-      v_name = 'latitude'
-      st3d   = (/ 1,      1,     1 /)
-      ct3d   = (/ nPixel, nScan, 1 /)
-      CALL NcRd( lat, fId, TRIM(v_name), st3d, ct3d )
-
-      ! Longitude
-      v_name = 'longitude'
-      st3d   = (/ 1,      1,     1 /)
-      ct3d   = (/ nPixel, nScan, 1 /)
-      CALL NcRd( lon, fId, TRIM(v_name), st1d, ct1d )
-
-      ! Data quality value [0 (no data) - 1 (full quality data)]
-      ! Recommend to ignore data with qa_value < 0.5
-      v_name = 'qa_value'
-      st3d   = (/ 1,      1,     1 /)
-      ct3d   = (/ nPixel, nScan, 1 /)
-      CALL NcRd( qflag, fId, TRIM(v_name), st3d, ct3d )
-
-      ! Methane mixing ratio [ppb]
-      v_name = 'methane_mixing_ratio_bias_corrected'
-      st3d   = (/ 1,      1,     1 /)
-      ct3d   = (/ nPixel, nScan, 1 /)
-      CALL NcRd( xch4, fId, TRIM(v_name), st3d, ct3d )
-
-      ! Methane mixing ratio precision [ppb]
-      v_name = 'methane_mixing_ratio_precision'
-      st3d   = (/ 1,      1,     1 /)
-      ct3d   = (/ nPixel, nScan, 1 /)
-      CALL NcRd( xch4_error, fId, TRIM(v_name), st3d, ct3d )
-
-      ! Surface pressure [Pa]
-      v_name = 'surface_pressure'
-      st3d   = (/ 1,      1,     1 /)
-      ct3d   = (/ nPixel, nScan, 1 /)
-      CALL NcRd( psurf, fId, TRIM(v_name), st3d, ct3d )
-
-      ! Pressure interval [Pa]
-      v_name = 'pressure_interval'
-      st2d   = (/ 1,      1,     1 /)
-      ct2d   = (/ nPixel, nScan, 1 /)
-      CALL NcRd( dp, fId, TRIM(v_name), st3d, ct3d )
-
-      ! APRIORI [mol/m2]
-      v_name = 'ch4_profile_apriori'
-      st4d   = (/ 1,    1,      1,     1 /)
-      ct4d   = (/ nLev, nPixel, nScan, 1 /)
-      CALL NcRd( prior, fId, TRIM(v_name), st4d, ct4d )
-
-      ! Averaging Kernel [unitless]
-      v_name = 'column_averaging_kernel'
-      st4d   = (/ 1,    1,      1,     1 /)
-      ct4d   = (/ nLev, nPixel, nScan, 1 /)
-      CALL NcRd( ak, fId, TRIM(v_name), st4d, ct4d )
-
-      !-------------------------------- 
-      ! Place data into TROP structure
-      !-------------------------------- 
-      DO M = 1, nPixel
-      DO N = 1, nScan
-
-         nTrop = M * N
-
-         TROP(nTrop)%Time(1)            = time
-         TROP(nTrop)%Lev(1)             = nLev
-         TROP(nTrop)%Lat(1)             = lat(M,N)
-         TROP(nTrop)%Lon(1)             = lon(M,N)
-         TROP(nTrop)%CH4(1)             = xch4(M,N)
-         TROP(nTrop)%CH4_Error(1)       = xch4_error(M,N)
-         TROP(nTrop)%QFlag(1)           = qflag(M,N)
-         TROP(nTrop)%Prior(1:nLev)      = prior(1:nLev,M,N)
-         TROP(nTrop)%Avg_Kernel(1:nLev) = ak(1:nLev,M,N)
-
-         DO L = 1, nLev
-            TROP(nTrop)%Pres(L) = psurf(L,M,N) + dp(M,N)*(L-1)
-         ENDDO
-
+      ! Determine what files to read
+      CALL System('rm -rf filelist.txt')
+      cmd = 'ls -1 ' // TRIM(dir) // TRIM(prefix) // '* > filelist.txt'
+      CALL System(cmd)
+      OPEN(31,FILE='filelist.txt',action="read")
+      nFiles = 0
+      DO
+         READ(31,FMT='(a)',iostat=AS)
+         IF (AS/=0) EXIT
+         nFiles = nFiles+1
       ENDDO
+      Print*, " # TROPOMI overpasses on this day = " , nFiles
+      ALLOCATE(Files(nFiles))
+      REWIND(31)
+      DO I = 1,nFiles
+         READ(31,'(a)') Files(I)
+      ENDDO
+      CLOSE(31)
+      !CALL System('rm -rf filelist.txt')
 
-      !-------------------------------- 
-      ! Close netCDF file
-      !-------------------------------- 
+      ! Loop over files for this day
+      DO I = 1,nFiles
+
+         IF ( I == 1 ) THEN
+            ! Initialize observation counter for this day
+            Count = 0
+         ENDIF
+
+         ! Initialize dimensions to zero
+         nScan  = 0
+         nPixel = 0
+         nLev   = 0
+         nTrop  = 0
+
+         ! Construct complete file path
+         nc_file = TRIM( Files(I) )
+         WRITE( 6, 10 ) TRIM( nc_file )
+ 10      FORMAT( '     - Reading ', a)
+
+         ! Make sure the file exists (ajt, 03/31/2013)
+         INQUIRE( FILE=TRIM( nc_file ), EXIST=EXIST_VAR )
+         IF ( .not. EXIST_VAR ) THEN
+            Print*, 'File does not exist'
+            nTrop = -1
+            RETURN
+         ENDIF
+
+         ! Open netCDF file
+         CALL NcOp_Rd( fId, TRIM( nc_file ) )
+
+         ! Read the dimensions from the netCDF file
+         CALL NcGet_DimLen( fId, 'layer',        nLev   )
+         CALL NcGet_DimLen( fId, 'scanline',     nScan  )
+         CALL NcGet_DimLen( fId, 'ground_pixel', nPixel )
+
+         IF ( nLev > MaxLev ) THEN
+            print*, '  # levels for this overpass = ', nLev
+            print*, 'WARNING: nLev > MaxLev. Need to increase'
+            print*, ' MaxLev in tropomi_ch4_mod.f.'
+            CALL GEOS_CHEM_STOP
+         ENDIF
+
+         print*, '  # scan lines for this overpass    = ', nScan
+         print*, '  # ground pixels for this overpass = ', nPixel
+         print*, '  # levels for this overpass        = ', nLev
+
+         !--------------------------------
+         ! Read Data
+         !--------------------------------
+
+         ALLOCATE( time(                 1     ), STAT=AS )
+         ALLOCATE( delta_time(   nPixel, nScan ), STAT=AS )
+         ALLOCATE( lat(          nPixel, nScan ), STAT=AS )
+         ALLOCATE( lon(          nPixel, nScan ), STAT=AS )
+         ALLOCATE( qflag(        nPixel, nScan ), STAT=AS )
+         ALLOCATE( xch4(         nPixel, nScan ), STAT=AS )
+         ALLOCATE( xch4_error(   nPixel, nScan ), STAT=AS )
+         ALLOCATE( psurf(        nPixel, nScan ), STAT=AS )
+         ALLOCATE( dp(           nPixel, nScan ), STAT=AS )
+         ALLOCATE( prior(  nLev, nPixel, nScan ), STAT=AS )
+         ALLOCATE( ak(     nLev, nPixel, nScan ), STAT=AS )
+
+         ! Reference time for measurements [seconds since 2010-01-01 00:00:00]
+         v_name = 'time'
+         st1d   = (/ 1 /)
+         ct1d   = (/ 1 /)
+         CALL NcRd( time, fId, TRIM(v_name), st1d, ct1d )
+
+         ! Offset from reference start time of measurement [seconds]
+         v_name = 'delta_time'
+         st3d   = (/ 1,      1,     1 /)
+         ct3d   = (/ nPixel, nScan, 1 /)
+         CALL NcRd( delta_time, fId, TRIM(v_name), st3d, ct3d )
+
+         ! Latitude
+         v_name = 'latitude'
+         st3d   = (/ 1,      1,     1 /)
+         ct3d   = (/ nPixel, nScan, 1 /)
+         CALL NcRd( lat, fId, TRIM(v_name), st3d, ct3d )
+
+         ! Longitude
+         v_name = 'longitude'
+         st3d   = (/ 1,      1,     1 /)
+         ct3d   = (/ nPixel, nScan, 1 /)
+         CALL NcRd( lon, fId, TRIM(v_name), st3d, ct3d )
+
+         ! Data quality value [0 (no data) - 1 (full quality data)]
+         ! Recommend to ignore data with qa_value < 0.5
+         v_name = 'qa_value'
+         st3d   = (/ 1,      1,     1 /)
+         ct3d   = (/ nPixel, nScan, 1 /)
+         CALL NcRd( qflag, fId, TRIM(v_name), st3d, ct3d )
+
+         ! Methane mixing ratio [ppb]
+         v_name = 'methane_mixing_ratio_bias_corrected'
+         st3d   = (/ 1,      1,     1 /)
+         ct3d   = (/ nPixel, nScan, 1 /)
+         CALL NcRd( xch4, fId, TRIM(v_name), st3d, ct3d )
+
+         ! Methane mixing ratio precision [ppb]
+         v_name = 'methane_mixing_ratio_precision'
+         st3d   = (/ 1,      1,     1 /)
+         ct3d   = (/ nPixel, nScan, 1 /)
+         CALL NcRd( xch4_error, fId, TRIM(v_name), st3d, ct3d )
+
+         ! Surface pressure [Pa]
+         v_name = 'surface_pressure'
+         st3d   = (/ 1,      1,     1 /)
+         ct3d   = (/ nPixel, nScan, 1 /)
+         CALL NcRd( psurf, fId, TRIM(v_name), st3d, ct3d )
+
+         ! Pressure interval [Pa]
+         v_name = 'pressure_interval'
+         st3d   = (/ 1,      1,     1 /)
+         ct3d   = (/ nPixel, nScan, 1 /)
+         CALL NcRd( dp, fId, TRIM(v_name), st3d, ct3d )
+
+         ! APRIORI [mol/m2]
+         v_name = 'methane_profile_apriori'
+         st4d   = (/ 1,    1,      1,     1 /)
+         ct4d   = (/ nLev, nPixel, nScan, 1 /)
+         CALL NcRd( prior, fId, TRIM(v_name), st4d, ct4d )
+
+         ! Averaging Kernel [unitless]
+         v_name = 'column_averaging_kernel'
+         st4d   = (/ 1,    1,      1,     1 /)
+         ct4d   = (/ nLev, nPixel, nScan, 1 /)
+         CALL NcRd( ak, fId, TRIM(v_name), st4d, ct4d )
+
+         !-------------------------------- 
+         ! Place data into TROP structure
+         !-------------------------------- 
+         DO M = 1, nPixel
+         DO N = 1, nScan
+
+            ! Observation number on this day
+            nTrop = Count + ( M * N )
+
+            ! TIME is the same value for all observations on the same day;
+            ! need to add Delta_Time to get hour, min, sec from start of day
+            TROP(nTrop)%Time(1)            = time(1) + delta_time(M,N)
+
+            TROP(nTrop)%Lev(1)             = nLev
+            TROP(nTrop)%Lat(1)             = lat(M,N)
+            TROP(nTrop)%Lon(1)             = lon(M,N)
+            TROP(nTrop)%CH4(1)             = xch4(M,N)
+            TROP(nTrop)%CH4_Error(1)       = xch4_error(M,N)
+            TROP(nTrop)%QFlag(1)           = qflag(M,N)
+            TROP(nTrop)%Prior(1:nLev)      = prior(1:nLev,M,N)
+            TROP(nTrop)%Avg_Kernel(1:nLev) = ak(1:nLev,M,N)
+
+            DO L = 1, nLev
+               ! Convert Pa to hPa
+               TROP(nTrop)%Pres(L) = (psurf(M,N) + dp(M,N)*(L-1))*1e-2
+            ENDDO
+
+         ENDDO
+         ENDDO
+         
+         ! Update the number of observations on this day
+         Count = nTrop
+
+         ! Deallocate arrays
+         IF ( ALLOCATED( time       ) ) DEALLOCATE( time       )
+         IF ( ALLOCATED( delta_time ) ) DEALLOCATE( delta_time )
+         IF ( ALLOCATED( lat        ) ) DEALLOCATE( lat        )
+         IF ( ALLOCATED( lon        ) ) DEALLOCATE( lon        )
+         IF ( ALLOCATED( qflag      ) ) DEALLOCATE( qflag      )
+         IF ( ALLOCATED( xch4       ) ) DEALLOCATE( xch4       )
+         IF ( ALLOCATED( xch4_error ) ) DEALLOCATE( xch4_error )
+         IF ( ALLOCATED( psurf      ) ) DEALLOCATE( psurf      )
+         IF ( ALLOCATED( dp         ) ) DEALLOCATE( dp         )
+         IF ( ALLOCATED( prior      ) ) DEALLOCATE( prior      )
+         IF ( ALLOCATED( ak         ) ) DEALLOCATE( ak         )
+
+         !-------------------------------- 
+         ! Close netCDF file
+         !-------------------------------- 
+
+         ! Echo info
+         Print*, 'Number of TROPOMI observations on this day so far =',
+     &            Count
+
+         ! Close netCDF file
+         CALL NcCl( fId )
+
+      ENDDO ! End loop over files for this day
 
       ! Echo info
       WRITE( 6, 20 ) YYYYMMDD
- 20   FORMAT('     - Finished reading TROPOMI CH4 observations for ',i8)
-
-      ! Close netCDF file
-      CALL NcCl( fId )
+ 20      FORMAT('     - Finished reading TROPOMI CH4 observations for ',
+     &          i8)
+         Print*, 'Total number of TROPOMI observations on this day  =',
+     &            Count
 
       END SUBROUTINE READ_TROP_CH4_OBS
 !EOC
@@ -365,7 +435,7 @@
       INTEGER            :: IIJJ(2), I,      J,     N
       INTEGER            :: L,       LL,     LTROP
       INTEGER            :: JLOOP,   NOBS,   IND
-      INTEGER            :: INDS(MAXTROP)
+      INTEGER            :: INDS(MAXOBS)
       REAL(fp)           :: REF_DATE, TIME
       REAL(fp)           :: GC_PRES(LLPAR)
       REAL(fp)           :: GC_PEDGE(LLPAR+1)
@@ -375,9 +445,9 @@
       REAL(fp)           :: GC_PSURF
       REAL(fp)           :: MAP(LLPAR,MAXLEV)
       REAL(fp)           :: CH4_HAT(MAXLEV)
-      REAL(fp)           :: NEW_COST(MAXTROP)
+      REAL(fp)           :: NEW_COST(MAXOBS)
       REAL(fp)           :: OLD_COST
-      REAL(fp), SAVE     :: TIME_FRAC(MAXTROP)
+      REAL(fp), SAVE     :: TIME_FRAC(MAXOBS)
       INTEGER,  SAVE     :: NTROP
       REAL(fp)           :: frac, RHS, LHS
       REAL(fp)           :: CH4_PRIOR(MAXLEV)
@@ -469,7 +539,7 @@
      &                     'MM', 'DD', 'hh', 'mm', 'ss',
      &                     '         TAU', '       TROPOMI', 
      &                     '       model', '       S_OBS', 
-     &                     '    COST_FUN',
+     &                     '    COST_FUN'
  281     FORMAT( A10,2x,A4,2x,A4,2x,A8,2x,A8,2x,A4,2x,A2,2x,A2,2x,A2,2x,
      &           A2,2x,A2,2x,A12,2x,A12,2x,A12,2x,A12,2x,A12)
 
@@ -507,7 +577,7 @@
             TROP(N)%DAY(1)    = DAY
             TROP(N)%HOUR(1)   = HOUR
             TROP(N)%MINUTE(1) = MIN
-            TROP(N)%SEC(1)    = SEC
+            TROP(N)%SECOND(1) = SEC
          ENDDO
 
 !------------------------------------------------------------------------------
@@ -566,7 +636,8 @@
          ! Data quality value [0 (no data) - 1 (full quality data)]
          ! Recommend to ignore data with qa_value < 0.5
          IF ( TROP(NT)%QFLAG(1) <= 0.5 ) THEN 
-            print*, ' Bad QFLAG, skipping record         ', NT
+            ! Comment out to avoid excessive lines in log file
+            !print*, ' Bad QFLAG, skipping record         ', NT
             CYCLE
          ENDIF
 
@@ -626,7 +697,7 @@
          !To do the actual adjoint run
 
          ! Get grid box of current record
-         IIJJ = GET_IJ( REAL(TROP(NT)%LON(1),4), REAL(TROP(NT)%LAT(1),4))
+         IIJJ = GET_IJ(REAL(TROP(NT)%LON(1),4),REAL(TROP(NT)%LAT(1),4))
          I    = IIJJ(1)
          J    = IIJJ(2)
 
@@ -650,9 +721,11 @@
          CH4_PRIOR(:)    = 0.0_fp
 
          ! Copy variable names to make coding a bit cleaner
-         LTROP = TROP(NT)%LTROP(1)
+         LTROP = TROP(NT)%Lev(1)
          DO L = 1, LTROP
-            CH4_PRIOR(L) = TROP(NT)%PRIOR(L) * 1d-9 ! [ppb] --> [v/v]
+            ! Convert [mol/m2] --> [v/v]
+            CH4_PRIOR(L) = TROP(NT)%PRIOR(L) * State_Met%Area_M2(I,J,1)*
+     &       AIRMW / ( State_Met%AD(I,J,L) * 1000.0_fp )
          ENDDO
 
          ! Get GC pressure levels (mbar) 
@@ -769,7 +842,11 @@
          h(:)          = 0.0_fp
          p(1:LTROP)     = TROP(NT)%PRES(1:LTROP)
          ak(1:LTROP)    = TROP(NT)%AVG_KERNEL(1:LTROP)
-         prior(1:LTROP) = ! MPS: Need to convert mol/m2 to mol/mol TROP(NT)%PRIOR(1:LTROP) State_Met%Area_M2(I,J) / ( State_Met%AD(I,J,L) * AVO ) 1e-9_fp  ! [ppb] --> [v/v] ????
+         DO L = 1, LTROP
+            ! Convert [mol/m2] --> [v/v]
+            prior(L) = TROP(NT)%PRIOR(L) * State_Met%Area_M2(I,J,1)*
+     &       AIRMW / ( State_Met%AD(I,J,L) * 1000.0_fp )
+         ENDDO
 
          ! Need to integrate from the toa to surface (ajt, 05/21/13)
          IF (LTROP .GT. 1) THEN
@@ -880,9 +957,8 @@
             WRITE( 117, 282 ) TotalObs, I, J, TROP(NT)%LON(1),
      &           TROP(NT)%LAT(1),TROP(NT)%YEAR(1), 
      &           TROP(NT)%MONTH(1),TROP(NT)%DAY(1), TROP(NT)%HOUR(1), 
-     &           TROP(NT)%MINUTE(1), TROP(NT)%SEC(1),
-     &           GET_TAU(), TROP_XCH4, GC_XCH4, S_OBS, 0.5d0*FORCE*DIFF,
-     &           TROP(NT)%GLINT(1),TROP(NT)%GAIN(1),TROP(NT)%EXP_ID(1)
+     &           TROP(NT)%MINUTE(1), TROP(NT)%SECOND(1),
+     &           GET_TAU(), TROP_XCH4, GC_XCH4, S_OBS, 0.5d0*FORCE*DIFF
          ENDIF
 
 
@@ -996,8 +1072,7 @@
 !==============================================================================
 
  282  FORMAT( I10,2x,I4,2x,I4,2x,F8.3,2x,F8.4,2x,I4,2x,I2,2x,I2,2x,I2,
-     &        2x,I2,2x,I2,2x,F12.3,2x,E12.6,2x,E12.6,2x,E12.6,2x,E12.6,
-     &        2x,I5,2x,I5,2x,A22)
+     &        2x,I2,2x,I2,2x,F12.3,2x,E12.6,2x,E12.6,2x,E12.6,2x,E12.6)
 
       print*, ' Updated value of COST_FUNC = ', COST_FUNC 
       print*, ' TROP contribution           = ', COST_FUNC - OLD_COST  
@@ -1073,7 +1148,7 @@
 !      INTEGER                     :: IIJJ(2), I,      J
 !      INTEGER                     :: L,       LL,     LTROP
 !      INTEGER                     :: JLOOP,   NOBS,   IND
-!      INTEGER                     :: INDS(MAXTROP)
+!      INTEGER                     :: INDS(MAXOBS)
 !      REAL(fp)                      :: GC_PRES(LLPAR)
 !      REAL(fp)                      :: GC_PEDGE(LLPAR+1)
 !      REAL(fp)                      :: GC_CH4_NATIVE(LLPAR)
@@ -1082,9 +1157,9 @@
 !      REAL(fp)                      :: GC_PSURF
 !      REAL(fp)                      :: MAP(LLPAR,MAXLEV)
 !      REAL(fp)                      :: CH4_HAT(MAXLEV)
-!      REAL(fp)                      :: NEW_COST(MAXTROP)
+!      REAL(fp)                      :: NEW_COST(MAXOBS)
 !      REAL(fp)                      :: OLD_COST
-!      REAL(fp), SAVE                :: TIME_FRAC(MAXTROP)
+!      REAL(fp), SAVE                :: TIME_FRAC(MAXOBS)
 !      INTEGER,SAVE                :: NTROP
 !      REAL(fp)                      :: frac, RHS, LHS
 !      REAL(fp)                      :: CH4_PRIOR(MAXLEV)

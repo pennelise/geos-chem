@@ -1570,8 +1570,10 @@
                ! Loss of CH4 by OH above tropopause [kg]
                !------------------------------------------------------------
                IF ( ND19 > 0 ) THEN ! --> [kg/box]
+               IF ( L <= LD19 ) THEN
                   AD19(I,J,L,2) = AD19(I,J,L,2) +
      &	                          ( LRATE * DT ) / Spc2GCH4
+               ENDIF
                ENDIF
 #endif
 
