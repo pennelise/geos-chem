@@ -156,21 +156,24 @@
 !\\
 ! !INTERFACE:
 !
-      SUBROUTINE EMISSCH4( am_I_Root, Input_Opt,
+      SUBROUTINE EMISSCH4( am_I_Root, Input_Opt, State_Grid,
      &                     State_Met, RC )
 !
 ! !USES:
 !
       USE CMN_SIZE_MOD
+      USE HCO_EMISLIST_MOD,   ONLY : HCO_GetPtr
       USE HCO_INTERFACE_MOD,  ONLY : HcoState, GetHcoDiagn
       USE ErrCode_Mod
       USE Input_Opt_Mod,      ONLY : OptInput
+      USE State_Grid_Mod,     ONLY : GrdState
       USE State_Met_Mod,      ONLY : MetState
 !
 ! !INPUT PARAMETERS:
 !
       LOGICAL,        INTENT(IN)    :: am_I_Root   ! Are we on the root CPU?
       TYPE(OptInput), INTENT(IN)    :: Input_Opt   ! Input Options object
+      TYPE(GrdState), INTENT(IN)    :: State_Grid  ! Grid State object
       TYPE(MetState), INTENT(IN)    :: State_Met   ! Meteorology State object
 !
 ! !OUTPUT PARAMETERS:
@@ -274,6 +277,22 @@
 
       IF ( ITS_A_CH4_SIM .and. LPRT ) THEN
          print*,'BEGIN SUBROUTINE: EMISSCH4' 
+      ENDIF
+
+      IF ( FIRST .and. Input_Opt%Analytical_Inv ) THEN
+
+         ! Get pointer to CH4_CLUSTERS
+         CALL HCO_GetPtr( am_I_Root, HcoState, 'CH4_CLUSTERS', CLUSTERS,
+     &                    RC)
+
+         ! Trap potential errors
+         IF ( RC /= HCO_SUCCESS ) THEN
+            ErrMsg = 'Cannot get pointer to HEMCO field CH4_CLUSTERS'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
+
+         FIRST = .FALSE.
       ENDIF
 
       ! =================================================================
@@ -633,6 +652,42 @@
          WRITE(*,*) 'Termites     : ', SUM(CH4_EMIS(:,:,14))
          WRITE(*,*) 'Soil absorb  : ', SUM(CH4_EMIS(:,:,15))
       ENDIF
+ 
+      ! =================================================================
+      ! Do scaling for analytical inversion
+      ! =================================================================
+      IF ( Input_Opt%Analytical_Inv ) THEN
+
+         ! Don't optimize for soil absorption so remove from the total
+         ! emissions array
+         CH4_EMIS(:,:,1) = CH4_EMIS(:,:,1) + CH4_EMIS(:,:,15)
+
+         ! Rescale emissions
+!$OMP PARALLEL DO
+!$OMP+DEFAULT( SHARED )
+!$OMP+PRIVATE( I, J)	 
+         DO J = 1, State_Grid%NY
+         DO I = 1, State_Grid%NX
+
+            ! Only apply emission perturbation to current cluster number
+            IF ( Input_Opt%Emis_Pert_Num .GT. 0 ) THEN
+            IF ( CLUSTERS(I,J) == Input_Opt%Emis_Pert_Num ) THEN
+               CH4_EMIS(I,J,1) = CH4_EMIS(I,J,1) * Input_Opt%Emis_Pert
+               Print*, 'Analytical Inv: Scaled cluster ',
+     &                  Input_Opt%Emis_Pert_Num, ' by ',
+     &                  Input_Opt%Emis_Pert
+            ENDIF
+            ENDIF
+
+         ENDDO
+         ENDDO
+!$OMP END PARALLEL DO
+
+         ! Now that we've done the emission factor scaling, add soil absorption
+         ! back to the total emissions array
+         CH4_EMIS(:,:,1) = CH4_EMIS(:,:,1) - CH4_EMIS(:,:,15)
+
+      ENDIF
 
       IF ( ITS_A_CH4_SIM .and. LPRT ) THEN
          print*,'END SUBROUTINE: EMISSCH4'
@@ -984,8 +1039,7 @@
       USE State_Diag_Mod, ONLY : DgnState
       USE State_Grid_Mod, ONLY : GrdState
       USE State_Met_Mod,  ONLY : MetState
-      USE TIME_MOD,       ONLY : GET_TS_CHEM
-      USE TIME_MOD,       ONLY : GET_MONTH
+      USE TIME_MOD
 !
 ! !INPUT PARAMETERS: 
 !
@@ -1035,12 +1089,19 @@
 !
       ! Scalars
       INTEGER           :: I,  J,    L
+      INTEGER           :: YEAR, N
       REAL(fp)          :: DT, GCH4, Spc2GCH4
       REAL(fp)          :: KRATE, C_OH
       REAL(fp)          :: KRATE_Cl, C_Cl
 
       ! Pointers
       REAL(fp), POINTER :: Spc(:,:,:,:)
+
+      ! Local array
+      REAL(fp), PARAMETER  :: OHOPT(7) = (/1.00927281,  1.00005401,  
+     &                                 0.99645815,  1.00581735,  
+     &                                 0.99949858, 0.98532117,  
+     &                                 0.98935262/)
 
       !=================================================================
       ! CH4_DECAY begins here!
@@ -1089,7 +1150,7 @@
 !$OMP PARALLEL DO
 !$OMP+DEFAULT( SHARED )
 !$OMP+PRIVATE( L, J, I, KRATE, Spc2GCH4, GCH4, C_OH )
-!$OMP+PRIVATE( C_Cl, KRATE_Cl )
+!$OMP+PRIVATE( C_Cl, KRATE_Cl, N, YEAR )
 !$OMP+REDUCTION( +:TROPOCH4 )
       DO L = 1, State_Grid%NZ
       DO J = 1, State_Grid%NY
@@ -1116,6 +1177,11 @@
             ! BOH is imported from HEMCO in units of kg/m3, convert
             !  here to molec/cm3 (ckeller, 9/16/2014)
             C_OH = BOH(I,J,L) * XNUMOL_OH / CM3PERM3
+
+            ! Apply scale factors from inversion (mps, 7/27/17)
+            YEAR = GET_YEAR()
+            N    = YEAR - 2008
+            C_OH = C_OH * OHOPT(N)
 
             ! Cl in [molec/cm3]
             ! BCl is imported from HEMCO in units of ppbv, convert
@@ -1504,8 +1570,10 @@
                ! Loss of CH4 by OH above tropopause [kg]
                !------------------------------------------------------------
                IF ( ND19 > 0 ) THEN ! --> [kg/box]
+               IF ( L <= LD19 ) THEN
                   AD19(I,J,L,2) = AD19(I,J,L,2) +
      &	                          ( LRATE * DT ) / Spc2GCH4
+               ENDIF
                ENDIF
 #endif
 

@@ -7522,6 +7522,7 @@
 !  17 Aug 2017 - M. Sulprizio- Add option for TCCON CH4 observation operator
 !  18 Oct 2017 - M. Sulprizio- Remove CH4 budget option
 !  08 Nov 2017 - R. Yantosca - Return error condition to calling program
+!  20 Jun 2019 - M. Sulprizio- Add option for TROPOMI CH4 observation operator
 !EOP
 !------------------------------------------------------------------------------
 !BOC
@@ -7555,6 +7556,14 @@
       ENDIF
       READ( SUBSTRS(1:N), * ) Input_Opt%GOSAT_CH4_OBS
 
+      ! Use TROPOMI CH4 observation operator?
+      CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'TROPOMI_CH4_OBS', RC )
+      IF ( RC /= GC_SUCCESS ) THEN
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+      READ( SUBSTRS(1:N), * ) Input_Opt%TROPOMI_CH4_OBS
+
       ! Use TCCON CH4 observation operator?
       CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'TCCON_CH4_OBS', RC )
       IF ( RC /= GC_SUCCESS ) THEN
@@ -7562,8 +7571,32 @@
          RETURN
       ENDIF
       READ( SUBSTRS(1:N), * ) Input_Opt%TCCON_CH4_OBS
+                                 
+      ! Do analytical inversion?
+      CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'ANALYTICAL_INV', RC )
+      IF ( RC /= GC_SUCCESS ) THEN
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+      READ( SUBSTRS(1:N), * ) Input_Opt%Analytical_Inv
 
-      ! Separator line
+      ! Emission perturbation
+      CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'EMIS_PERT', RC )
+      IF ( RC /= GC_SUCCESS ) THEN
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+      READ( SUBSTRS(1:N), * ) Input_Opt%Emis_Pert
+
+      ! Current cluster number
+      CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'EMIS_PERT_NUM', RC )
+      IF ( RC /= GC_SUCCESS ) THEN
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+      READ( SUBSTRS(1:N), * ) Input_Opt%Emis_Pert_Num
+
+      ! Separator line   
       CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'separator', RC )
       IF ( RC /= GC_SUCCESS ) THEN
          CALL GC_Error( ErrMsg, RC, ThisLoc )
@@ -7578,12 +7611,22 @@
          WRITE( 6, '(  a)' ) '-----------'
          WRITE( 6, 100     ) 'Use GOSAT obs operator: ',
      &                        Input_Opt%GOSAT_CH4_OBS
+         WRITE( 6, 100     ) 'Use TROPOMI obs oper. : ',
+     &                        Input_Opt%TROPOMI_CH4_OBS
          WRITE( 6, 100     ) 'Use TCCON obs operator: ',
      &                        Input_Opt%TCCON_CH4_OBS
+         WRITE( 6, 100     ) 'Do analytical inversion: ',
+     &                        Input_Opt%Analytical_Inv
+         WRITE( 6, 110     ) 'Emission perturbation: ',
+     &                        Input_Opt%Emis_Pert
+         WRITE( 6, 120     ) 'Current cluster number: ',
+     &                        Input_Opt%Emis_Pert_Num
       END IF
 
       ! FORMAT statements
  100  FORMAT( A, L5  )
+ 110  FORMAT( A, f6.2  )
+ 120  FORMAT( A, I5  )
 
       ! Return success
       RC = GC_SUCCESS
