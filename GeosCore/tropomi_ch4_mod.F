@@ -319,7 +319,7 @@
 
             DO L = 1, nLev
                ! Convert Pa to hPa
-               TROP(nTrop)%Pres(L) = (psurf(M,N) + dp(M,N)*(L-1))*1e-2
+               TROP(nTrop)%Pres(L) = (psurf(M,N) - dp(M,N)*(L-1))*1e-2
             ENDDO
 
          ENDDO
