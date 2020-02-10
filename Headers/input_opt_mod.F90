@@ -362,6 +362,7 @@ MODULE Input_Opt_Mod
      LOGICAL                     :: Analytical_Inv
      REAL(fp)                    :: Emis_Pert
      INTEGER                     :: Emis_Pert_Num
+     LOGICAL                     :: ApplySF
 
      !----------------------------------------
      ! POPS MENU fields

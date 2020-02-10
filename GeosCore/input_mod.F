@@ -5248,6 +5248,14 @@
       ENDIF
       READ( SUBSTRS(1:N), * ) Input_Opt%Emis_Pert_Num
 
+      ! Apply emission scale factors?
+      CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'ApplySF' )
+      IF ( RC /= GC_SUCCESS ) THEN
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+      READ( SUBSTRS(1:N), * ) Input_Opt%ApplySF
+
       ! Separator line   
       CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'separator', RC )
       IF ( RC /= GC_SUCCESS ) THEN
@@ -5273,6 +5281,8 @@
      &                        Input_Opt%Emis_Pert
          WRITE( 6, 120     ) 'Current cluster number: ',
      &                        Input_Opt%Emis_Pert_Num
+         WRITE( 6, 100     ) 'Apply emis scale factors:',
+     &                        Input_Opt%ApplySF
       END IF
 
       ! FORMAT statements

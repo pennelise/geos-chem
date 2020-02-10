@@ -138,6 +138,7 @@
       REAL(f4), POINTER     :: BCl    (:,:,:) => NULL()
       REAL(f4), POINTER     :: CH4LOSS(:,:,:) => NULL()
       REAL(f4), POINTER     :: CLUSTERS(:,:)  => NULL()
+      REAL(f4), POINTER     :: EMIS_SF(:,:)   => NULL()
 
       REAL(fp)              :: TROPOCH4
 
@@ -279,17 +280,32 @@
          print*,'BEGIN SUBROUTINE: EMISSCH4'
       ENDIF
 
-      IF ( FIRST .and. Input_Opt%Analytical_Inv ) THEN
+      IF ( FIRST ) THEN
 
-         ! Get pointer to CH4_CLUSTERS
-         CALL HCO_GetPtr( am_I_Root, HcoState, 'CH4_CLUSTERS', CLUSTERS,
-     &                    RC)
+         IF ( Input_Opt%Analytical_Inv .or. Input_Opt%ApplySF ) THEN
 
-         ! Trap potential errors
-         IF ( RC /= HCO_SUCCESS ) THEN
-            ErrMsg = 'Cannot get pointer to HEMCO field CH4_CLUSTERS'
-            CALL GC_Error( ErrMsg, RC, ThisLoc )
-            RETURN
+            ! Get pointer to CH4_CLUSTERS
+            CALL HCO_GetPtr( am_I_Root, HcoState, 'CH4_CLUSTERS',
+     &                        CLUSTERS, RC)
+            IF ( RC /= HCO_SUCCESS ) THEN
+               ErrMsg = 'Cannot get pointer to HEMCO field CH4_CLUSTERS'
+               CALL GC_Error( ErrMsg, RC, ThisLoc )
+               RETURN
+            ENDIF
+
+         ENDIF
+
+         IF ( Input_Opt%ApplySF ) THEN
+
+            ! Get pointer to CH4 scale factors
+            CALL HCO_GetPtr( am_I_Root, HcoState, 'EMIS_SF',
+     &                       EMIS_SF, RC)
+            IF ( RC /= HCO_SUCCESS ) THEN
+               ErrMsg = 'Cannot get pointer to HEMCO field EMIS_SF'
+               CALL GC_Error( ErrMsg, RC, ThisLoc )
+               RETURN
+            ENDIF
+
          ENDIF
 
          FIRST = .FALSE.
@@ -656,7 +672,8 @@
       ! =================================================================
       ! Do scaling for analytical inversion
       ! =================================================================
-      IF ( Input_Opt%Analytical_Inv ) THEN
+      IF ( Input_Opt%Analytical_Inv .or. 
+     &     Input_Opt%ApplySF        ) THEN
 
          ! Don't optimize for soil absorption so remove from the total
          ! emissions array
@@ -682,6 +699,23 @@
          ENDDO
          ENDDO
 !$OMP END PARALLEL DO
+
+            !------------------------------------------------------------
+            ! For applying scale factors from analytical inversion
+            !------------------------------------------------------------
+            IF ( Input_Opt%ApplySF ) THEN
+
+               ! Loop over number of clusters (defined above)
+               DO N = 1, NCLUST
+        
+                  ! Apply emission scale factor to each cluster
+                  IF ( N == CLUSTERS(I,J) ) THEN
+                     CH4_EMIS(I,J,1) = CH4_EMIS(I,J,1) * EMS_SF(I,J)
+                  ENDIF
+
+               ENDDO
+
+            ENDIF
 
          ! Now that we've done the emission factor scaling, add soil absorption
          ! back to the total emissions array
@@ -1149,9 +1183,14 @@
             C_OH = BOH(I,J,L) * XNUMOL_OH / CM3PERM3
 
             ! Apply scale factors from inversion (mps, 7/27/17)
-            YEAR = GET_YEAR()
-            N    = YEAR - 2008
-            C_OH = C_OH * OHOPT(N)
+            IF ( Input_Opt%ApplySF ) THEN
+               YEAR = GET_YEAR()
+               IF ( YEAR >= 2009 .and. YEAR <=2015 ) THEN
+                  N    = YEAR - 2008
+                  C_OH = C_OH * OHOPT(N)
+                  Print*, 'Applying scale factor to OH: ', OHOPT(N)
+               ENDIF
+            ENDIF
 
             ! Cl in [molec/cm3]
             ! BCl is imported from HEMCO in units of ppbv, convert
