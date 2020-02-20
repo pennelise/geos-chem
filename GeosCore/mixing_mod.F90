@@ -858,7 +858,7 @@ CONTAINS
              !----------------------------------------------------------
              ! Apply emissions.
              !----------------------------------------------------------
-             IF ( ITS_A_CH4_SIM .and. Input_Opt%Analytical_Inv ) THEN
+             IF ( ITS_A_CH4_SIM .and. Input_Opt%AnalyticalInv ) THEN
 
                 ! Only apply CH4 emissions to level 1
                 IF ( L == 1 ) THEN

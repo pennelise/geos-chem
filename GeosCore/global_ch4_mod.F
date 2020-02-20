@@ -139,6 +139,8 @@
       REAL(f4), POINTER     :: CH4LOSS(:,:,:) => NULL()
       REAL(f4), POINTER     :: CLUSTERS(:,:)  => NULL()
       REAL(f4), POINTER     :: EMIS_SF(:,:)   => NULL()
+      REAL(f4), POINTER     :: OH_SF(:,:)     => NULL()
+      REAL(f4), POINTER     :: WETLAND_SF(:,:)=> NULL()
 
       REAL(fp)              :: TROPOCH4
 
@@ -282,11 +284,11 @@
 
       IF ( FIRST ) THEN
 
-         IF ( Input_Opt%Analytical_Inv .or. Input_Opt%ApplySF ) THEN
+         IF ( Input_Opt%AnalyticalInv ) THEN
 
-            ! Get pointer to CH4_CLUSTERS
+            ! Get pointer to cluster file
             CALL HCO_GetPtr( am_I_Root, HcoState, 'CH4_CLUSTERS',
-     &                        CLUSTERS, RC)
+     &                       CLUSTERS, RC)
             IF ( RC /= HCO_SUCCESS ) THEN
                ErrMsg = 'Cannot get pointer to HEMCO field CH4_CLUSTERS'
                CALL GC_Error( ErrMsg, RC, ThisLoc )
@@ -295,13 +297,39 @@
 
          ENDIF
 
-         IF ( Input_Opt%ApplySF ) THEN
+         IF ( Input_Opt%ApplyEmisSF ) THEN
 
-            ! Get pointer to CH4 scale factors
+            ! Get pointer to CH4 emissions scale factors
             CALL HCO_GetPtr( am_I_Root, HcoState, 'EMIS_SF',
      &                       EMIS_SF, RC)
             IF ( RC /= HCO_SUCCESS ) THEN
                ErrMsg = 'Cannot get pointer to HEMCO field EMIS_SF'
+               CALL GC_Error( ErrMsg, RC, ThisLoc )
+               RETURN
+            ENDIF
+
+         ENDIF
+
+         IF ( Input_Opt%ApplyOHSF ) THEN
+
+            ! Get pointer to OH scale factors
+            CALL HCO_GetPtr( am_I_Root, HcoState, 'OH_SF',
+     &                       OH_SF, RC)
+            IF ( RC /= HCO_SUCCESS ) THEN
+               ErrMsg = 'Cannot get pointer to HEMCO field OH_SF'
+               CALL GC_Error( ErrMsg, RC, ThisLoc )
+               RETURN
+            ENDIF
+
+         ENDIF
+
+         IF ( Input_Opt%ApplyWetlandSF ) THEN
+
+            ! Get pointer to OH scale factors
+            CALL HCO_GetPtr( am_I_Root,  HcoState, 'WETLAND_SF',
+     &                       WETLAND_SF, RC)
+            IF ( RC /= HCO_SUCCESS ) THEN
+               ErrMsg = 'Cannot get pointer to HEMCO field WETLAND_SF'
                CALL GC_Error( ErrMsg, RC, ThisLoc )
                RETURN
             ENDIF
@@ -376,7 +404,6 @@
          CH4_EMIS(:,:,3) =  Ptr2D(:,:)
       ENDIF
       Ptr2D => NULL()
-
 
       !-------------------
       ! Coal
@@ -513,7 +540,6 @@
       !-------------------
       ! Biomass burning
       !-------------------
-!      DgnName = 'BIOMASS_CH4'
       DgnName = 'CH4_BIOMASS'
       CALL GetHcoDiagn( am_I_Root, DgnName, .FALSE., RC, Ptr2D=Ptr2D )
 
@@ -672,8 +698,8 @@
       ! =================================================================
       ! Do scaling for analytical inversion
       ! =================================================================
-      IF ( Input_Opt%Analytical_Inv .or. 
-     &     Input_Opt%ApplySF        ) THEN
+      IF ( Input_Opt%AnalyticalInv  .or. Input_Opt%ApplyEmisSF .or.
+     &     Input_Opt%ApplyWetlandSF .or. Input_Opt%ApplyOHSF ) THEN
 
          ! Don't optimize for soil absorption so remove from the total
          ! emissions array
@@ -686,36 +712,46 @@
          DO J = 1, State_Grid%NY
          DO I = 1, State_Grid%NX
 
-            ! Only apply emission perturbation to current cluster number
-            IF ( Input_Opt%Emis_Pert_Num .GT. 0 ) THEN
-            IF ( CLUSTERS(I,J) == Input_Opt%Emis_Pert_Num ) THEN
-               CH4_EMIS(I,J,1) = CH4_EMIS(I,J,1) * Input_Opt%Emis_Pert
-               Print*, 'Analytical Inv: Scaled cluster ',
-     &                  Input_Opt%Emis_Pert_Num, ' by ',
-     &                  Input_Opt%Emis_Pert
+            !------------------------------------------------------------
+            ! For applying scale factors from analytical inversion
+            !------------------------------------------------------------
+
+            ! Remove wetland emissions from total
+            CH4_EMIS(I,J,1)  = CH4_EMIS(I,J,1) - CH4_EMIS(I,J,11)
+
+            ! Scale wetland emissions
+            IF ( Input_Opt%ApplyWetlandSF ) THEN
+               CH4_EMIS(I,J,11) = CH4_EMIS(I,J,11) * WETLAND_SF(I,J)
             ENDIF
+
+            ! Scale total emissions (minus wetland)
+            IF ( Input_Opt%ApplyEmisSF ) THEN
+               CH4_EMIS(I,J,1) = CH4_EMIS(I,J,1) * EMIS_SF(I,J)
+            ENDIF
+
+            ! Add wetland emissions back to total
+            CH4_EMIS(I,J,1)  = CH4_EMIS(I,J,1) + CH4_EMIS(I,J,11)
+
+            !------------------------------------------------------------
+            ! Perturb emissions for analytical inversion
+            !------------------------------------------------------------
+            IF ( Input_Opt%AnalyticalInv ) THEN
+
+               ! Only apply emission perturbation to current cluster number
+               IF ( Input_Opt%ClusterNumber .GT. 0 ) THEN
+                  IF ( CLUSTERS(I,J) == Input_Opt%ClusterNumber ) THEN
+                     CH4_EMIS(I,J,1) = CH4_EMIS(I,J,1) * 
+     &                                 Input_Opt%PerturbEmis
+                     Print*, 'Analytical Inversion: Scaled cluster ',
+     &                    Input_Opt%ClusterNumber, ' by ',
+     &                    Input_Opt%PerturbEmis
+                  ENDIF
+               ENDIF
             ENDIF
 
          ENDDO
          ENDDO
 !$OMP END PARALLEL DO
-
-            !------------------------------------------------------------
-            ! For applying scale factors from analytical inversion
-            !------------------------------------------------------------
-            IF ( Input_Opt%ApplySF ) THEN
-
-               ! Loop over number of clusters (defined above)
-               DO N = 1, NCLUST
-        
-                  ! Apply emission scale factor to each cluster
-                  IF ( N == CLUSTERS(I,J) ) THEN
-                     CH4_EMIS(I,J,1) = CH4_EMIS(I,J,1) * EMS_SF(I,J)
-                  ENDIF
-
-               ENDDO
-
-            ENDIF
 
          ! Now that we've done the emission factor scaling, add soil absorption
          ! back to the total emissions array
@@ -1182,14 +1218,10 @@
             !  here to molec/cm3 (ckeller, 9/16/2014)
             C_OH = BOH(I,J,L) * XNUMOL_OH / CM3PERM3
 
-            ! Apply scale factors from inversion (mps, 7/27/17)
-            IF ( Input_Opt%ApplySF ) THEN
-               YEAR = GET_YEAR()
-               IF ( YEAR >= 2009 .and. YEAR <=2015 ) THEN
-                  N    = YEAR - 2008
-                  C_OH = C_OH * OHOPT(N)
-                  Print*, 'Applying scale factor to OH: ', OHOPT(N)
-               ENDIF
+            ! Apply scale factors from analytical inversion
+            IF ( Input_Opt%ApplyOHSF ) THEN
+               C_OH = C_OH * OH_SF(I,J)
+               !Print*, 'Applying scale factor to OH: ', OH_SF(I,J)
             ENDIF
 
             ! Cl in [molec/cm3]

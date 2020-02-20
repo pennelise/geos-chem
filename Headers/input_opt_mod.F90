@@ -359,10 +359,12 @@ MODULE Input_Opt_Mod
      LOGICAL                     :: GOSAT_CH4_OBS
      LOGICAL                     :: TROPOMI_CH4_OBS
      LOGICAL                     :: TCCON_CH4_OBS
-     LOGICAL                     :: Analytical_Inv
-     REAL(fp)                    :: Emis_Pert
-     INTEGER                     :: Emis_Pert_Num
-     LOGICAL                     :: ApplySF
+     LOGICAL                     :: AnalyticalInv
+     REAL(fp)                    :: PerturbEmis
+     INTEGER                     :: ClusterNumber
+     LOGICAL                     :: ApplyEmisSF
+     LOGICAL                     :: ApplyWetlandSF
+     LOGICAL                     :: ApplyOHSF
 
      !----------------------------------------
      ! POPS MENU fields
@@ -884,9 +886,12 @@ CONTAINS
     Input_Opt%GOSAT_CH4_OBS          = .FALSE.
     Input_Opt%TROPOMI_CH4_OBS        = .FALSE.
     Input_Opt%TCCON_CH4_OBS          = .FALSE.
-    Input_Opt%Analytical_Inv         = .FALSE.
-    Input_Opt%Emis_Pert              = 1.0
-    Input_Opt%Emis_Pert_Num          = 0
+    Input_Opt%AnalyticalInv          = .FALSE.
+    Input_Opt%PerturbEmis            = 1.0
+    Input_Opt%ClusterNumber          = 0
+    Input_Opt%ApplyEmisSF            = .FALSE.
+    Input_Opt%ApplyWetlandSF         = .FALSE.
+    Input_Opt%ApplyOHSF              = .FALSE.
 
     !----------------------------------------
     ! POPS MENU fields

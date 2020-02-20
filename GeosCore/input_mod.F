@@ -5225,36 +5225,52 @@
       READ( SUBSTRS(1:N), * ) Input_Opt%TCCON_CH4_OBS
                                  
       ! Do analytical inversion?
-      CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'ANALYTICAL_INV', RC )
+      CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'AnalyticalInv', RC )
       IF ( RC /= GC_SUCCESS ) THEN
          CALL GC_Error( ErrMsg, RC, ThisLoc )
          RETURN
       ENDIF
-      READ( SUBSTRS(1:N), * ) Input_Opt%Analytical_Inv
+      READ( SUBSTRS(1:N), * ) Input_Opt%AnalyticalInv
 
       ! Emission perturbation
-      CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'EMIS_PERT', RC )
+      CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'PerturbEmis', RC )
       IF ( RC /= GC_SUCCESS ) THEN
          CALL GC_Error( ErrMsg, RC, ThisLoc )
          RETURN
       ENDIF
-      READ( SUBSTRS(1:N), * ) Input_Opt%Emis_Pert
+      READ( SUBSTRS(1:N), * ) Input_Opt%PerturbEmis
 
       ! Current cluster number
-      CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'EMIS_PERT_NUM', RC )
+      CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'ClusterNumber', RC )
       IF ( RC /= GC_SUCCESS ) THEN
          CALL GC_Error( ErrMsg, RC, ThisLoc )
          RETURN
       ENDIF
-      READ( SUBSTRS(1:N), * ) Input_Opt%Emis_Pert_Num
+      READ( SUBSTRS(1:N), * ) Input_Opt%ClusterNumber
 
       ! Apply emission scale factors?
-      CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'ApplySF' )
+      CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'ApplyEmisSF', RC )
       IF ( RC /= GC_SUCCESS ) THEN
          CALL GC_Error( ErrMsg, RC, ThisLoc )
          RETURN
       ENDIF
-      READ( SUBSTRS(1:N), * ) Input_Opt%ApplySF
+      READ( SUBSTRS(1:N), * ) Input_Opt%ApplyEmisSF
+
+      ! Apply wetland scale factors?
+      CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'ApplyWetlandSF', RC )
+      IF ( RC /= GC_SUCCESS ) THEN
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+      READ( SUBSTRS(1:N), * ) Input_Opt%ApplyWetlandSF
+
+      ! Apply OH scale factors?
+      CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'ApplyOHSF', RC )
+      IF ( RC /= GC_SUCCESS ) THEN
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+      READ( SUBSTRS(1:N), * ) Input_Opt%ApplyOHSF
 
       ! Separator line   
       CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'separator', RC )
@@ -5266,23 +5282,27 @@
       !=================================================================
       ! Print to screen
       !=================================================================
-      IF( am_I_Root ) THEN
+      IF ( am_I_Root ) THEN
          WRITE( 6, '(/,a)' ) 'CH4 MENU'
          WRITE( 6, '(  a)' ) '-----------'
-         WRITE( 6, 100     ) 'Use GOSAT obs operator: ',
+         WRITE( 6, 100     ) 'Use GOSAT obs operator : ',
      &                        Input_Opt%GOSAT_CH4_OBS
-         WRITE( 6, 100     ) 'Use TROPOMI obs oper. : ',
+         WRITE( 6, 100     ) 'Use TROPOMI obs oper.  : ',
      &                        Input_Opt%TROPOMI_CH4_OBS
-         WRITE( 6, 100     ) 'Use TCCON obs operator: ',
+         WRITE( 6, 100     ) 'Use TCCON obs operator : ',
      &                        Input_Opt%TCCON_CH4_OBS
          WRITE( 6, 100     ) 'Do analytical inversion: ',
-     &                        Input_Opt%Analytical_Inv
-         WRITE( 6, 110     ) 'Emission perturbation: ',
-     &                        Input_Opt%Emis_Pert
-         WRITE( 6, 120     ) 'Current cluster number: ',
-     &                        Input_Opt%Emis_Pert_Num
-         WRITE( 6, 100     ) 'Apply emis scale factors:',
-     &                        Input_Opt%ApplySF
+     &                        Input_Opt%AnalyticalInv
+         WRITE( 6, 110     ) 'Emission perturbation  : ',
+     &                        Input_Opt%PerturbEmis
+         WRITE( 6, 120     ) 'Current cluster number : ',
+     &                        Input_Opt%ClusterNumber
+         WRITE( 6, 100     ) 'Apply emis scaling?    :',
+     &                        Input_Opt%ApplyEmisSF
+         WRITE( 6, 100     ) 'Apply wetland scaling? :',
+     &                        Input_Opt%ApplyWetlandSF
+         WRITE( 6, 100     ) 'Apply OH scaling?      :',
+     &                        Input_Opt%ApplyEmisSF
       END IF
 
       ! FORMAT statements
