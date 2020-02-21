@@ -98,7 +98,6 @@
       USE HISTORY_MOD           ! Updated netCDF diagnostics
       USE OBSPACK_MOD           ! For ObsPack diagnostics
       USE GOSAT_CH4_MOD         ! For GOSAT observation operator
-      USE TROPOMI_CH4_MOD       ! For TROPOMI observation operator
       USE TCCON_CH4_MOD         ! For TCCON observation operator
       USE HCOI_GC_MAIN_MOD      ! Writes out HEMCO diagnostics (C. Keller)
 
@@ -2055,15 +2054,6 @@
                   CALL CALC_GOSAT_CH4_FORCE( Input_Opt,  State_Chm,
      &                                       State_Grid, State_Met,
      &                                       COST_FUNC )
-               ENDIF
-            ENDIF
-
-            ! CH4 columns from the TROPOMI instrument (mps, 6/20/19)
-            IF ( Input_Opt%TROPOMI_CH4_OBS ) THEN
-               IF ( ITS_A_NEW_HOUR() ) THEN
-                  CALL CALC_TROPOMI_CH4_FORCE( Input_Opt,  State_Chm,
-     &                                         State_Grid, State_Met,
-     &                                         COST_FUNC )
                ENDIF
             ENDIF
 

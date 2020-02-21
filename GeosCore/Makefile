@@ -589,7 +589,7 @@ main.o                      : main.F                                         \
                               rrtmg_rad_transfer_mod.o                       \
                               gosat_ch4_mod.o         tccon_ch4_mod.o        \
                               aerosol_mod.o           flexgrid_read_mod.o    \
-                              gc_classic_version.H    tropomi_ch4_mod.o
+                              gc_classic_version.H
 
 mercury_mod.o               : mercury_mod.F                                  \
                               dao_mod.o                                      \
@@ -718,7 +718,6 @@ transport_mod.o             : transport_mod.F                                \
                               tendencies_mod.o        pjc_pfix_window_mod.o  \
                               diagnostics_mod.o
 
-tropomi_ch4_mod.o           : tropomi_ch4_mod.o
 
 ucx_mod.o                   : ucx_mod.F                                      \
                               fast_jx_mod.o           global_ch4_mod.o       \
