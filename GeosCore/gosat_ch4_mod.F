@@ -166,11 +166,14 @@
       WRITE( CYEAR, '(i4)' ) YEAR
 
       ! Filename
-      nc_file = 'ESACCI-GHG-L2-CH4-GOSAT-OCPR-YYYYMMDD-fv7.0.nc'
-      CALL Expand_Date( nc_file, YYYYMMDD, 9999 )
+      !nc_file = 'ESACCI-GHG-L2-CH4-GOSAT-OCPR-YYYYMMDD-fv7.0.nc'
+      nc_file = 'ESACCI-GHG-L2-CH4-GOSAT-OCPR-YYYYMMDD-fv7.2.nc'
+      CALL Expand_Date( nc_file, YYYYMMDD, 9999 ) 
 
       ! Construct complete file path
-      dir = '/ExtData/Obs/ULGOSAT_v7/' // CYEAR // '/'
+       dir = '/net/seasasfs02/srv/export/seasasfs02/share_root/' //
+     &       'yuzhongzhang/CH4_Observation/ULGOSAT_v7/' //
+     &       CYEAR // '/' 
       nc_file = TRIM( dir ) // TRIM( nc_file )
       WRITE( 6, 10 ) TRIM( nc_file )
  10   FORMAT( '     - Reading ', a)
@@ -433,11 +436,11 @@
       REAL(fp)           :: CH4_PRIOR(MAXLEV)
       REAL(fp)           :: CH4_PRIOR_cm2(MAXLEV)
       REAL(fp)           :: molecongos(MAXLEV)
-      REAL(fp)           :: GOS_XCH4, GC_XCH4, GOS_XCH4_ERROR
-      REAL(fp)           :: p(MAXLEV), h(MAXLEV)
+      REAL(fp)           :: GOS_XCH4, GOS_XCH4_ERROR
+      REAL(fp)           :: p(MAXLEV)!, h(MAXLEV)
       REAL(fp)           :: ak(MAXLEV), prior(MAXLEV)
       REAL(fp)           :: pres_w(MAXLEV)
-      REAL(fp)           :: XCH4m, XCH4a
+      !REAL(fp)           :: XCH4m, XCH4a  !zyz
       REAL(fp)           :: SATELLITE_BIAS(3) ! Hardcode for now (mps,6/16/17)
       REAL(fp)           :: MEAN_MODEL_BIAS   ! Hardcode for now (mps,6/16/17)
       REAL(fp)           :: FORCE
@@ -448,6 +451,21 @@
       ! fix the problem that some GOSAT record has negative pressure
       ! values if the surface has high altidue
       INTEGER            :: L0
+
+      REAL(fp)           :: TropP     !tropopause pressure (hPa)
+      INTEGER            :: LGOS_Trop !tropopause layer in GOSAT levels
+      REAL(fp)           :: WT_LGOS_Trop
+
+      ! -- use pressure weight from GOSAT data file,zyz
+      REAL(fp)           :: GC_XCH4_1
+      REAL(fp)           :: XCH4_prior_1, XCH4_trop_1, XCH4_strat_1
+
+      ! -- use pressure weight computed based on pressure level
+      ! -- this is used in JDM's work, zyz
+      real(fp)           :: h(MAXLEV)
+      REAL(fp)           :: GC_XCH4_2
+      REAL(fp)           :: XCH4_prior_2, XCH4_trop_2, XCH4_strat_2
+      ! --- zyz ---
 
 !------------------------------------------------------------------------------
 ! For adjoint model only:
@@ -493,8 +511,8 @@
 
       ! Hardcode bias values for now (mps, 6/16/17)
       SATELLITE_BIAS(1) = 0.0e+0_fp
-      SATELLITE_BIAS(2) = 0.0e+0_fp
-      SATELLITE_BIAS(3) = 0.0e+0_fp
+      SATELLITE_BIAS(2) = -0.075272936e+0_fp
+      SATELLITE_BIAS(3) = 0.003712500e+0_fp
       MEAN_MODEL_BIAS   = 0.0e+0_fp
 
       ! Open files for diagnostic output
@@ -522,12 +540,18 @@
          WRITE( 117, 281 ) '       NNN',
      &                     '   I', '   J', '     LON','     LAT','YYYY',
      &                     'MM', 'DD', 'hh', 'mm', 'ss',
-     &                     '         TAU', '       GOSAT',
-     &                     '       model', '       S_OBS',
+     &                     '         TAU', '       GOSAT', 
+     &                     '       model', '       S_OBS', 
+     &                     '       TropP', ' model_prior', !zyz
+     &                     '  model_trop', ' model_strat', !zyz
+     &                     '      model2', 'model_prior2', !zyz
+     &                     ' model_trop2', 'model_strat2', !zyz
      &                     '    COST_FUN', 'GLINT', 'GAIN',
      &                     'EXPOSURE_ID'
  281     FORMAT( A10,2x,A4,2x,A4,2x,A8,2x,A8,2x,A4,2x,A2,2x,A2,2x,A2,2x,
-     &           A2,2x,A2,2x,A12,2x,A12,2x,A12,2x,A12,2x,A12,2x,
+     &           A2,2x,A2,2x,A12,2x,A12,2x,A12,2x,A12,2x,
+     &           A12,2x, A12, 2x, A12, 2x, A12, 2x,
+     &           A12, 2x, A12, 2x, A12, 2x, A12, 2x, A12,2x,
      &           A5,2x,A4,2x,A22)
 
          ! Set Total Observations = 0
@@ -781,8 +805,12 @@
          ! Convert from [kg/box] --> [v/v]
          GC_CH4_NATIVE(:) = State_Chm%Species(I,J,:,id_CH4) * ( AIRMW /
      &                      State_Chm%SpcData(id_CH4)%Info%emMW_g )
-
-
+!         print*,'CH4 Prof (kg/box)',State_Chm%Species(I,J,:,id_CH4) 
+!         print*,'AIRMW',AIRMW
+!         print*,'CH4MW',State_Chm%SpcData(id_CH4)%Info%emMW_g
+!         print*,'CH4 prof (v/v)', GC_CH4_NATIVE
+!         print*,'AD',State_Met%AD(I,J,:)
+!         print*,'MAP',MAP
          ! Interpolate GC CH4 column to GOSAT grid
          ! Use L0 for lowest valid layer for GOSAT (zyz)
          DO LL = L0, LGOS
@@ -792,15 +820,23 @@
      &                    + MAP(L,LL) * GC_CH4_NATIVE(L)
             ENDDO
          ENDDO
-
+!         DO LL = 1, LGOS
+!          DO L=1, LLPAR
+!             IF (MAP(L,LL)>0E0) PRINT*,L,LL,MAP(L,LL)
+!          ENDDO
+!         ENDDO
+!         print*,'GC_CH4',GC_CH4
+!         stop 
          ! GOSAT Proxy XCH4 [ppb] --> [v/v]
          GOS_XCH4       = GOS(NT)%CH4(1)       * 1e-9_fp
          GOS_XCH4_ERROR = GOS(NT)%CH4_ERROR(1) * 1e-9_fp
 
          ! Remove any GOSAT bias
-         GOS_XCH4 = GOS_XCH4 + 1e-9 * ( SATELLITE_BIAS(1)
-     &                       + SATELLITE_BIAS(2)*(GOS(NT)%LAT(1))
-     &                       + SATELLITE_BIAS(3)*(GOS(NT)%LAT(1))**2 )
+         ! Do not do latitudinal bias correction from now, zyz,
+         ! 19/9/2018
+!         GOS_XCH4 = GOS_XCH4 + 1e-9 * ( SATELLITE_BIAS(1) 
+!     &                       + SATELLITE_BIAS(2)*(GOS(NT)%LAT(1))
+!     &                       + SATELLITE_BIAS(3)*(GOS(NT)%LAT(1))**2 )
 
          ! Get the S_obs, assume stddev adds in quadrature, variance
          ! adds linearly.  (ajt, 03/27/2013)
@@ -847,12 +883,88 @@
 
          ! Pressure weighting array
          ! Use L0 for lowest valid layer in GOSAT
-         h(:)          = 0.0_fp
          p(L0:LGOS)     = GOS(NT)%PRES(L0:LGOS)
          ak(L0:LGOS)    = GOS(NT)%AVG_KERNEL(L0:LGOS)
-         prior(L0:LGOS) = GOS(NT)%PRIOR(L0:LGOS) * 1e-9_fp  ! [ppb] --> [v/v]
+         ! JDM Replace calculated h with pres_w provided by GOSAT files
+         pres_w(L0:LGOS)= GOS(NT)%P_WEIGHT(L0:LGOS)
+         prior(L0:LGOS) = GOS(NT)%PRIOR(L0:LGOS) * 1d-9  ! [ppb] --> [v/v]
+         
+         !---zyz---
+         !compute the GOSAT layer that encloses tropopause
+         TropP = State_Met%TROPP(I,J)
+         CALL GET_TROP_LAYER(TropP, p, LGOS, LGOS_Trop, WT_LGOS_Trop)
+         !---zyz---
 
-         ! Need to integrate from the toa to surface (ajt, 05/21/13)
+
+         !=========================================================
+         ! Add computation to record separate tropospheric contribution
+         ! to XCH4, zyz, Sept 19, 2018
+         ! We can record XCH4_prior, XCH4_trop, XCH4_strat, 
+         ! so startospheric bias correction can be done offline
+         ! XCH4m = XCH4a + XCH4c 
+         !       = SUM(l) (wl*pl) + SUM(l) (wl*al*(ml-pl))
+         !       = SUM(l) ((1-al)*wl*pl) + SUM(l) (al*wl*ml)
+         !       = SUM(l) ((1-al)*wl*pl) +       ===> XCH4m_prior
+         !         SUM(l<=LTROP) (al*wl*ml) +    ===> XCH4m_trop
+         !         SUM(l>LTROP) (al*wl*ml)       ===> XCH4m_strat
+         ! 
+         ! wl: weight for layer l
+         ! pl: prior mixing ratio at layer l
+         ! ml: model mixing ratio at layer l
+         ! al: column averaging kernel at layer l
+         ! LTROP: layer of tropopause
+         !=========================================================
+
+!====================================================================
+! Compute GC_XCH4 with the pressure weighting provided in GOSAT data
+! file,zyz
+!====================================================================
+         ! ---- zyz ---- Sept 19, 2018
+         ! Calcualte XCH4_prior
+         XCH4_prior_1 = 0.0_fp
+         DO L = L0, LGOS
+            XCH4_prior_1 = XCH4_prior_1 +
+     &         (1.0_fp - ak(L)) * pres_w(L) * prior(L)
+         ENDDO        
+
+         ! Calcualte XCH4_trop
+         XCH4_trop_1 = 0.0_fp
+         DO L = L0, LGOS_Trop
+            XCH4_trop_1 = XCH4_trop_1 + 
+     &         ak(L) * pres_w(L) * GC_CH4(L)
+         ENDDO
+         IF (LGOS_Trop .ge. L0) THEN
+            XCH4_trop_1 = XCH4_trop_1 - (1.0_fp - WT_LGOS_Trop) *
+     &         ak(LGOS_Trop) * pres_w(LGOS_Trop) * GC_CH4(LGOS_Trop)
+         ENDIF
+
+         ! Calcualte XCH4_strat
+         XCH4_strat_1 = 0.0_fp
+         DO L = LGOS_Trop, LGOS
+            XCH4_strat_1 = XCH4_strat_1 +
+     &         ak(L) * pres_w(L) * GC_CH4(L)
+         ENDDO
+         IF (LGOS_Trop .le. LGOS) THEN
+           XCH4_strat_1 = XCH4_strat_1 - WT_LGOS_Trop *
+     &         ak(LGOS_Trop) * pres_w(LGOS_Trop) * GC_CH4(LGOS_Trop)
+         ENDIF
+
+         ! Calculate total column
+         GC_XCH4_1 = XCH4_prior_1 + XCH4_trop_1 + XCH4_strat_1
+
+         ! Remove mean bias from GEOS-Chem XCH4
+!         GC_XCH4 = GC_XCH4 - ( 1d-9 * MEAN_MODEL_BIAS )
+
+!====================================================================
+! Compute GC_XCH4 with the h operator used in AJT and JDM's work
+! This method seems to have two problems:
+! 1. It ignores the impact of  vertical variation in specific humidity
+!    on the weighting function
+! 2. The layer boundary here is at the altidue midpoint
+!    The paper that the UL-GOSAT paper cites uses pressure midpoint
+!====================================================================
+
+!         ! Need to integrate from the toa to surface (ajt, 05/21/13)
          IF (LGOS .GT. 1) THEN
             IF(GOS(NT)%PRES(L0+1) .LT. GOS(NT)%PRES(L0)) THEN
                p(1:LGOS) = p(LGOS:1:-1)
@@ -870,32 +982,50 @@
      &         ( -1e0*p(L) + ( (p(L+1)-p(L))/(LOG(p(L+1)/p(L))) ) ) +
      &         (      p(L) - ( (p(L)-p(L-1))/(LOG(p(L)/p(L-1))) ) )   )
          ENDDO
-
-         ! Now return to the orientation of the other variables
-         IF (LGOS .GT. 1) THEN
-            IF(GOS(NT)%PRES(L0+1) .LT. GOS(NT)%PRES(L0)) THEN
+!
+!         ! Now return to the orientation of the other variables
+         IF (LGOS .GT. 1) THEN 
+            IF(GOS(NT)%PRES(2) .LT. GOS(NT)%PRES(1)) THEN 
                h(1:LGOS) = h(LGOS:1:-1)
                p(1:LGOS) = p(LGOS:1:-1)
             ENDIF
          ENDIF
 
-         ! Calculate Xch4_a
-         XCH4a = 0.0_fp
-         DO L = L0,LGOS
-            XCH4a = XCH4a + h(L) * prior(L)
-         ENDDO
-
-         ! Calculate Xch4_m
-         XCH4m = 0.0_fp
-         XCH4m = XCH4a
+         
+         ! Calcualte XCH4_prior
+         XCH4_prior_2 = 0.0_fp
          DO L = L0, LGOS
-            XCH4m = XCH4m + ( h(L) * ak(L) * ( GC_CH4(L) - prior(L) ) )
+            XCH4_prior_2 = XCH4_prior_2 +
+     &         (1.0_fp - ak(L)) * h(L) * prior(L)
          ENDDO
-         GC_XCH4 = 0.0_fp
-         GC_XCH4 = XCH4m
 
-         ! Remove mean bias from GEOS-Chem XCH4
-         GC_XCH4 = GC_XCH4 - ( 1e-9_fp * MEAN_MODEL_BIAS )
+         ! Calcualte XCH4_trop
+         XCH4_trop_2 = 0.0_fp
+         DO L = L0, LGOS_Trop
+            XCH4_trop_2 = XCH4_trop_2 +
+     &         ak(L) * h(L) * GC_CH4(L)
+         ENDDO
+         IF (LGOS_Trop .ge. L0) THEN
+            XCH4_trop_2 = XCH4_trop_2 - (1.0_fp - WT_LGOS_Trop) *
+     &         ak(LGOS_Trop) * h(LGOS_Trop) * GC_CH4(LGOS_Trop)
+         ENDIF
+
+         ! Calcualte XCH4_strat
+         XCH4_strat_2 = 0.0_fp
+         DO L = LGOS_Trop, LGOS
+            XCH4_strat_2 = XCH4_strat_2 +
+     &         ak(L) * h(L) * GC_CH4(L)
+         ENDDO
+         IF (LGOS_Trop .le. LGOS) THEN
+           XCH4_strat_2 = XCH4_strat_2 - WT_LGOS_Trop *
+     &         ak(LGOS_Trop) * h(LGOS_Trop) * GC_CH4(LGOS_Trop)
+         ENDIF
+
+         ! Calculate total column
+         GC_XCH4_2 = XCH4_prior_2 + XCH4_trop_2 + XCH4_strat_2
+
+!---  zyz test with weighting function
+
 
          !--------------------------------------------------------------
          ! Calculate cost function, given S is error in vmr
@@ -903,7 +1033,7 @@
          !--------------------------------------------------------------
 
          ! Calculate difference between modeled and observed profile
-         DIFF = GC_XCH4 - GOS_XCH4
+         DIFF = GC_XCH4_1 - GOS_XCH4
 
          ! Calculate 1/2 * DIFF^T * S_{obs}^{-1} * DIFF
          ! Need to account for the model error (ajt, 03/27/2013)
@@ -958,13 +1088,24 @@
 
          ! Record information for satellite diagnostics
          IF ( LDCH4SAT ) THEN
-            WRITE( 117, 282 ) TotalObs, I, J, GOS(NT)%LON(1),
+            WRITE( 117, 283 ) TotalObs, I, J, GOS(NT)%LON(1),
      &           GOS(NT)%LAT(1),GOS(NT)%YEAR(1),
      &           GOS(NT)%MONTH(1),GOS(NT)%DAY(1), GOS(NT)%HOUR(1),
      &           GOS(NT)%MINUTE(1), GOS(NT)%SEC(1),
-     &           GET_TAU(), GOS_XCH4, GC_XCH4, S_OBS, 0.5d0*FORCE*DIFF,
+     &           GET_TAU(), GOS_XCH4, GC_XCH4_1, S_OBS, 
+     &           TROPP, XCH4_prior_1, XCH4_trop_1, XCH4_strat_1,
+     &           GC_XCH4_2, XCH4_prior_2, XCH4_trop_2, XCH4_strat_2,
+     &           0.5d0*FORCE*DIFF,
      &           GOS(NT)%GLINT(1),GOS(NT)%GAIN(1),GOS(NT)%EXP_ID(1)
          ENDIF
+!         IF ( LDCH4SAT .EQ. .TRUE. ) THEN 
+!            WRITE( 117, 282 ) TotalObs, I, J, GOS(NT)%LON(1),
+!     &           GOS(NT)%LAT(1),GOS(NT)%YEAR(1), 
+!     &           GOS(NT)%MONTH(1),GOS(NT)%DAY(1), GOS(NT)%HOUR(1), 
+!     &           GOS(NT)%MINUTE(1), GOS(NT)%SEC(1),
+!     &           GET_TAU(), GOS_XCH4, GC_XCH4, S_OBS, 0.5d0*FORCE*DIFF,
+!     &           GOS(NT)%GLINT(1),GOS(NT)%GAIN(1),GOS(NT)%EXP_ID(1)
+!         ENDIF
 
 
 
@@ -1076,12 +1217,17 @@
 ! 212  FORMAT(A12,F22.6)
 !==============================================================================
 
- 282  FORMAT( I10,2x,I4,2x,I4,2x,F8.3,2x,F8.4,2x,I4,2x,I2,2x,I2,2x,I2,
-     &        2x,I2,2x,I2,2x,F12.3,2x,E12.6,2x,E12.6,2x,E12.6,2x,E12.6,
-     &        2x,I5,2x,I5,2x,A22)
+! 282  FORMAT( I10,2x,I4,2x,I4,2x,F8.3,2x,F8.4,2x,I4,2x,I2,2x,I2,2x,I2,
+!     &        2x,I2,2x,I2,2x,F12.3,2x,E12.6,2x,E12.6,2x,E12.6,2x,E12.6,
+!     &        2x,I5,2x,I5,2x,A22)
 
-      print*, ' Updated value of COST_FUNC = ', COST_FUNC
-      print*, ' GOS contribution           = ', COST_FUNC - OLD_COST
+ 283  FORMAT( I10,2x,I4,2x,I4,2x,F8.3,2x,F8.4,2x,I4,2x,I2,2x,I2,2x,I2,
+     &        2x,I2,2x,I2,2x,F12.3,2x,E12.6,2x,E12.6,2x,E12.6,
+     &        2x, F12.3, 2x,E12.6, 2x, E12.6, 2x, E12.6,
+     &        2x,E12.6, 2x, E12.6, 2x, E12.6, 2x, E12.6,
+     &        2x, E12.6, 2x,I5,2x,I5,2x,A22)
+      print*, ' Updated value of COST_FUNC = ', COST_FUNC 
+      print*, ' GOS contribution           = ', COST_FUNC - OLD_COST  
       print*, ' Number of observations this hour = ', NOBS
       print*, ' Number of observations total     = ', TotalObs
 
@@ -1916,5 +2062,37 @@
        ENDDO
 
       END SUBROUTINE GET_INTMAP
+ 
+      ! ---- zyz ----
+      SUBROUTINE GET_TROP_LAYER(TROPP, GOSP, nlev, LTROP, WT_LTROP)
+      REAL(fp), INTENT(IN)  :: TROPP
+      REAL(fp), INTENT(IN)  :: GOSP(MAXLEV) 
+      INTEGER,  INTENT(IN)  :: nlev
+
+      INTEGER,  INTENT(OUT) :: LTROP
+      REAL(fp), INTENT(OUT) :: WT_LTROP
+
+      INTEGER :: L
+      REAL(fp)              :: GOSP_HF(nlev-1)
+
+      !Estimate the edge of GOSAT layers
+      DO L = 1, nlev-1
+         GOSP_HF(L) = (GOSP(L)+GOSP(L+1))/2e+0_fp
+      ENDDO
+
+      !Find the layer that enclose the tropopause
+      !Estimate the WT_LTROP as the fraction of pressure
+      !difference in that layer
+      LTROP = 1
+      WT_LTROP = 0
+      DO L = 1, nlev-2
+         IF (TROPP < GOSP_HF(L) .and. TROPP>= GOSP_HF(L+1)) THEN
+            LTROP=L+1
+            WT_LTROP= (GOSP_HF(L)-TROPP)/(GOSP_HF(L)-GOSP_HF(L+1))
+            EXIT
+         ENDIF
+      ENDDO
+      END SUBROUTINE GET_TROP_LAYER
+
 !EOC
       END MODULE GOSAT_CH4_MOD
