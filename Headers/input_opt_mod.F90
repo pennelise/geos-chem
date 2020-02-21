@@ -362,9 +362,9 @@ MODULE Input_Opt_Mod
      LOGICAL                     :: AnalyticalInv
      REAL(fp)                    :: PerturbEmis
      INTEGER                     :: ClusterNumber
-     LOGICAL                     :: ApplyEmisSF
-     LOGICAL                     :: ApplyWetlandSF
-     LOGICAL                     :: ApplyOHSF
+     LOGICAL                     :: UseEmisSF
+     LOGICAL                     :: UseWetlandSF
+     LOGICAL                     :: UseOHSF
 
      !----------------------------------------
      ! POPS MENU fields
@@ -889,9 +889,9 @@ CONTAINS
     Input_Opt%AnalyticalInv          = .FALSE.
     Input_Opt%PerturbEmis            = 1.0
     Input_Opt%ClusterNumber          = 0
-    Input_Opt%ApplyEmisSF            = .FALSE.
-    Input_Opt%ApplyWetlandSF         = .FALSE.
-    Input_Opt%ApplyOHSF              = .FALSE.
+    Input_Opt%UseEmisSF              = .FALSE.
+    Input_Opt%UseWetlandSF           = .FALSE.
+    Input_Opt%UseOHSF                = .FALSE.
 
     !----------------------------------------
     ! POPS MENU fields

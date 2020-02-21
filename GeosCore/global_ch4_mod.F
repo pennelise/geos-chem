@@ -297,7 +297,7 @@
 
          ENDIF
 
-         IF ( Input_Opt%ApplyEmisSF ) THEN
+         IF ( Input_Opt%UseEmisSF ) THEN
 
             ! Get pointer to CH4 emissions scale factors
             CALL HCO_GetPtr( am_I_Root, HcoState, 'EMIS_SF',
@@ -310,7 +310,7 @@
 
          ENDIF
 
-         IF ( Input_Opt%ApplyOHSF ) THEN
+         IF ( Input_Opt%UseOHSF ) THEN
 
             ! Get pointer to OH scale factors
             CALL HCO_GetPtr( am_I_Root, HcoState, 'OH_SF',
@@ -323,9 +323,9 @@
 
          ENDIF
 
-         IF ( Input_Opt%ApplyWetlandSF ) THEN
+         IF ( Input_Opt%UseWetlandSF ) THEN
 
-            ! Get pointer to OH scale factors
+            ! Get pointer to wetlands scale factors
             CALL HCO_GetPtr( am_I_Root,  HcoState, 'WETLAND_SF',
      &                       WETLAND_SF, RC)
             IF ( RC /= HCO_SUCCESS ) THEN
@@ -698,8 +698,8 @@
       ! =================================================================
       ! Do scaling for analytical inversion
       ! =================================================================
-      IF ( Input_Opt%AnalyticalInv  .or. Input_Opt%ApplyEmisSF .or.
-     &     Input_Opt%ApplyWetlandSF .or. Input_Opt%ApplyOHSF ) THEN
+      IF ( Input_Opt%AnalyticalInv  .or. Input_Opt%UseEmisSF .or.
+     &     Input_Opt%UseWetlandSF   .or. Input_Opt%UseOHSF ) THEN
 
          ! Don't optimize for soil absorption so remove from the total
          ! emissions array
@@ -716,21 +716,23 @@
             ! For applying scale factors from analytical inversion
             !------------------------------------------------------------
 
-            ! Remove wetland emissions from total
-            CH4_EMIS(I,J,1)  = CH4_EMIS(I,J,1) - CH4_EMIS(I,J,11)
+            IF ( Input_Opt%UseWetlandSF ) THEN
+               ! Remove wetland emissions from total
+               CH4_EMIS(I,J,1)  = CH4_EMIS(I,J,1) - CH4_EMIS(I,J,11)
 
-            ! Scale wetland emissions
-            IF ( Input_Opt%ApplyWetlandSF ) THEN
+               ! Scale wetland emissions separately
                CH4_EMIS(I,J,11) = CH4_EMIS(I,J,11) * WETLAND_SF(I,J)
             ENDIF
 
             ! Scale total emissions (minus wetland)
-            IF ( Input_Opt%ApplyEmisSF ) THEN
+            IF ( Input_Opt%UseEmisSF ) THEN
                CH4_EMIS(I,J,1) = CH4_EMIS(I,J,1) * EMIS_SF(I,J)
             ENDIF
 
-            ! Add wetland emissions back to total
-            CH4_EMIS(I,J,1)  = CH4_EMIS(I,J,1) + CH4_EMIS(I,J,11)
+            IF ( Input_Opt%UseWetlandSF ) THEN
+               ! Add wetland emissions back to total
+               CH4_EMIS(I,J,1)  = CH4_EMIS(I,J,1) + CH4_EMIS(I,J,11)
+            ENDIF
 
             !------------------------------------------------------------
             ! Perturb emissions for analytical inversion
@@ -1219,7 +1221,7 @@
             C_OH = BOH(I,J,L) * XNUMOL_OH / CM3PERM3
 
             ! Apply scale factors from analytical inversion
-            IF ( Input_Opt%ApplyOHSF ) THEN
+            IF ( Input_Opt%UseOHSF ) THEN
                C_OH = C_OH * OH_SF(I,J)
                !Print*, 'Applying scale factor to OH: ', OH_SF(I,J)
             ENDIF
