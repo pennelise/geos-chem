@@ -238,7 +238,6 @@
 
       ! Reals
       REAL(f8)                 :: TAU,           TAUb
-      REAL(fpp)                :: COST_FUNC ! Add here temporarily (mps,6/16/17)
 
       ! Strings
       CHARACTER(LEN=255)       :: ThisLoc,       ZTYPE
@@ -2052,8 +2051,7 @@
             IF ( Input_Opt%GOSAT_CH4_OBS ) THEN
                IF ( ITS_A_NEW_HOUR() ) THEN
                   CALL CALC_GOSAT_CH4_FORCE( Input_Opt,  State_Chm,
-     &                                       State_Grid, State_Met,
-     &                                       COST_FUNC )
+     &                                       State_Grid, State_Met )
                ENDIF
             ENDIF
 
@@ -2061,8 +2059,7 @@
             IF ( Input_Opt%TCCON_CH4_OBS ) THEN
                IF ( ITS_A_NEW_HOUR() ) THEN
                   CALL CALC_TCCON_CH4_FORCE( Input_Opt,  State_Chm,
-     &                                       State_Grid, State_Met,
-     &                                       COST_FUNC )
+     &                                       State_Grid, State_Met )
                ENDIF
             ENDIF
 
