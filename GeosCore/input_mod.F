@@ -308,15 +308,6 @@
                RETURN
             ENDIF
 
-#if !(defined( EXTERNAL_GRID ) || defined( EXTERNAL_FORCING ))
-         ELSE IF ( INDEX( LINE, 'PLANEFLIGHT MENU' ) > 0 ) THEN
-            CALL READ_PLANEFLIGHT_MENU( am_I_Root, Input_Opt, RC )
-            IF ( RC /= GC_SUCCESS ) THEN
-               ErrMsg = 'Error in "Read_Planeflight_Menu"!'
-               CALL GC_Error( ErrMsg, RC, ThisLoc )
-               RETURN
-            ENDIF
-
          ELSE IF ( INDEX( LINE, 'OBSPACK MENU' ) > 0 ) THEN
             CALL READ_OBSPACK_MENU( am_I_Root, Input_Opt, RC )
             IF ( RC /= GC_SUCCESS ) THEN
@@ -325,6 +316,7 @@
                RETURN
             ENDIF
 
+#if !(defined( EXTERNAL_GRID ) || defined( EXTERNAL_FORCING ))
 #ifdef BPCH_DIAG
          !==============================================================
          ! Skip BPCH-related menus unless compiled with BPCH_DIAG=y
@@ -350,6 +342,14 @@
             CALL READ_DIAGNOSTIC_MENU( am_I_Root, Input_Opt, RC )
             IF ( RC /= GC_SUCCESS ) THEN
                ErrMsg = 'Error in "Read_Diagnostic_Menu"!'
+               CALL GC_Error( ErrMsg, RC, ThisLoc )
+               RETURN
+            ENDIF
+
+         ELSE IF ( INDEX( LINE, 'PLANEFLIGHT MENU' ) > 0 ) THEN
+            CALL READ_PLANEFLIGHT_MENU( am_I_Root, Input_Opt, RC )
+            IF ( RC /= GC_SUCCESS ) THEN
+               ErrMsg = 'Error in "Read_Planeflight_Menu"!'
                CALL GC_Error( ErrMsg, RC, ThisLoc )
                RETURN
             ENDIF
