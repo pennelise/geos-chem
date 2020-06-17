@@ -745,14 +745,8 @@
          GC_CH4_NATIVE(:) = 0.0_fp
 
          ! Get species concentrations [v/v]
-         GC_CH4_NATIVE(:) = State_Chm%Species(I,J,:,id_CH4) * ( AIRMW /
-     &                      State_Chm%SpcData(id_CH4)%Info%emMW_g )
-!         print*,'CH4 Prof (kg/box)',State_Chm%Species(I,J,:,id_CH4) 
-!         print*,'AIRMW',AIRMW
-!         print*,'CH4MW',State_Chm%SpcData(id_CH4)%Info%emMW_g
-!         print*,'CH4 prof (v/v)', GC_CH4_NATIVE
-!         print*,'AD',State_Met%AD(I,J,:)
-!         print*,'MAP',MAP
+         GC_CH4_NATIVE(:) = State_Chm%Species(I,J,:,id_CH4)
+
          ! Interpolate GC CH4 column to GOSAT grid
          ! Use L0 for lowest valid layer for GOSAT (zyz)
          DO LL = L0, LGOS
