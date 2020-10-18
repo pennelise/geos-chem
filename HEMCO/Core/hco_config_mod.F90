@@ -969,6 +969,7 @@ CONTAINS
                 ! - "RY" : range, always use simulation year
                 ! - "E"  : exact (read file once)
                 ! - "EF" : exact, forced (error if not exist, read/query once)
+                ! - "EFY": exact, always use simulation year
                 ! - "EC" : exact (read/query continuously, e.g. for ESMF interface)
                 ! - "ECF": exact, forced (error if not exist, read/query continuously)
                 ! - "EY" : exact, always use simulation year
@@ -1018,6 +1019,10 @@ CONTAINS
                    Dta%CycleFlag = HCO_CFLAG_EXACT
                    Dta%UpdtFlag  = HCO_UFLAG_ONCE
                    Dta%MustFind  = .TRUE.
+                ELSEIF ( TRIM(TmCycle) == "EFY" ) THEN
+                   Dta%CycleFlag = HCO_CFLAG_EXACT
+                   Dta%MustFind  = .TRUE.
+                   Dta%UseSimYear= .TRUE.
                 ELSEIF ( TRIM(TmCycle) == "EC" ) THEN
                    Dta%CycleFlag = HCO_CFLAG_EXACT
                 ELSEIF ( TRIM(TmCycle) == "ECF" ) THEN
@@ -1269,6 +1274,7 @@ CONTAINS
              ! - "RY" : range, always use simulation year
              ! - "E"  : exact (read file once)
              ! - "EF" : exact, forced (error if not exist, read/query once)
+             ! - "EFY": exact, always use simulation year
              ! - "EC" : exact (read/query continuously, e.g. for ESMF interface)
              ! - "ECF": exact, forced (error if not exist, read/query continuously)
              ! - "EY" : exact, always use simulation year
@@ -1316,6 +1322,10 @@ CONTAINS
                 Dta%CycleFlag = HCO_CFLAG_EXACT
                 Dta%UpdtFlag  = HCO_UFLAG_ONCE
                 Dta%MustFind  = .TRUE.
+             ELSEIF ( TRIM(TmCycle) == "EFY" ) THEN
+                Dta%CycleFlag = HCO_CFLAG_EXACT
+                Dta%MustFind  = .TRUE.
+                Dta%UseSimYear= .TRUE.
              ELSEIF ( TRIM(TmCycle) == "EC" ) THEN
                 Dta%CycleFlag = HCO_CFLAG_EXACT
              ELSEIF ( TRIM(TmCycle) == "ECF" ) THEN
