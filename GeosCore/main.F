@@ -98,6 +98,7 @@
       USE HISTORY_MOD           ! Updated netCDF diagnostics
       USE OBSPACK_MOD           ! For ObsPack diagnostics
       USE GOSAT_CH4_MOD         ! For GOSAT observation operator
+      USE AIRS_CH4_MOD          ! For AIRS observation operator
       USE TCCON_CH4_MOD         ! For TCCON observation operator
       USE HCOI_GC_MAIN_MOD      ! Writes out HEMCO diagnostics (C. Keller)
 
@@ -2055,6 +2056,14 @@
                ENDIF
             ENDIF
 
+            ! CH4 columns from the AIRS instrument (mps, 8/17/17)
+            IF ( Input_Opt%AIRS_CH4_OBS ) THEN
+               IF ( ITS_A_NEW_HOUR() ) THEN
+                  CALL CALC_AIRS_CH4_FORCE( Input_Opt,  State_Chm,
+     &                                       State_Grid, State_Met )
+               ENDIF
+            ENDIF
+
             ! CH4 columns from the TCCON instrument (mps, 8/17/17)
             IF ( Input_Opt%TCCON_CH4_OBS ) THEN
                IF ( ITS_A_NEW_HOUR() ) THEN
@@ -2062,7 +2071,7 @@
      &                                       State_Grid, State_Met )
                ENDIF
             ENDIF
-
+         
          ENDIF
 
          !==============================================================

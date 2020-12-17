@@ -358,6 +358,7 @@ MODULE Input_Opt_Mod
      ! CH4 MENU fields
      !----------------------------------------
      LOGICAL                     :: GOSAT_CH4_OBS
+     LOGICAL                     :: AIRS_CH4_OBS
      LOGICAL                     :: TROPOMI_CH4_OBS
      LOGICAL                     :: TCCON_CH4_OBS
      LOGICAL                     :: AnalyticalInv
@@ -886,6 +887,7 @@ CONTAINS
     ! CH4 MENU fields
     !----------------------------------------
     Input_Opt%GOSAT_CH4_OBS          = .FALSE.
+    Input_Opt%AIRS_CH4_OBS           = .FALSE.
     Input_Opt%TROPOMI_CH4_OBS        = .FALSE.
     Input_Opt%TCCON_CH4_OBS          = .FALSE.
     Input_Opt%AnalyticalInv          = .FALSE.
