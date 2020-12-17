@@ -365,6 +365,7 @@ MODULE Input_Opt_Mod
      REAL(fp)                    :: PerturbEmis
      INTEGER                     :: ClusterNumber
      LOGICAL                     :: UseEmisSF
+     LOGICAL                     :: UseEmisTrendSF ! (erp, 14 Dec 2020)
      LOGICAL                     :: UseWetlandSF
      LOGICAL                     :: UseOHSF
 
@@ -894,6 +895,7 @@ CONTAINS
     Input_Opt%PerturbEmis            = 1.0
     Input_Opt%ClusterNumber          = 0
     Input_Opt%UseEmisSF              = .FALSE.
+    Input_Opt%UseEmisTrendSF         = .FALSE. ! (erp 14 Dec, 2020)
     Input_Opt%UseWetlandSF           = .FALSE.
     Input_Opt%UseOHSF                = .FALSE.
 

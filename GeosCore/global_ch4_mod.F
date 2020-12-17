@@ -127,6 +127,10 @@
       ! Species ID flag
       INTEGER               :: id_CH4
 
+      ! Current year & index for EMIS_TREND
+      INTEGER               :: YEAR_NOW ! erp
+      INTEGER               :: IND ! erp
+
       ! Various arrays
       REAL(fp), ALLOCATABLE :: BAIRDENS(:,:,:)
 
@@ -139,8 +143,9 @@
       REAL(f4), POINTER     :: CH4LOSS(:,:,:) => NULL()
       REAL(f4), POINTER     :: CLUSTERS(:,:)  => NULL()
       REAL(f4), POINTER     :: EMIS_SF(:,:)   => NULL()
+      REAL(f4), POINTER     :: EMIS_TREND_SF(:,:)=> NULL()
       REAL(f4), POINTER     :: OH_SF(:,:)     => NULL()
-      REAL(f4), POINTER     :: WETLAND_SF(:,:)=> NULL()
+      REAL(f4), POINTER     :: WETLAND_SF(:,:)=> NULL() ! erp
 
       REAL(fp)              :: TROPOCH4
 
@@ -171,6 +176,7 @@
       USE Input_Opt_Mod,      ONLY : OptInput
       USE State_Grid_Mod,     ONLY : GrdState
       USE State_Met_Mod,      ONLY : MetState
+      USE TIME_MOD,           ONLY : GET_YEAR
 !
 ! !INPUT PARAMETERS:
 !
@@ -304,6 +310,20 @@
      &                       EMIS_SF, RC)
             IF ( RC /= HCO_SUCCESS ) THEN
                ErrMsg = 'Cannot get pointer to HEMCO field EMIS_SF'
+               CALL GC_Error( ErrMsg, RC, ThisLoc )
+               RETURN
+            ENDIF
+
+         ENDIF
+
+         IF ( Input_Opt%UseEmisTrendSF ) THEN
+
+            ! Get pointer to CH4 emissions trend scale factors
+            CALL HCO_GetPtr( am_I_Root, HcoState, 'EMIS_TREND_SF',
+     &                       EMIS_TREND_SF, RC)
+            IF ( RC /= HCO_SUCCESS ) THEN
+               ErrMsg = 
+     &            'Cannot get pointer to HEMCO field EMIS_TREND_SF'
                CALL GC_Error( ErrMsg, RC, ThisLoc )
                RETURN
             ENDIF
@@ -724,8 +744,18 @@
                CH4_EMIS(I,J,11) = CH4_EMIS(I,J,11) * WETLAND_SF(I,J)
             ENDIF
 
+            ! Scale total emissions and total emissions trend
+               ! adding this based on xlu and zyz code. (erp, 14 Dec 2020)
+            IF ( Input_Opt%UseEmisTrendSF ) THEN
+               ! TODO: the start year for the trend is HARDCODED to 2010
+               YEAR_NOW = GET_YEAR()
+               IND = YEAR_NOW - 2010 
+               CH4_EMIS(I,J,1) = CH4_EMIS(I,J,1) * 
+     &                           ( EMIS_SF(I,J) + 
+     &                             EMIS_TREND_SF(I,J) * dble(IND) ) 
+            
             ! Scale total emissions (minus wetland)
-            IF ( Input_Opt%UseEmisSF ) THEN
+            ELSE IF ( Input_Opt%UseEmisSF ) THEN
                CH4_EMIS(I,J,1) = CH4_EMIS(I,J,1) * EMIS_SF(I,J)
             ENDIF
 

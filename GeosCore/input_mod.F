@@ -5264,6 +5264,14 @@
       ENDIF
       READ( SUBSTRS(1:N), * ) Input_Opt%UseEmisSF
 
+      ! Use emission trend scale factors? (erp, 14 Dec 2020)
+      CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'UseEmisTrendSF', RC )
+      IF ( RC /= GC_SUCCESS ) THEN
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+      READ( SUBSTRS(1:N), * ) Input_Opt%UseEmisTrendSF
+
       ! Use separate wetland scale factors?
       CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'UseWetlandSF', RC )
       IF ( RC /= GC_SUCCESS ) THEN
@@ -5307,10 +5315,12 @@
      &                        Input_Opt%ClusterNumber
          WRITE( 6, 100     ) 'Use emis scale factors   :',
      &                        Input_Opt%UseEmisSF
+         WRITE( 6, 100     ) 'Use emis trend scale factors   :',
+     &                        Input_Opt%UseEmisTrendSF ! (erp)
          WRITE( 6, 100     ) 'Use separate wetland SFs :',
      &                        Input_Opt%UseWetlandSF
          WRITE( 6, 100     ) 'Use OH scale factors     :',
-     &                        Input_Opt%UseOHSF 
+     &                        Input_Opt%UseOHSF ! was UseEmisSF (erp)
       END IF
 
       ! FORMAT statements
