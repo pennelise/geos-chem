@@ -363,6 +363,11 @@ MODULE Input_Opt_Mod
      LOGICAL                     :: TCCON_CH4_OBS
      LOGICAL                     :: AnalyticalInv
      REAL(fp)                    :: PerturbEmis
+     REAL(fp)                    :: PerturbWetland
+     REAL(fp)                    :: PerturbOH
+     INTEGER                     :: PerturbYear
+     INTEGER                     :: PerturbMonth
+     INTEGER                     :: PerturbSeason
      INTEGER                     :: ClusterNumber
      LOGICAL                     :: UseEmisSF
      LOGICAL                     :: UseWetlandSF
@@ -892,6 +897,11 @@ CONTAINS
     Input_Opt%TCCON_CH4_OBS          = .FALSE.
     Input_Opt%AnalyticalInv          = .FALSE.
     Input_Opt%PerturbEmis            = 1.0
+    Input_Opt%PerturbWetland         = 1.0
+    Input_Opt%PerturbOH              = 1.0
+    Input_Opt%PerturbYear            = 0
+    Input_Opt%PerturbMonth           = 0
+    Input_Opt%PerturbSeason          = 0
     Input_Opt%ClusterNumber          = 0
     Input_Opt%UseEmisSF              = .FALSE.
     Input_Opt%UseWetlandSF           = .FALSE.

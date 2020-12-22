@@ -5248,6 +5248,46 @@
       ENDIF
       READ( SUBSTRS(1:N), * ) Input_Opt%PerturbEmis
 
+      ! Wetland emission perturbation
+      CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'PerturbWetland', RC )
+      IF ( RC /= GC_SUCCESS ) THEN
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+      READ( SUBSTRS(1:N), * ) Input_Opt%PerturbWetland
+
+      ! OH perturbation
+      CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'PerturbOH', RC )
+      IF ( RC /= GC_SUCCESS ) THEN
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+      READ( SUBSTRS(1:N), * ) Input_Opt%PerturbOH
+
+      ! Perturbation year
+      CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'PerturbYear', RC )
+      IF ( RC /= GC_SUCCESS ) THEN
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+      READ( SUBSTRS(1:N), * ) Input_Opt%PerturbYear
+
+      ! Perturbation month
+      CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'PerturbMonth', RC )
+      IF ( RC /= GC_SUCCESS ) THEN
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+      READ( SUBSTRS(1:N), * ) Input_Opt%PerturbMonth
+
+      ! Perturbation season
+      CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'PerturbSeason', RC )
+      IF ( RC /= GC_SUCCESS ) THEN
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+      READ( SUBSTRS(1:N), * ) Input_Opt%PerturbSeason
+
       ! Current cluster number
       CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'ClusterNumber', RC )
       IF ( RC /= GC_SUCCESS ) THEN
@@ -5303,6 +5343,16 @@
      &                        Input_Opt%AnalyticalInv
          WRITE( 6, 110     ) 'Emission perturbation    : ',
      &                        Input_Opt%PerturbEmis
+         WRITE( 6, 110     ) 'Wetland perturbation     : ',
+     &                        Input_Opt%PerturbWetland
+         WRITE( 6, 110     ) 'OH perturbation          : ',
+     &                        Input_Opt%PerturbOH
+         WRITE( 6, 110     ) 'Perturbation year        : ',
+     &                        Input_Opt%PerturbYear
+         WRITE( 6, 110     ) 'Perturbation month       : ',
+     &                        Input_Opt%PerturbMonth
+         WRITE( 6, 110     ) 'Perturbation season      : ',
+     &                        Input_Opt%PerturbSeason
          WRITE( 6, 120     ) 'Current cluster number   : ',
      &                        Input_Opt%ClusterNumber
          WRITE( 6, 100     ) 'Use emis scale factors   :',
