@@ -171,6 +171,7 @@
       USE Input_Opt_Mod,      ONLY : OptInput
       USE State_Grid_Mod,     ONLY : GrdState
       USE State_Met_Mod,      ONLY : MetState
+      USE TIME_MOD,           ONLY : GET_YEAR, GET_MONTH
 !
 ! !INPUT PARAMETERS:
 !
@@ -246,6 +247,18 @@
       LOGICAL                  :: prtDebug
       LOGICAL, SAVE            :: FIRST = .TRUE.
 
+      ! For storing time values
+      INTEGER                  :: YEAR_NOW     
+      INTEGER                  :: MONTH_NOW     
+      INTEGER                  :: SEASON_NOW     
+
+ 
+      ! For storing which emissions/OH are being perturbed
+      LOGICAL                  :: IS_EMIS_PERTURBED
+      LOGICAL                  :: IS_WETLAND_PERTURBED
+      LOGICAL                  :: IS_OH_PERTURBED
+      LOGICAL                  :: ITS_PERTURB_TIME
+
       ! Pointers
       REAL(f4),        POINTER :: Ptr2D(:,:)
 
@@ -265,6 +278,16 @@
       ITS_A_CH4_SIM  = Input_Opt%ITS_A_CH4_SIM
       LPRT           = Input_Opt%LPRT
 
+      ! Find which emissions/OH are being perturbed
+      IF ( Input_Opt%AnalyticalInv ) THEN
+         IS_EMIS_PERTURBED    = ABS( Input_Opt%PerturbEmis - 1.0 ) 
+     &                          .GT. 0.0001
+         IS_WETLAND_PERTURBED = ABS( Input_Opt%PerturbWetland - 1.0 ) 
+     &                          .GT. 0.0001
+         IS_OH_PERTURBED      = ABS( Input_Opt%PerturbOH - 1.0 ) 
+     &                          .GT. 0.0001
+      ENDIF
+
       ! Do we have to print debug output?
       prtDebug       = ( LPRT .and. am_I_Root )
 
@@ -273,6 +296,18 @@
          ErrMsg = 'The HcoState object is undefined!'
          CALL GC_Error( ErrMsg, RC, ThisLoc )
          RETURN
+      ENDIF
+
+      ! Exit with error if multiple emissions/OH are being perturbed
+      IF ( Input_Opt%AnalyticalInv ) THEN
+         IF ( ( IS_EMIS_PERTURBED .AND. IS_WETLAND_PERTURBED ) .OR.
+     &        ( IS_EMIS_PERTURBED .AND. IS_OH_PERTURBED      ) .OR.
+     &        ( IS_OH_PERTURBED   .AND. IS_WETLAND_PERTURBED ) ) THEN
+            ErrMsg = 'More than one of emissions/wetlands/OH are 
+     &                being perturbed!'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF 
       ENDIF
 
       ! Emission timestep
@@ -285,14 +320,43 @@
       IF ( FIRST ) THEN
 
          IF ( Input_Opt%AnalyticalInv ) THEN
+         
+            ! Get pointer to nonwetland emissions cluster file
+            IF ( IS_EMIS_PERTURBED ) THEN
+               CALL HCO_GetPtr( am_I_Root, HcoState, 'CH4_CLUSTERS',
+     &                          CLUSTERS, RC)
+               IF ( RC /= HCO_SUCCESS ) THEN
+                  ErrMsg = 'Cannot get pointer to HEMCO field 
+     &                      CH4_CLUSTERS'
+                  CALL GC_Error( ErrMsg, RC, ThisLoc )
+                  RETURN
+               ENDIF
+            ENDIF 
 
-            ! Get pointer to cluster file
-            CALL HCO_GetPtr( am_I_Root, HcoState, 'CH4_CLUSTERS',
-     &                       CLUSTERS, RC)
-            IF ( RC /= HCO_SUCCESS ) THEN
-               ErrMsg = 'Cannot get pointer to HEMCO field CH4_CLUSTERS'
-               CALL GC_Error( ErrMsg, RC, ThisLoc )
-               RETURN
+            ! Get pointer to wetland emissions cluster file
+            IF ( IS_WETLAND_PERTURBED ) THEN
+               CALL HCO_GetPtr( am_I_Root, HcoState, 
+     &                          'CH4_WETLAND_CLUSTERS',
+     &                           CLUSTERS, RC)
+               IF ( RC /= HCO_SUCCESS ) THEN
+                  ErrMsg = 'Cannot get pointer to HEMCO field 
+     &                      CH4_WETLAND_CLUSTERS'
+                  CALL GC_Error( ErrMsg, RC, ThisLoc )
+                  RETURN
+               ENDIF
+            ENDIF
+
+            ! Get pointer to OH emissions cluster file
+            IF ( IS_OH_PERTURBED ) THEN
+               CALL HCO_GetPtr( am_I_Root, HcoState, 
+     &                          'CH4_OH_CLUSTERS',
+     &                           CLUSTERS, RC)
+               IF ( RC /= HCO_SUCCESS ) THEN
+                  ErrMsg = 'Cannot get pointer to HEMCO field 
+     &                      CH4_OH_CLUSTERS'
+                  CALL GC_Error( ErrMsg, RC, ThisLoc )
+                  RETURN
+               ENDIF
             ENDIF
 
          ENDIF
@@ -737,20 +801,79 @@
             !------------------------------------------------------------
             ! Perturb emissions for analytical inversion
             !------------------------------------------------------------
-            IF ( Input_Opt%AnalyticalInv ) THEN
+            IF ( Input_Opt%AnalyticalInv .AND. 
+     &         ( Input_Opt%ClusterNumber .GT. 0 ) ) THEN
 
-               ! Only apply emission perturbation to current cluster number
-               IF ( Input_Opt%ClusterNumber .GT. 0 ) THEN
-                  IF ( CLUSTERS(I,J) == Input_Opt%ClusterNumber ) THEN
-                     CH4_EMIS(I,J,1) = CH4_EMIS(I,J,1) * 
-     &                                 Input_Opt%PerturbEmis
-                     Print*, 'Analytical Inversion: Scaled cluster ',
-     &                    Input_Opt%ClusterNumber, ' by ',
-     &                    Input_Opt%PerturbEmis
+               ! Check if date matches the year/month/season required
+               YEAR_NOW   = GET_YEAR()
+               MONTH_NOW  = GET_MONTH()
+               ! Season index (1=DJF, 2=MAM, 3=JJA, 4=SON)
+               SELECT CASE ( MONTH_NOW )
+                  CASE ( 12, 1, 2 )
+                     SEASON_NOW = 1
+                  CASE ( 3, 4, 5 )
+                     SEASON_NOW = 2
+                  CASE ( 6, 7, 8 )
+                     SEASON_NOW = 3
+                  CASE ( 9, 10, 11 )
+                     SEASON_NOW = 4
+               END SELECT
+               ! Initialize ITS_PERTURB_TIME
+               ITS_PERTURB_TIME = .FALSE.
+               ! Handle winter (season is split across two years)
+               IF ( (Input_Opt%PerturbSeason == 1 ) .AND. 
+     &              ( MONTH_NOW == 12 ) ) THEN
+                  ! Include December of previous year in current year's winter 
+                  IF ( YEAR_NOW == Input_Opt%PerturbYear-1 ) THEN 
+                     ITS_PERTURB_TIME = .TRUE.
+                  END IF
+               ! Treat all other cases here 
+               ! year
+               ELSE IF ( ( Input_Opt%PerturbYear == 0 ) .OR. 
+     &              ( YEAR_NOW == Input_Opt%PerturbYear ) ) THEN
+                  ! month
+                  IF ( ( Input_Opt%PerturbMonth == 0 ) .OR. 
+     &                 ( MONTH_NOW == Input_Opt%PerturbMonth ) ) THEN
+                     ! season
+                     IF ( ( Input_Opt%PerturbSeason == 0 ) .OR. 
+     &                    ( SEASON_NOW == Input_Opt%PerturbSeason ) ) 
+     &                  THEN
+                        ITS_PERTURB_TIME = .TRUE.
+                     ENDIF
                   ENDIF
                ENDIF
-            ENDIF
 
+               ! Only apply emission perturbation to current cluster number
+               ! (and year/month/season, if applicable)
+               IF ( ( CLUSTERS(I,J) == Input_Opt%ClusterNumber ) .AND. 
+     &              ( ITS_PERTURB_TIME ) ) THEN
+
+                  ! Remove wetland emissions from total
+                  CH4_EMIS(I,J,1)  = CH4_EMIS(I,J,1) - CH4_EMIS(I,J,11)
+
+                  ! Perturb nonwetland emissions separately
+                  IF ( IS_EMIS_PERTURBED ) THEN 
+                     CH4_EMIS(I,J,1) = CH4_EMIS(I,J,1) * 
+     &                                 Input_Opt%PerturbEmis
+                     Print*, 'Analytical Inversion: Scaled emis clust ',
+     &                        Input_Opt%ClusterNumber, ' by ',
+     &                        Input_Opt%PerturbEmis
+                  ENDIF
+
+                  ! Perturb wetland emissions separately
+                  IF ( IS_WETLAND_PERTURBED ) THEN 
+                     CH4_EMIS(I,J,11) = CH4_EMIS(I,J,11) *
+     &                                  Input_Opt%PerturbWetland 
+                     Print*, 'Analytical Inversion: Scaled wetl. clust', 
+     &                       Input_Opt%ClusterNumber, ' by ',
+     &                       Input_Opt%PerturbWetland
+                  ENDIF
+
+                  ! Add wetland emissions back to total
+                  CH4_EMIS(I,J,1)  = CH4_EMIS(I,J,1) + CH4_EMIS(I,J,11)
+               ENDIF
+            ENDIF
+         
          ENDDO
          ENDDO
 !$OMP END PARALLEL DO
@@ -1132,9 +1255,11 @@
       ! Scalars
       INTEGER           :: I,  J,    L
       INTEGER           :: YEAR, N
+      INTEGER           :: YEAR_NOW, MONTH_NOW, SEASON_NOW
       REAL(fp)          :: DT, GCH4, Spc2GCH4
       REAL(fp)          :: KRATE, C_OH
       REAL(fp)          :: KRATE_Cl, C_Cl
+      LOGICAL           :: IS_OH_PERTURBED, ITS_PERTURB_TIME
 
       ! Pointers
       REAL(fp), POINTER :: Spc(:,:,:,:)
@@ -1219,6 +1344,71 @@
             ! BOH is imported from HEMCO in units of kg/m3, convert
             !  here to molec/cm3 (ckeller, 9/16/2014)
             C_OH = BOH(I,J,L) * XNUMOL_OH / CM3PERM3
+
+
+            ! Apply perturbations for analytical inversion
+            IF ( Input_Opt%AnalyticalInv .AND. 
+     &         ( Input_Opt%ClusterNumber .GT. 0 ) ) THEN
+
+               ! Check if OH is perturbed
+               IS_OH_PERTURBED      = ABS( Input_Opt%PerturbOH - 1.0 )
+     &                               .GT. 0.0001
+
+               ! Check if date matches the year/month/season required 
+               YEAR_NOW   = GET_YEAR()
+               MONTH_NOW  = GET_MONTH()
+               ! Season index (1=DJF, 2=MAM, 3=JJA, 4=SON)
+               SELECT CASE ( MONTH_NOW )
+                  CASE ( 12, 1, 2 )
+                     SEASON_NOW = 1
+                  CASE ( 3, 4, 5 )
+                     SEASON_NOW = 2
+                  CASE ( 6, 7, 8 )
+                     SEASON_NOW = 3
+                  CASE ( 9, 10, 11 )
+                     SEASON_NOW = 4
+               END SELECT
+               ! Initialize ITS_PERTURB_TIME
+               ITS_PERTURB_TIME = .FALSE.
+               ! Handle winter (season is split across two years)
+               IF ( (Input_Opt%PerturbSeason == 1 ) .AND. 
+     &              ( MONTH_NOW == 12 ) ) THEN
+                  ! Include December of previous year in current year's winter 
+                  IF ( YEAR_NOW == Input_Opt%PerturbYear-1 ) THEN
+                     ITS_PERTURB_TIME = .TRUE.
+                  END IF
+               ! Treat all other cases here 
+               ! year
+               ELSE IF ( ( Input_Opt%PerturbYear == 0 ) .OR. 
+     &              ( YEAR_NOW == Input_Opt%PerturbYear ) ) THEN
+                  ! month
+                  IF ( ( Input_Opt%PerturbMonth == 0 ) .OR. 
+     &                 ( MONTH_NOW == Input_Opt%PerturbMonth ) ) THEN
+                     ! season
+                     IF ( ( Input_Opt%PerturbSeason == 0 ) .OR. 
+     &                    ( SEASON_NOW == Input_Opt%PerturbSeason ) ) 
+     &                  THEN
+                        ITS_PERTURB_TIME = .TRUE.
+                     ENDIF
+                  ENDIF
+               ENDIF
+
+               ! Check cluster number and year/month are valid
+               IF ( ( CLUSTERS(I,J) == Input_Opt%ClusterNumber ) .AND. 
+     &              ( ITS_PERTURB_TIME ) ) THEN
+ 
+                  ! Apply OH perturbation to cluster number
+                  IF ( IS_OH_PERTURBED ) THEN 
+                      C_OH = C_OH * Input_Opt%PerturbOH
+                      Print*, 'Analytical Inversion: Scaled OH cluster',
+     &                        Input_Opt%ClusterNumber, ' by ',
+     &                        Input_Opt%PerturbOH
+                        
+                  ENDIF
+
+               ENDIF
+            ENDIF
+         
 
             ! Apply scale factors from analytical inversion
             IF ( Input_Opt%UseOHSF ) THEN
