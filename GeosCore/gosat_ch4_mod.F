@@ -773,7 +773,6 @@
 
       ! end testing old way of interpolating 
 
-
 !!         DO LL = 1, LGOS
 !          DO L=1, LLPAR
 !             IF (MAP(L,LL)>0E0) PRINT*,L,LL,MAP(L,LL)
