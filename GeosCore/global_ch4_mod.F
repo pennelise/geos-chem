@@ -310,6 +310,17 @@
          ENDIF 
       ENDIF
 
+      ! Exit with error if both season and month are defined
+      IF ( Input_Opt%AnalyticalInv ) THEN
+         IF ( ( Input_Opt%PerturbMonth .GT. 0 ) .AND. 
+     &        ( Input_Opt%PerturbSeason .GT. 0 ) ) THEN
+            ErrMsg = 'Both season and month are specified for
+     &                perturbation.'
+            CALL GC_Error( ErrMsg, RC, ThisLoc )
+            RETURN
+         ENDIF
+      ENDIF 
+
       ! Emission timestep
       DTSRCE = HcoState%TS_EMIS
 
