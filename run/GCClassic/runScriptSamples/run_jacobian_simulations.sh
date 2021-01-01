@@ -20,11 +20,11 @@ for iter in {0..3}; do
   xi=$((4*x+iter))
 
   ### Add zeros to the cluster Id
-  if [ $x -lt 10 ]; then
+  if [ $xi -lt 10 ]; then
       xstr="000${xi}"
-  elif [ $x -lt 100 ]; then
+  elif [ $xi -lt 100 ]; then
       xstr="00${xi}"
-  elif [ $x -lt 1000 ]; then
+  elif [ $xi -lt 1000 ]; then
       xstr="0${xi}"
   else
       xstr="${xi}"
