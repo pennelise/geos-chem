@@ -31,8 +31,8 @@ for iter in {0..3}; do
   fi
 
    ### Run GEOS-Chem in the directory corresponding to the cluster Id
-  cd  ${RUNDIR}/{RunName}_${xstr}
-  ./{RunName}_${xstr}.run
+  cd  ${RUNDIR}/{RunName}_*_id${xstr}
+  ./{RunName}_*_id${xstr}.run
 
 done
 
