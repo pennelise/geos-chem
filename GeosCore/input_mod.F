@@ -5216,6 +5216,14 @@
       ENDIF
       READ( SUBSTRS(1:N), * ) Input_Opt%GOSAT_CH4_OBS
 
+      ! Use AIRS CH4 observation operator?
+      CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'AIRS_CH4_OBS', RC )
+      IF ( RC /= GC_SUCCESS ) THEN
+         CALL GC_Error( ErrMsg, RC, ThisLoc )
+         RETURN
+      ENDIF
+      READ( SUBSTRS(1:N), * ) Input_Opt%AIRS_CH4_OBS
+
       ! Use TCCON CH4 observation operator?
       CALL SPLIT_ONE_LINE( SUBSTRS, N, 1, 'TCCON_CH4_OBS', RC )
       IF ( RC /= GC_SUCCESS ) THEN
@@ -5287,6 +5295,8 @@
          WRITE( 6, '(  a)' ) '-----------'
          WRITE( 6, 100     ) 'Use GOSAT obs operator   : ',
      &                        Input_Opt%GOSAT_CH4_OBS
+         WRITE( 6, 100     ) 'Use AIRS obs operator   : ',
+     &                        Input_Opt%AIRS_CH4_OBS
          WRITE( 6, 100     ) 'Use TCCON obs operator   : ',
      &                        Input_Opt%TCCON_CH4_OBS
          WRITE( 6, 100     ) 'Do analytical inversion  : ',
@@ -5300,7 +5310,7 @@
          WRITE( 6, 100     ) 'Use separate wetland SFs :',
      &                        Input_Opt%UseWetlandSF
          WRITE( 6, 100     ) 'Use OH scale factors     :',
-     &                        Input_Opt%UseEmisSF
+     &                        Input_Opt%UseOHSF 
       END IF
 
       ! FORMAT statements

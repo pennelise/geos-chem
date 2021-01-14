@@ -104,6 +104,7 @@ Radiation Timestep [sec]: 10800
 ------------------------+------------------------------------------------------
 %%% CH4 MENU %%%        :
 Use GOSAT obs operator? : F
+Use AIRS obs operator?  : F
 Use TCCON obs operator? : F
 Do analytical inversion?: F
  => Emiss perturbation  : pertpert
