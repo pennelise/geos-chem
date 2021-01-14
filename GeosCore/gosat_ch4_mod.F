@@ -899,14 +899,14 @@
       ! Use original interpolation with h operator from AJT/JDM
       !  We don't need the strat/trop/prior so assign to dummy var.
       CALL CALC_GC_XCH4 ( GC_CH4_ORIG, ak, h, prior, L0, LGOS, 
-     &                    LGOS_Trop, WT_LGOS_Trop, GC_XCH4_ORIG,
+     &                    LGOS_Trop, WT_LGOS_Trop, GC_XCH4_ORIG_OLDPW,
      &                    foo, foo, foo ) 
          
       ! Use original interpolation with GOSAT operator
       !  We don't need the strat/trop/prior so assign to dummy var.
       CALL CALC_GC_XCH4 ( GC_CH4_ORIG, ak, h, prior, L0, LGOS, 
      &                    LGOS_Trop, WT_LGOS_Trop, 
-     &                    GC_XCH4_ORIG_OLDPW, foo, foo, foo )
+     &                    GC_XCH4_ORIG, foo, foo, foo )
          
 !---  zyz test with weighting function
 
