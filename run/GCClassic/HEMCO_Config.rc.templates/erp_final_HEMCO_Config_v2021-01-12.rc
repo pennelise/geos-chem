@@ -44,7 +44,7 @@
 ###############################################################################
 
 ROOT:                        /n/seasasfs02/CH4_inversion/InputData/HEMCO
-METDIR:                      /n/holyscratch01/external_repos/GEOS-CHEM/gcgrid/gcdata/ExtData/GEOS_4x5/MERRA2
+METDIR:                      {DATA_ROOT}/GEOS_{GRID_DIR}/{MET_DIR}
 Logfile:                     HEMCO.log
 DiagnFile:                   HEMCO_Diagn.rc
 DiagnPrefix:                 ./OutputDir/HEMCO_diagnostics
@@ -54,8 +54,8 @@ Separator:                   /
 Unit tolerance:              1
 Negative values:             2
 Only unitless scale factors: false
-Verbose:                     0
-Warnings:                    1
+Verbose:                     {VERBOSE}
+Warnings:                    {WARNINGS}
 
 ### END SECTION SETTINGS ###
 
@@ -621,7 +621,7 @@ Warnings:                    1
 #==============================================================================
 * CH4_CLUSTERS          /n/seasasfs02/epenn/HEMCO/CLUSTER/Clusters_nonwetlands.nc  Clusters 2009/1/1/0 C xy 1 * - 1 1
 * CH4_WETLAND_CLUSTERS  /n/seasasfs02/epenn/HEMCO/CLUSTER/Clusters_wetlands.nc     Clusters 2009/1/1/0 C xy 1 * - 1 1
-* CH4_OH_CLUSTERS       /n/seasasfs02/epenn/HEMCO/CLUSTER/Clusters_OH_4bands.nc    Clusters 2009/1/1/0 C xy 1 * - 1 1
+* CH4_OH_CLUSTERS       /n/seasasfs02/epenn/HEMCO/CLUSTER/{OH_CLUSTER_FILE}        Clusters 2009/1/1/0 C xy 1 * - 1 1
 
 #==============================================================================
 # --- Olson land map masks ---
