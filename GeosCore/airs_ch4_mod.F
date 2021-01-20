@@ -491,7 +491,7 @@
      &                     'MM', 'DD', 'hh', 'mm', 'ss', 
      &                     '         TAU', '        AIRS', 
      &                     '       S_OBS',  '       model',
-     &                     '  model_orig',  'model_origpw', !erp
+     &                     '  model_orig',  'model_oldpw', !erp
      &                     '       TropP', ' model_prior',  !zyz
      &                     '  model_trop', ' model_strat'   !zyz
  281     FORMAT( A10,2x,A4,2x,A4,2x,A8,2x,A8,2x,A4,2x,A2,2x,A2,2x,A2,2x,
